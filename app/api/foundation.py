@@ -96,8 +96,8 @@ def health() -> dict[str, str]:
 def foundation() -> dict:
     return {
         "project": "Media Router",
-        "phase": "sprint_1_foundation",
-        "implementation_scope": "foundation, wizard, settings, dashboard, and job system only",
+        "phase": "sprint_1_5_foundation_polish",
+        "implementation_scope": "foundation polish only: wizard, settings, dashboard, jobs, logs, and about/system",
         "principles": [principle.__dict__ for principle in PRINCIPLES],
         "modules": [module.__dict__ for module in MODULES],
     }

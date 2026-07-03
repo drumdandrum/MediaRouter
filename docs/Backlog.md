@@ -15,6 +15,20 @@ Foundation
 ☑ Principles checklist  
 ☑ Documentation index  
 
+### Sprint 1.5
+
+☑ Step-by-step wizard polish  
+☑ Manual placeholder values  
+☑ Categorized settings  
+☑ Host path and container path fields  
+☑ Friendly dashboard status badges  
+☑ About/System page  
+☑ Test job lifecycle  
+☑ Logs page with secret scrubbing  
+☑ README run instructions  
+☑ Sprint 1 acceptance checklist  
+☑ Docker data persistence  
+
 ## Epic 2
 
 Catalog

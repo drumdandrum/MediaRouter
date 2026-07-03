@@ -8,3 +8,6 @@ services:
     environment:
       MEDIA_ROUTER_APP_PORT: "8088"
       MEDIA_ROUTER_PUBLIC_BASE_URL: "http://media-router:8088"
+      MEDIA_ROUTER_DATA_DIR: "/data"
+    volumes:
+      - ./data:/data

@@ -37,6 +37,32 @@ Exit criteria:
 - Foundation jobs can run asynchronously and report progress.
 - Catalog and broker remain unimplemented.
 
+## Phase 1.5: Foundation Polish
+
+Current polish phase.
+
+Deliverables:
+
+- Real step-by-step first-run wizard: Welcome, Environment, Paths, Services, Review, Complete.
+- Manual placeholder values for environment, paths, and services.
+- Categorized settings: General, Storage, Network, Services, Advanced.
+- Host path and container path fields.
+- Friendly dashboard status badges.
+- About/System page.
+- Test job lifecycle for queued, running, and completed states.
+- Logs page with secret scrubbing.
+- README local run instructions and Sprint 1 acceptance checklist.
+- Docker Compose persistent data mount for settings, wizard state, and job history.
+
+Exit criteria:
+
+- Wizard completion persists after restart.
+- Settings persist after restart.
+- Dashboard uses user-friendly labels.
+- Test job proves job state transitions before catalog jobs exist.
+- Settings, wizard completion state, and completed job history persist through Docker down/up.
+- No catalog, broker, STRM, HDHomeRun, IPTV parsing, or media integrations are implemented.
+
 ## Phase 2: Accounts
 
 Deliverables:

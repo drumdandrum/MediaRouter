@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Media Router Sprint 1</title>
+    <title>Media Router Sprint 1.5</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -21,6 +21,8 @@
           <button data-view="wizard">Wizard</button>
           <button data-view="settings">Settings</button>
           <button data-view="jobs">Jobs</button>
+          <button data-view="logs">Logs</button>
+          <button data-view="system">About</button>
           <button data-view="foundation">Foundation</button>
         </nav>
       </aside>
@@ -36,14 +38,20 @@
 
         <section id="dashboard" class="view active">
           <div class="metric-grid">
-            <article><span>Health</span><strong id="health">-</strong></article>
+            <article><span>App</span><strong id="dash-app">-</strong></article>
+            <article><span>Setup</span><strong id="dash-setup" class="status-badge">-</strong></article>
+            <article><span>Services</span><strong id="dash-services" class="status-badge">-</strong></article>
+            <article><span>Database</span><strong id="dash-database" class="status-badge">-</strong></article>
+          </div>
+          <div class="metric-grid compact">
             <article><span>Wizard</span><strong id="wizard-progress">0%</strong></article>
             <article><span>Jobs</span><strong id="jobs-count">0</strong></article>
-            <article><span>Settings</span><strong id="settings-count">0</strong></article>
+            <article><span>Logs</span><strong id="logs-count">0</strong></article>
+            <article><span>Health</span><strong id="dash-health" class="status-badge">-</strong></article>
           </div>
           <div class="split">
             <section class="panel">
-              <h2>Sprint 1 Scope</h2>
+              <h2>Sprint 1.5 Scope</h2>
               <div id="sprint-scope" class="check-list"></div>
             </section>
             <section class="panel">
@@ -57,9 +65,10 @@
           <section class="panel">
             <div class="panel-head">
               <h2>First Run Wizard</h2>
-              <span id="wizard-state" class="badge">Not started</span>
+              <span id="wizard-state" class="status-badge">Not started</span>
             </div>
-            <div id="wizard-steps" class="step-list"></div>
+            <div id="wizard-stepper" class="wizard-stepper"></div>
+            <div id="wizard-panel" class="wizard-panel"></div>
           </section>
         </section>
 
@@ -69,13 +78,7 @@
               <h2>Settings</h2>
               <button id="save-settings" class="primary">Save</button>
             </div>
-            <form id="settings-form" class="form-grid">
-              <label>App Name<input name="app_name" /></label>
-              <label>Public Base URL<input name="public_base_url" /></label>
-              <label>Timezone<input name="timezone" /></label>
-              <label>Log Level<select name="log_level"><option>debug</option><option>info</option><option>warning</option><option>error</option></select></label>
-              <label>Data Directory<input name="data_directory" /></label>
-            </form>
+            <form id="settings-form" class="settings-form"></form>
           </section>
         </section>
 
@@ -83,9 +86,26 @@
           <section class="panel">
             <div class="panel-head">
               <h2>Job System</h2>
-              <button id="start-job" class="primary">Run Foundation Check</button>
+              <button id="start-job" class="primary">Run Test Job</button>
             </div>
             <div id="jobs-list" class="job-list"></div>
+          </section>
+        </section>
+
+        <section id="logs" class="view">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Logs</h2>
+              <span class="muted">Secrets are scrubbed before display.</span>
+            </div>
+            <div id="logs-list" class="log-list"></div>
+          </section>
+        </section>
+
+        <section id="system" class="view">
+          <section class="panel">
+            <h2>About / System</h2>
+            <div id="system-grid" class="detail-grid"></div>
           </section>
         </section>
 

@@ -2,7 +2,29 @@
 
 ## Current Status
 
-The foundation phase does not create a database schema. Persistence should be added only after the Settings and Accounts contracts are accepted.
+The foundation phase does not create a SQLite schema. Sprint 1.5 persists foundation state as JSON files in the configured data directory.
+
+Docker Compose mounts:
+
+```text
+./data:/data
+```
+
+The container uses:
+
+```text
+MEDIA_ROUTER_DATA_DIR=/data
+```
+
+Current persisted files:
+
+- `/data/settings.json`
+- `/data/wizard_state.json`
+- `/data/jobs.json`
+
+This is the foundation settings store. SQLite should be introduced later with migrations when the database phase begins.
+
+Persistence beyond the foundation settings store should be added only after the Settings and Accounts contracts are accepted.
 
 SQLite is the preferred first database because Media Router is initially a single-server home application. The schema should still be designed cleanly enough to migrate to another relational database later.
 

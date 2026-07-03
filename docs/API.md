@@ -15,9 +15,12 @@ The current project exposes Sprint 1 endpoints only. Catalog and broker APIs are
 | `GET` | `/api/wizard/state` | Reads persisted wizard state. |
 | `PUT` | `/api/wizard/state` | Updates persisted wizard state. |
 | `POST` | `/api/wizard/steps/{step_id}/complete` | Marks a wizard step complete. |
-| `GET` | `/api/jobs` | Lists in-memory jobs. |
-| `POST` | `/api/jobs` | Starts a background foundation check job. |
+| `GET` | `/api/jobs` | Lists persistent foundation job history. |
+| `POST` | `/api/jobs` | Starts a background test/foundation job and records history. |
 | `GET` | `/api/jobs/{job_id}` | Reads one job. |
+| `GET` | `/api/logs` | Lists sanitized in-memory logs. |
+| `POST` | `/api/logs` | Adds a sanitized log entry. |
+| `GET` | `/api/system` | Shows app version, environment, Git, database, and Docker/container status. |
 
 Interactive OpenAPI docs are available at `/docs` while the server is running.
 
@@ -44,6 +47,7 @@ Interactive OpenAPI docs are available at `/docs` while the server is running.
 
 - `GET /api/settings`
 - `PUT /api/settings`
+- `GET /api/settings/categories`
  
 Deferred:
 
@@ -57,6 +61,7 @@ Deferred:
 - `GET /api/wizard/steps`
 - `GET /api/wizard/state`
 - `PUT /api/wizard/state`
+- `PUT /api/wizard/values`
 - `POST /api/wizard/steps/{step_id}/complete`
 
 ### Discovery

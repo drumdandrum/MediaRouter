@@ -6,16 +6,19 @@ from fastapi.templating import Jinja2Templates
 from app.api.dashboard import router as dashboard_router
 from app.api.foundation import router as foundation_router
 from app.api.jobs import router as jobs_router
+from app.api.logs import router as logs_router
 from app.api.settings import router as settings_router
+from app.api.system import router as system_router
 from app.api.wizard import router as wizard_router
 from app.core.config import get_settings
+from app.main_meta import APP_VERSION
 
 settings = get_settings()
 
 app = FastAPI(
     title="Media Router",
-    description="Sprint 1 foundation for a modular home media orchestration platform.",
-    version="0.1.0-sprint1",
+    description="Sprint 1.5 foundation polish for a modular home media orchestration platform.",
+    version=APP_VERSION,
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -23,7 +26,9 @@ templates = Jinja2Templates(directory="app/templates")
 app.include_router(dashboard_router)
 app.include_router(foundation_router)
 app.include_router(jobs_router)
+app.include_router(logs_router)
 app.include_router(settings_router)
+app.include_router(system_router)
 app.include_router(wizard_router)
 
 
@@ -34,6 +39,6 @@ def index(request: Request) -> HTMLResponse:
         {
             "request": request,
             "app_name": settings.app_name,
-            "phase": "Sprint 1 Foundation",
+            "phase": "Sprint 1.5 Foundation Polish",
         },
     )

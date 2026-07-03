@@ -4,7 +4,7 @@
 
 The foundation app is a minimal FastAPI service with a static architecture page and two API endpoints.
 
-## Local Development
+## How To Run Locally
 
 Create a virtual environment:
 
@@ -31,6 +31,13 @@ Open:
 http://localhost:8088
 ```
 
+For development on the same machine:
+
+```bash
+source .venv/bin/activate
+uvicorn app.main:app --host 127.0.0.1 --port 8088
+```
+
 ## Docker
 
 Build and run:
@@ -39,13 +46,28 @@ Build and run:
 docker compose up --build
 ```
 
-The foundation compose file intentionally does not mount media folders, Docker sockets, IPTV Boss exports, or persistent database storage yet.
+The foundation compose file mounts persistent application data:
+
+```yaml
+volumes:
+  - ./data:/data
+```
+
+The application runs with:
+
+```text
+MEDIA_ROUTER_DATA_DIR=/data
+```
+
+Settings, wizard state, and job history are stored in `/data` inside the container and `./data` on the host.
+
+The foundation compose file intentionally does not mount media folders, Docker sockets, or IPTV Boss exports yet.
 
 Those mounts should be introduced only when their modules are implemented.
 
 ## Future Production Shape
 
-Expected future Docker mounts:
+Expected future media-related Docker mounts:
 
 ```yaml
 volumes:
@@ -82,6 +104,16 @@ Foundation metadata:
 
 ```bash
 curl http://localhost:8088/api/foundation
+```
+
+Persistence check:
+
+```bash
+docker compose up -d
+# Save settings in the UI, complete a wizard step, and run a test job.
+docker compose down
+docker compose up -d
+# Re-open the UI and verify settings, wizard state, and completed job history remain.
 ```
 
 ## Upgrade Notes
