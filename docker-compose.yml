@@ -1,0 +1,10 @@
+services:
+  media-router:
+    build: .
+    container_name: media-router
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    environment:
+      MEDIA_ROUTER_APP_PORT: "8088"
+      MEDIA_ROUTER_PUBLIC_BASE_URL: "http://media-router:8088"

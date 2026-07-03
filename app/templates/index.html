@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Media Router Sprint 1</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">MR</div>
+          <div>
+            <strong>{{ app_name }}</strong>
+            <span>{{ phase }}</span>
+          </div>
+        </div>
+        <nav>
+          <button class="active" data-view="dashboard">Dashboard</button>
+          <button data-view="wizard">Wizard</button>
+          <button data-view="settings">Settings</button>
+          <button data-view="jobs">Jobs</button>
+          <button data-view="foundation">Foundation</button>
+        </nav>
+      </aside>
+
+      <main>
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Media Router</p>
+            <h1 id="view-title">Dashboard</h1>
+          </div>
+          <button id="refresh">Refresh</button>
+        </header>
+
+        <section id="dashboard" class="view active">
+          <div class="metric-grid">
+            <article><span>Health</span><strong id="health">-</strong></article>
+            <article><span>Wizard</span><strong id="wizard-progress">0%</strong></article>
+            <article><span>Jobs</span><strong id="jobs-count">0</strong></article>
+            <article><span>Settings</span><strong id="settings-count">0</strong></article>
+          </div>
+          <div class="split">
+            <section class="panel">
+              <h2>Sprint 1 Scope</h2>
+              <div id="sprint-scope" class="check-list"></div>
+            </section>
+            <section class="panel">
+              <h2>Deferred Scope</h2>
+              <div id="deferred-scope" class="muted-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="wizard" class="view">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>First Run Wizard</h2>
+              <span id="wizard-state" class="badge">Not started</span>
+            </div>
+            <div id="wizard-steps" class="step-list"></div>
+          </section>
+        </section>
+
+        <section id="settings" class="view">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Settings</h2>
+              <button id="save-settings" class="primary">Save</button>
+            </div>
+            <form id="settings-form" class="form-grid">
+              <label>App Name<input name="app_name" /></label>
+              <label>Public Base URL<input name="public_base_url" /></label>
+              <label>Timezone<input name="timezone" /></label>
+              <label>Log Level<select name="log_level"><option>debug</option><option>info</option><option>warning</option><option>error</option></select></label>
+              <label>Data Directory<input name="data_directory" /></label>
+            </form>
+          </section>
+        </section>
+
+        <section id="jobs" class="view">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Job System</h2>
+              <button id="start-job" class="primary">Run Foundation Check</button>
+            </div>
+            <div id="jobs-list" class="job-list"></div>
+          </section>
+        </section>
+
+        <section id="foundation" class="view">
+          <section class="panel">
+            <h2>Principles</h2>
+            <div id="principles" class="principles"></div>
+          </section>
+          <section class="grid" id="modules"></section>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast"></div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
