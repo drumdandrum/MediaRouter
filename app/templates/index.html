@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Media Router Sprint 1.5</title>
+    <title>Media Router Sprint 2</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -19,6 +19,7 @@
         <nav>
           <button class="active" data-view="dashboard">Dashboard</button>
           <button data-view="wizard">Wizard</button>
+          <button data-view="catalog">Catalog</button>
           <button data-view="settings">Settings</button>
           <button data-view="jobs">Jobs</button>
           <button data-view="logs">Logs</button>
@@ -47,11 +48,17 @@
             <article><span>Wizard</span><strong id="wizard-progress">0%</strong></article>
             <article><span>Jobs</span><strong id="jobs-count">0</strong></article>
             <article><span>Logs</span><strong id="logs-count">0</strong></article>
-            <article><span>Health</span><strong id="dash-health" class="status-badge">-</strong></article>
+            <article><span>Catalog</span><strong id="catalog-count">0</strong></article>
+          </div>
+          <div class="metric-grid compact">
+            <article><span>Channels</span><strong id="catalog-channels">0</strong></article>
+            <article><span>Movies</span><strong id="catalog-movies">0</strong></article>
+            <article><span>Series</span><strong id="catalog-series">0</strong></article>
+            <article><span>Episodes</span><strong id="catalog-episodes">0</strong></article>
           </div>
           <div class="split">
             <section class="panel">
-              <h2>Sprint 1.5 Scope</h2>
+              <h2>Sprint 2 Scope</h2>
               <div id="sprint-scope" class="check-list"></div>
             </section>
             <section class="panel">
@@ -69,6 +76,43 @@
             </div>
             <div id="wizard-stepper" class="wizard-stepper"></div>
             <div id="wizard-panel" class="wizard-panel"></div>
+          </section>
+        </section>
+
+        <section id="catalog" class="view">
+          <div class="metric-grid compact">
+            <article><span>Channels</span><strong id="cat-summary-channels">0</strong></article>
+            <article><span>Movies</span><strong id="cat-summary-movies">0</strong></article>
+            <article><span>Series</span><strong id="cat-summary-series">0</strong></article>
+            <article><span>Episodes</span><strong id="cat-summary-episodes">0</strong></article>
+            <article><span>Sources</span><strong id="cat-summary-sources">0</strong></article>
+            <article><span>Last Import</span><strong id="cat-summary-last">Never</strong></article>
+          </div>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Import M3U Playlists</h2>
+              <button id="clear-catalog-test-data">Clear Test Data</button>
+            </div>
+            <form id="catalog-import-form" class="form-grid">
+              <label>Source Name<input name="source_name" value="Sample Data" /></label>
+              <label>Live M3U Path<input name="live_path" value="sample_data/live.m3u" /></label>
+              <label>Movies M3U Path<input name="movies_path" value="sample_data/movies.m3u" /></label>
+              <label>Series M3U Path<input name="series_path" value="sample_data/series.m3u" /></label>
+            </form>
+            <div class="button-row">
+              <button id="import-catalog" class="primary">Import Playlists</button>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="catalog-tabs">
+              <button class="active" data-catalog-tab="overview">Overview</button>
+              <button data-catalog-tab="live">Live Channels</button>
+              <button data-catalog-tab="movies">Movies</button>
+              <button data-catalog-tab="series">Series</button>
+              <button data-catalog-tab="episodes">Episodes</button>
+              <button data-catalog-tab="sources">Sources</button>
+            </div>
+            <div id="catalog-table" class="table-wrap"></div>
           </section>
         </section>
 

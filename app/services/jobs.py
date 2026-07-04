@@ -81,6 +81,21 @@ def get_job(job_id: str) -> JobRead | None:
     return _read(job) if job else None
 
 
+def update_job(job_id: str, *, status: str | None = None, progress: int | None = None, message: str | None = None) -> JobRead | None:
+    job = JOBS.get(job_id)
+    if job is None:
+        return None
+    if status is not None:
+        job.status = status
+    if progress is not None:
+        job.progress = progress
+    if message is not None:
+        job.message = message
+    job.updated_at = datetime.utcnow()
+    _persist()
+    return _read(job)
+
+
 def create_job(kind: str) -> JobRead:
     now = datetime.utcnow()
     job = Job(

@@ -2,8 +2,6 @@
 
 ## Phase 0: Foundation
 
-Current phase.
-
 Deliverables:
 
 - Minimal FastAPI app.
@@ -39,8 +37,6 @@ Exit criteria:
 
 ## Phase 1.5: Foundation Polish
 
-Current polish phase.
-
 Deliverables:
 
 - Real step-by-step first-run wizard: Welcome, Environment, Paths, Services, Review, Complete.
@@ -66,7 +62,30 @@ Exit criteria:
 - About/System shows version, environment, branch, commit, database, Docker, and container status.
 - No catalog, broker, STRM, HDHomeRun, IPTV parsing, or media integrations are implemented.
 
-## Phase 2: Accounts
+## Phase 2: Catalog Engine
+
+Current phase.
+
+Deliverables:
+
+- SQLite-backed catalog database under `/data`.
+- M3U parser for live, movie, and series playlists.
+- Stable internal IDs for channels, movies, series, and episodes.
+- Separate source mapping table for future multi-source/account support.
+- Series/episode naming parser with confidence flag.
+- Catalog import jobs.
+- Catalog UI page with Overview, Live Channels, Movies, Series, Episodes, and Sources.
+- Sample playlists under `sample_data/`.
+
+Exit criteria:
+
+- Sample import produces 5 channels, 3 movies, 2 series, 4 episodes, and 12 source mappings.
+- Docker restart preserves catalog data.
+- Re-importing sample playlists does not create duplicate catalog items.
+- Catalog test data can be cleared and re-imported.
+- No broker, STRM, HDHomeRun, IPTV parsing beyond M3U metadata import, or integrations are implemented.
+
+## Phase 3: Accounts
 
 Deliverables:
 
@@ -80,23 +99,6 @@ Exit criteria:
 
 - Accounts can be configured through the UI.
 - Credentials are not exposed in logs or reads.
-
-## Phase 3: Catalog
-
-Deliverables:
-
-- M3U parser.
-- Existing STRM scanner.
-- Stable internal ID strategy.
-- Duplicate detection before ID creation.
-- Catalog source mapping.
-- Import preview and apply flow.
-
-Exit criteria:
-
-- Existing libraries can be scanned without changing files.
-- Imported items receive stable IDs.
-- One movie, episode, or live channel cannot be represented by duplicate internal IDs.
 
 ## Phase 4: Broker
 

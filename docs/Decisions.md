@@ -34,6 +34,9 @@ See `docs/adr/0001-foundation-first.md`.
 | Disposable outputs | Accepted | Outputs are generated artifacts, not authoritative state. |
 | Service-layer plugin boundary | Accepted | Plugins never directly access SQLite. |
 | One internal ID per item | Accepted | Each movie, episode, and live channel has exactly one internal ID. |
+| SQLite catalog foundation | Accepted | Sprint 2 stores catalog identity and source mappings in `/data/media_router.db`. |
+| Source mappings separate from identity | Accepted | Provider URLs live in `catalog_sources`, not as catalog identity. |
+| Redacted source read models | Accepted | Sprint 2 stores source URLs for future routing but redacts credential path segments in API/UI reads. |
 
 ## Open Decisions
 

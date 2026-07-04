@@ -1,4 +1,5 @@
 from app.schemas.dashboard import DashboardStatus
+from app.services.catalog import get_summary
 from app.services.jobs import job_counts
 from app.services.logs import log_count
 from app.services.settings import get_app_settings
@@ -6,8 +7,8 @@ from app.services.system import get_system_info
 from app.services.wizard import get_wizard_state, get_wizard_steps
 
 
-SPRINT_SCOPE = ["Foundation", "Wizard", "Settings", "Dashboard", "Job System"]
-DEFERRED_SCOPE = ["Catalog", "Broker", "Accounts", "Outputs", "Integrations"]
+SPRINT_SCOPE = ["Foundation", "Wizard", "Settings", "Dashboard", "Job System", "Logs", "About/System", "Catalog Engine"]
+DEFERRED_SCOPE = ["Broker", "Accounts", "Outputs", "Integrations"]
 
 
 def get_dashboard_status() -> DashboardStatus:
@@ -16,10 +17,11 @@ def get_dashboard_status() -> DashboardStatus:
     steps = get_wizard_steps()
     total_jobs, running_jobs = job_counts()
     system = get_system_info()
+    catalog = get_summary()
     services_configured = any([settings.emby_url, settings.jellyfin_url, settings.nextpvr_url, settings.iptv_boss_export_path])
     return DashboardStatus(
         app_name=settings.app_name,
-        phase="Sprint 1.5",
+        phase="Sprint 2",
         health="ready",
         health_label="Ready",
         setup_status="ready" if wizard.setup_complete else "needs_setup",
@@ -34,6 +36,11 @@ def get_dashboard_status() -> DashboardStatus:
         jobs_total=total_jobs,
         jobs_running=running_jobs,
         logs_total=log_count(),
-        sprint_scope=["Foundation", "Wizard", "Settings", "Dashboard", "Job System", "Logs", "About/System"],
+        catalog_channels=catalog.channels,
+        catalog_movies=catalog.movies,
+        catalog_series=catalog.series,
+        catalog_episodes=catalog.episodes,
+        catalog_sources=catalog.sources,
+        sprint_scope=SPRINT_SCOPE,
         deferred_scope=DEFERRED_SCOPE,
     )

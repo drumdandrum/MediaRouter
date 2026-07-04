@@ -1,6 +1,6 @@
 # Media Router
 
-Media Router is currently an architecture foundation for a future Dockerized home media orchestration platform. The project intentionally does not implement IPTV brokering, catalog import, STRM rewriting, or DVR integration yet.
+Media Router is currently a foundation and catalog engine for a future Dockerized home media orchestration platform. The project intentionally does not implement IPTV brokering, STRM rewriting, or DVR integration yet.
 
 The goal of this phase is to lock down module ownership, boundaries, and delivery order before building features.
 
@@ -62,13 +62,16 @@ Settings, wizard state, and job history are written under this mounted path. The
 
 - Minimal FastAPI app.
 - App version `v0.2.1`.
-- Sprint 1.5 web console.
+- Sprint 2 web console.
 - `/api/health` endpoint.
 - `/api/foundation` endpoint with module metadata.
 - Dashboard, wizard, settings, and jobs APIs.
+- Catalog summary/list/import APIs.
 - About/System and logs APIs.
 - JSON-backed settings and wizard state.
 - Persistent JSON-backed job history.
+- SQLite-backed catalog identity and source mapping database under `./data`.
+- Sample M3U playlists under `sample_data/`.
 - Domain-level types and contracts.
 - Module folders with README ownership notes.
 - Dockerfile and Docker Compose scaffold.
@@ -95,11 +98,10 @@ Settings, wizard state, and job history are written under this mounted path. The
 - IPTV Boss watching.
 - HDHomeRun compatibility.
 - Emby/Jellyfin/NextPVR/Channels adapters.
-- SQLite schema.
 - Secrets storage.
 - Production dashboard UI.
 
-Sprint 1.5 includes foundation polish only; catalog, broker, accounts, outputs, and integrations are still deferred. Those should be added incrementally after the architecture decisions in `docs/Architecture.md` and `docs/Roadmap.md` are accepted.
+Sprint 2 includes the catalog foundation only; broker, accounts, outputs, STRM, streaming, and integrations are still deferred. Those should be added incrementally after the architecture decisions in `docs/Architecture.md` and `docs/Roadmap.md` are accepted.
 
 ## Sprint 1 Acceptance Test
 
@@ -115,7 +117,7 @@ Sprint 1.5 includes foundation polish only; catalog, broker, accounts, outputs, 
 - [ ] Test job shows queued, running, and completed states.
 - [ ] Logs page formats sanitized log entries.
 - [ ] About page shows version, environment, branch, commit, database, Docker, and container status.
-- [ ] No catalog, broker, STRM, HDHomeRun, IPTV parsing, or media integrations are present.
+- [ ] No broker, STRM, HDHomeRun, media integrations, or streaming are present.
 
 ## Sprint 1.5 Persistence Acceptance Test
 
@@ -131,3 +133,27 @@ Sprint 1.5 includes foundation polish only; catalog, broker, accounts, outputs, 
 - [ ] Verify completed job history remains.
 - [ ] Verify persistent files exist under `./data`.
 - [ ] Verify settings persistence still passes after version/About cleanup.
+
+## Sprint 2 Catalog Acceptance Test
+
+- [ ] Start Docker with `docker compose up -d`.
+- [ ] Open `http://localhost:8088`.
+- [ ] Go to Catalog.
+- [ ] Import:
+  - `sample_data/live.m3u`
+  - `sample_data/movies.m3u`
+  - `sample_data/series.m3u`
+- [ ] Confirm counts:
+  - 5 channels
+  - 3 movies
+  - 2 series
+  - 4 episodes
+  - 12 source mappings
+- [ ] Run `docker compose down`.
+- [ ] Run `docker compose up -d`.
+- [ ] Confirm catalog counts remain.
+- [ ] Re-import the same sample playlists.
+- [ ] Confirm no duplicate catalog items are created.
+- [ ] Clear test data from the Catalog page or `POST /api/catalog/clear-test-data`.
+- [ ] Re-import successfully.
+- [ ] Confirm no broker, STRM, HDHomeRun, IPTV parsing beyond M3U metadata import, or media integrations are present.

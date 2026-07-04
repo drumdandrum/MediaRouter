@@ -1,8 +1,8 @@
 # API
 
-## Current Sprint 1 API
+## Current Sprint 2 API
 
-The current project exposes Sprint 1 endpoints only. Catalog and broker APIs are deliberately deferred.
+The current project exposes Sprint 2 catalog foundation endpoints. Broker, accounts, outputs, and media integrations are deliberately deferred.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -21,6 +21,14 @@ The current project exposes Sprint 1 endpoints only. Catalog and broker APIs are
 | `GET` | `/api/logs` | Lists sanitized in-memory logs. |
 | `POST` | `/api/logs` | Adds a sanitized log entry. |
 | `GET` | `/api/system` | Shows app version, environment, Git, database, and Docker/container status. |
+| `GET` | `/api/catalog/summary` | Returns catalog counts and last import time. |
+| `GET` | `/api/catalog/live` | Lists live channel catalog records. |
+| `GET` | `/api/catalog/movies` | Lists movie catalog records. |
+| `GET` | `/api/catalog/series` | Lists series catalog records. |
+| `GET` | `/api/catalog/episodes` | Lists episode catalog records. |
+| `GET` | `/api/catalog/sources` | Lists source mappings with provider credentials redacted from URLs. |
+| `POST` | `/api/catalog/import` | Queues a catalog import job for M3U file paths. |
+| `POST` | `/api/catalog/clear-test-data` | Clears catalog test/import data for development. |
 
 Interactive OpenAPI docs are available at `/docs` while the server is running.
 
@@ -82,11 +90,14 @@ Deferred:
 
 ### Catalog
 
-- `GET /api/catalog`
-- `GET /api/catalog/{internal_id}`
-- `POST /api/catalog/import/preview`
-- `POST /api/catalog/import/apply`
-- `POST /api/catalog/reindex`
+- `GET /api/catalog/summary`
+- `GET /api/catalog/live`
+- `GET /api/catalog/movies`
+- `GET /api/catalog/series`
+- `GET /api/catalog/episodes`
+- `GET /api/catalog/sources`
+- `POST /api/catalog/import`
+- `POST /api/catalog/clear-test-data`
 
 ### Broker
 

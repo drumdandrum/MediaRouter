@@ -38,13 +38,15 @@ Catalog
 
 ### Sprint 2
 
-☐ M3U Parser  
+☑ M3U Parser  
 ☐ XMLTV Parser  
-☐ Catalog Database  
-☐ Internal ID strategy  
-☐ Duplicate detection  
-☐ Source URL mapping  
-☐ Import preview  
+☑ Catalog Database  
+☑ Internal ID strategy  
+☑ Duplicate detection  
+☑ Source URL mapping  
+☑ Catalog import jobs  
+☑ Catalog UI  
+☑ Sample data  
 ☐ Existing STRM scanner  
 
 ## Epic 3

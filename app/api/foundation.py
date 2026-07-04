@@ -22,6 +22,7 @@ MODULES = [
         name="catalog",
         label="Catalog",
         responsibility="Permanent internal IDs for movies, episodes, and live channels.",
+        status=ServiceStatus.READY,
     ),
     ModuleDescriptor(
         name="broker",
@@ -96,8 +97,8 @@ def health() -> dict[str, str]:
 def foundation() -> dict:
     return {
         "project": "Media Router",
-        "phase": "sprint_1_5_foundation_polish",
-        "implementation_scope": "foundation polish only: wizard, settings, dashboard, jobs, logs, and about/system",
+        "phase": "sprint_2_catalog_engine",
+        "implementation_scope": "catalog foundation only: M3U import, permanent IDs, source mappings, and catalog UI",
         "principles": [principle.__dict__ for principle in PRINCIPLES],
         "modules": [module.__dict__ for module in MODULES],
     }

@@ -20,6 +20,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+COPY sample_data ./sample_data
 
 RUN mkdir -p /data
 

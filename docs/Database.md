@@ -2,7 +2,7 @@
 
 ## Current Status
 
-The foundation phase does not create a SQLite schema. Sprint 1.5 persists foundation state as JSON files in the configured data directory.
+Sprint 2 introduces the first SQLite-backed catalog schema while preserving the Sprint 1.5 JSON-backed foundation state.
 
 Docker Compose mounts:
 
@@ -21,16 +21,15 @@ Current persisted files:
 - `/data/settings.json`
 - `/data/wizard_state.json`
 - `/data/jobs.json`
+- `/data/media_router.db`
 
-This is the foundation settings store. SQLite should be introduced later with migrations when the database phase begins.
-
-Persistence beyond the foundation settings store should be added only after the Settings and Accounts contracts are accepted.
+The JSON files remain the foundation settings store. `media_router.db` stores catalog identity, source mappings, and import history.
 
 SQLite is the preferred first database because Media Router is initially a single-server home application. The schema should still be designed cleanly enough to migrate to another relational database later.
 
 ## Database Principles
 
-- Use migrations from the first persisted schema.
+- Add migrations before the schema grows beyond the Sprint 2 bootstrap tables.
 - Keep provider credentials out of normal read models.
 - Store host paths and Docker paths as separate fields.
 - Treat catalog internal IDs as stable public identifiers.
@@ -108,6 +107,13 @@ Important fields:
 - `created_at`
 - `updated_at`
 
+Sprint 2 implemented fields also include:
+
+- `cuid`
+- `parent_internal_id`
+- `confidence`
+- `raw_title`
+
 Constraints:
 
 - `internal_id` is unique.
@@ -128,6 +134,8 @@ Important fields:
 - `health_status`
 
 Multiple source rows may point to the same catalog item. This is how account failover and source balancing should be modeled.
+
+Sprint 2 stores source mappings separately from catalog identity records. Broker/account failover is not implemented. Source URLs are stored for future routing, but API/UI read models redact credential path segments.
 
 ### active_streams
 
@@ -158,6 +166,15 @@ Important fields:
 - `summary_json`
 - `started_at`
 - `finished_at`
+
+Sprint 2 uses `catalog_imports` with:
+
+- `job_id`
+- `source_name`
+- `file_path`
+- `status`
+- `summary_json`
+- `imported_at`
 
 ### outputs
 
@@ -191,12 +208,12 @@ Messages and metadata must be scrubbed before insert.
 
 ## Migration Plan
 
-1. Add migration tooling.
-2. Create settings and path mapping tables.
-3. Add accounts and secret reference model.
-4. Add catalog and source tables.
+1. Add migration tooling before Sprint 3 schema expansion.
+2. Formalize the Sprint 2 catalog tables as migration `0001`.
+3. Create settings and path mapping tables if JSON state moves into SQLite.
+4. Add accounts and secret reference model.
 5. Add stream reservations.
-6. Add imports and output plugin state.
+6. Add output plugin state.
 7. Add events/logging.
 
 ## Open Decisions

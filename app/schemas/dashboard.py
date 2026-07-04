@@ -18,5 +18,10 @@ class DashboardStatus(BaseModel):
     jobs_total: int
     jobs_running: int
     logs_total: int
+    catalog_channels: int
+    catalog_movies: int
+    catalog_series: int
+    catalog_episodes: int
+    catalog_sources: int
     sprint_scope: list[str]
     deferred_scope: list[str]

@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.api.dashboard import router as dashboard_router
+from app.api.catalog import router as catalog_router
 from app.api.foundation import router as foundation_router
 from app.api.jobs import router as jobs_router
 from app.api.logs import router as logs_router
@@ -17,12 +18,13 @@ settings = get_settings()
 
 app = FastAPI(
     title="Media Router",
-    description="Sprint 1.5 foundation polish for a modular home media orchestration platform.",
+    description="Sprint 2 catalog foundation for a modular home media orchestration platform.",
     version=APP_VERSION,
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
+app.include_router(catalog_router)
 app.include_router(dashboard_router)
 app.include_router(foundation_router)
 app.include_router(jobs_router)

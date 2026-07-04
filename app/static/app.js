@@ -6,6 +6,9 @@ const state = {
   categories: null,
   wizardSteps: [],
   wizardState: null,
+  catalogSummary: null,
+  catalogRows: [],
+  catalogTab: "overview",
   jobs: [],
   logs: [],
   system: null,
@@ -14,6 +17,7 @@ const state = {
 const titles = {
   dashboard: "Dashboard",
   wizard: "Wizard",
+  catalog: "Catalog",
   settings: "Settings",
   jobs: "Jobs",
   logs: "Logs",
@@ -53,6 +57,8 @@ const userStatus = {
   queued: "Queued",
   running: "Running",
   complete: "Completed",
+  failed: "Failed",
+  interrupted: "Interrupted",
 };
 
 async function api(path, options = {}) {
@@ -124,12 +130,87 @@ function renderDashboard() {
   setBadge("dash-setup", data.setup_status_label, data.setup_status);
   setBadge("dash-services", data.services_status_label, data.services_status);
   setBadge("dash-database", data.database_status_label, data.database_status);
-  setBadge("dash-health", data.health_label, data.health);
   document.getElementById("wizard-progress").textContent = `${data.wizard_progress}%`;
   document.getElementById("jobs-count").textContent = `${data.jobs_total}`;
   document.getElementById("logs-count").textContent = `${data.logs_total}`;
+  document.getElementById("catalog-count").textContent = data.catalog_sources;
+  document.getElementById("catalog-channels").textContent = data.catalog_channels;
+  document.getElementById("catalog-movies").textContent = data.catalog_movies;
+  document.getElementById("catalog-series").textContent = data.catalog_series;
+  document.getElementById("catalog-episodes").textContent = data.catalog_episodes;
   document.getElementById("sprint-scope").innerHTML = data.sprint_scope.map((item) => `<div>☑ ${item}</div>`).join("");
   document.getElementById("deferred-scope").innerHTML = data.deferred_scope.map((item) => `<div>☐ ${item}</div>`).join("");
+}
+
+function formatDate(value) {
+  return value ? new Date(value).toLocaleString() : "Never";
+}
+
+function table(headers, rows) {
+  if (!rows.length) return '<p class="muted">No catalog records yet.</p>';
+  return `
+    <table>
+      <thead><tr>${headers.map((header) => `<th>${header}</th>`).join("")}</tr></thead>
+      <tbody>${rows.join("")}</tbody>
+    </table>
+  `;
+}
+
+function renderCatalogSummary() {
+  const summary = state.catalogSummary;
+  document.getElementById("cat-summary-channels").textContent = summary.channels;
+  document.getElementById("cat-summary-movies").textContent = summary.movies;
+  document.getElementById("cat-summary-series").textContent = summary.series;
+  document.getElementById("cat-summary-episodes").textContent = summary.episodes;
+  document.getElementById("cat-summary-sources").textContent = summary.sources;
+  document.getElementById("cat-summary-last").textContent = formatDate(summary.last_import_time);
+}
+
+function renderCatalog() {
+  renderCatalogSummary();
+  document.querySelectorAll("[data-catalog-tab]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.catalogTab === state.catalogTab);
+  });
+  const target = document.getElementById("catalog-table");
+  if (state.catalogTab === "overview") {
+    target.innerHTML = `
+      <div class="detail-grid">
+        <div><span>Channels</span><strong>${state.catalogSummary.channels}</strong></div>
+        <div><span>Movies</span><strong>${state.catalogSummary.movies}</strong></div>
+        <div><span>Series</span><strong>${state.catalogSummary.series}</strong></div>
+        <div><span>Episodes</span><strong>${state.catalogSummary.episodes}</strong></div>
+        <div><span>Sources</span><strong>${state.catalogSummary.sources}</strong></div>
+        <div><span>Last Import</span><strong>${formatDate(state.catalogSummary.last_import_time)}</strong></div>
+      </div>
+    `;
+    return;
+  }
+  if (state.catalogTab === "sources") {
+    const rows = state.catalogRows.map((source) => `
+      <tr>
+        <td>${source.media_type}</td>
+        <td><code>${source.catalog_internal_id}</code></td>
+        <td>${source.source_name}</td>
+        <td>${source.cuid || ""}</td>
+        <td class="url-cell">${source.source_url}</td>
+      </tr>
+    `);
+    target.innerHTML = table(["Type", "Internal ID", "Source", "CUID", "URL"], rows);
+    return;
+  }
+  const rows = state.catalogRows.map((item) => `
+    <tr>
+      <td><strong>${item.title}</strong><br><code>${item.internal_id}</code></td>
+      <td>${item.group_title || ""}</td>
+      <td>${item.tvg_id || ""}</td>
+      <td>${item.cuid || ""}</td>
+      <td>${item.show_name || ""}</td>
+      <td>${item.season_number || ""}</td>
+      <td>${item.episode_number || ""}</td>
+      <td>${item.confidence}</td>
+    </tr>
+  `);
+  target.innerHTML = table(["Title", "Group", "TVG ID", "CUID", "Show", "Season", "Episode", "Confidence"], rows);
 }
 
 function currentWizardStep() {
@@ -276,6 +357,17 @@ function renderFoundation() {
 async function loadDashboard() { state.dashboard = await api("/api/dashboard"); }
 async function loadWizard() { [state.wizardSteps, state.wizardState, state.settings] = await Promise.all([api("/api/wizard/steps"), api("/api/wizard/state"), api("/api/settings")]); }
 async function loadSettings() { [state.settings, state.categories] = await Promise.all([api("/api/settings"), api("/api/settings/categories")]); }
+async function loadCatalog() {
+  state.catalogSummary = await api("/api/catalog/summary");
+  const endpoints = {
+    live: "/api/catalog/live",
+    movies: "/api/catalog/movies",
+    series: "/api/catalog/series",
+    episodes: "/api/catalog/episodes",
+    sources: "/api/catalog/sources",
+  };
+  state.catalogRows = state.catalogTab === "overview" ? [] : await api(endpoints[state.catalogTab]);
+}
 async function loadJobs() { state.jobs = await api("/api/jobs"); }
 async function loadLogs() { state.logs = await api("/api/logs"); }
 async function loadSystem() { state.system = await api("/api/system"); }
@@ -286,6 +378,7 @@ async function refresh() {
     await loadDashboard();
     renderDashboard();
     if (state.view === "wizard") { await loadWizard(); renderWizard(); }
+    if (state.view === "catalog") { await loadCatalog(); renderCatalog(); }
     if (state.view === "settings") { await loadSettings(); renderSettings(); }
     if (state.view === "jobs") { await loadJobs(); renderJobs(); }
     if (state.view === "logs") { await loadLogs(); renderLogs(); }
@@ -299,6 +392,35 @@ async function refresh() {
 function bind() {
   document.querySelectorAll("nav button").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
   document.getElementById("refresh").addEventListener("click", refresh);
+  document.querySelectorAll("[data-catalog-tab]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.catalogTab = button.dataset.catalogTab;
+      await loadCatalog();
+      renderCatalog();
+    });
+  });
+  document.getElementById("import-catalog").addEventListener("click", async () => {
+    const form = document.getElementById("catalog-import-form");
+    const values = Object.fromEntries(new FormData(form).entries());
+    const paths = [values.live_path, values.movies_path, values.series_path].filter(Boolean);
+    const result = await api("/api/catalog/import", {
+      method: "POST",
+      body: JSON.stringify({ source_name: values.source_name || "Manual Import", paths }),
+    });
+    toast(`Catalog import queued: ${result.job_id}`);
+    state.catalogTab = "overview";
+    setView("jobs");
+  });
+  document.getElementById("clear-catalog-test-data").addEventListener("click", async () => {
+    await api("/api/catalog/clear-test-data", { method: "POST" });
+    toast("Catalog test data cleared");
+    await loadDashboard();
+    renderDashboard();
+    if (state.view === "catalog") {
+      await loadCatalog();
+      renderCatalog();
+    }
+  });
   document.getElementById("save-settings").addEventListener("click", async () => {
     const values = normalizeValues(document.getElementById("settings-form"));
     state.settings = await api("/api/settings", { method: "PUT", body: JSON.stringify(values) });
