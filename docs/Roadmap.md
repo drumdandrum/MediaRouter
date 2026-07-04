@@ -53,6 +53,7 @@ Deliverables:
 - Logs page with secret scrubbing.
 - README local run instructions and Sprint 1 acceptance checklist.
 - Docker Compose persistent data mount for settings, wizard state, and job history.
+- Version/About cleanup with app version `v0.2.1`, Git metadata, Docker detection, and container detection.
 
 Exit criteria:
 
@@ -61,6 +62,8 @@ Exit criteria:
 - Dashboard uses user-friendly labels.
 - Test job proves job state transitions before catalog jobs exist.
 - Settings, wizard completion state, and completed job history persist through Docker down/up.
+- Sidebar shows `v0.2.1`.
+- About/System shows version, environment, branch, commit, database, Docker, and container status.
 - No catalog, broker, STRM, HDHomeRun, IPTV parsing, or media integrations are implemented.
 
 ## Phase 2: Accounts

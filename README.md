@@ -28,6 +28,22 @@ uvicorn app.main:app --host 127.0.0.1 --port 8088
 docker compose up --build
 ```
 
+The Docker build/runtime metadata uses:
+
+```text
+MEDIA_ROUTER_APP_VERSION=v0.2.1
+MEDIA_ROUTER_GIT_BRANCH=main
+MEDIA_ROUTER_GIT_COMMIT=<short commit>
+```
+
+The compose defaults are suitable for the current foundation build. To force current Git metadata during a rebuild:
+
+```bash
+MEDIA_ROUTER_GIT_BRANCH="$(git branch --show-current)" \
+MEDIA_ROUTER_GIT_COMMIT="$(git rev-parse --short HEAD)" \
+docker compose up --build -d
+```
+
 Persistent foundation data is stored in:
 
 ```text
@@ -45,6 +61,7 @@ Settings, wizard state, and job history are written under this mounted path. The
 ## What Exists Now
 
 - Minimal FastAPI app.
+- App version `v0.2.1`.
 - Sprint 1.5 web console.
 - `/api/health` endpoint.
 - `/api/foundation` endpoint with module metadata.
@@ -87,6 +104,7 @@ Sprint 1.5 includes foundation polish only; catalog, broker, accounts, outputs, 
 ## Sprint 1 Acceptance Test
 
 - [ ] App starts locally on port `8088`.
+- [ ] Sidebar shows app version `v0.2.1`.
 - [ ] Dashboard shows Ready/Needs setup/Not configured labels, not raw status codes.
 - [ ] Wizard shows Welcome, Environment, Paths, Services, Review, Complete.
 - [ ] Wizard accepts manual placeholder values.
@@ -96,7 +114,7 @@ Sprint 1.5 includes foundation polish only; catalog, broker, accounts, outputs, 
 - [ ] Settings persist after restart.
 - [ ] Test job shows queued, running, and completed states.
 - [ ] Logs page formats sanitized log entries.
-- [ ] About page shows version, environment, Git, database, Docker, and container status.
+- [ ] About page shows version, environment, branch, commit, database, Docker, and container status.
 - [ ] No catalog, broker, STRM, HDHomeRun, IPTV parsing, or media integrations are present.
 
 ## Sprint 1.5 Persistence Acceptance Test
@@ -112,3 +130,4 @@ Sprint 1.5 includes foundation polish only; catalog, broker, accounts, outputs, 
 - [ ] Verify wizard completion state remains.
 - [ ] Verify completed job history remains.
 - [ ] Verify persistent files exist under `./data`.
+- [ ] Verify settings persistence still passes after version/About cleanup.

@@ -39,6 +39,6 @@ def index(request: Request) -> HTMLResponse:
         {
             "request": request,
             "app_name": settings.app_name,
-            "phase": "Sprint 1.5 Foundation Polish",
+            "app_version": APP_VERSION,
         },
     )

@@ -28,6 +28,9 @@ Foundation
 ☑ README run instructions  
 ☑ Sprint 1 acceptance checklist  
 ☑ Docker data persistence  
+☑ Sidebar version display  
+☑ About/System metadata cleanup  
+☑ Docker/container detection  
 
 ## Epic 2
 

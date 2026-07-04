@@ -1,1 +1,1 @@
-APP_VERSION = "0.1.5-sprint1.5"
+APP_VERSION = "v0.2.1"

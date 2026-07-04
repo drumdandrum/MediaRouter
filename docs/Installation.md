@@ -46,6 +46,22 @@ Build and run:
 docker compose up --build
 ```
 
+The app version is `v0.2.1`. Docker receives version and Git metadata through build/runtime environment values:
+
+```text
+MEDIA_ROUTER_APP_VERSION=v0.2.1
+MEDIA_ROUTER_GIT_BRANCH=main
+MEDIA_ROUTER_GIT_COMMIT=<short commit>
+```
+
+To rebuild with the current local Git metadata:
+
+```bash
+MEDIA_ROUTER_GIT_BRANCH="$(git branch --show-current)" \
+MEDIA_ROUTER_GIT_COMMIT="$(git rev-parse --short HEAD)" \
+docker compose up --build -d
+```
+
 The foundation compose file mounts persistent application data:
 
 ```yaml
