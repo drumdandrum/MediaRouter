@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Media Router Sprint 2</title>
+    <title>Media Router Sprint 3</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -20,6 +20,8 @@
           <button class="active" data-view="dashboard">Dashboard</button>
           <button data-view="wizard">Wizard</button>
           <button data-view="catalog">Catalog</button>
+          <button data-view="providers">Providers</button>
+          <button data-view="accounts">Accounts</button>
           <button data-view="settings">Settings</button>
           <button data-view="jobs">Jobs</button>
           <button data-view="logs">Logs</button>
@@ -56,9 +58,21 @@
             <article><span>Series</span><strong id="catalog-series">0</strong></article>
             <article><span>Episodes</span><strong id="catalog-episodes">0</strong></article>
           </div>
+          <div class="metric-grid compact">
+            <article><span>Providers</span><strong id="providers-count">0</strong></article>
+            <article><span>Accounts</span><strong id="accounts-count">0</strong></article>
+            <article><span>Healthy</span><strong id="healthy-accounts-count">0</strong></article>
+            <article><span>Problem</span><strong id="problem-accounts-count">0</strong></article>
+          </div>
+          <div class="metric-grid compact">
+            <article><span>Disabled Accounts</span><strong id="disabled-accounts-count">0</strong></article>
+            <article><span>Source Availability</span><strong id="availability-count">0</strong></article>
+            <article><span>Avg Sources / Item</span><strong id="average-sources-count">0</strong></article>
+            <article><span>Broker</span><strong>Deferred</strong></article>
+          </div>
           <div class="split">
             <section class="panel">
-              <h2>Sprint 2 Scope</h2>
+              <h2>Sprint 3 Scope</h2>
               <div id="sprint-scope" class="check-list"></div>
             </section>
             <section class="panel">
@@ -95,11 +109,20 @@
             </div>
             <form id="catalog-import-form" class="form-grid">
               <label>Source Name<input name="source_name" value="Sample Data" /></label>
-              <label>Live M3U Path<input name="live_path" value="sample_data/live.m3u" /></label>
-              <label>Movies M3U Path<input name="movies_path" value="sample_data/movies.m3u" /></label>
-              <label>Series M3U Path<input name="series_path" value="sample_data/series.m3u" /></label>
+              <label>Provider *<select name="provider_id" id="catalog-provider-select" required></select></label>
+              <label>Account / Connection *<select name="account_id" id="catalog-account-select" required></select></label>
+              <label>Playlist File / Path / URL *<input name="playlist" value="sample_data/live.m3u" required /></label>
+              <label>Media Type *<select name="media_type">
+                <option value="">Auto detect</option>
+                <option value="live">Live Channels</option>
+                <option value="movie">Movies</option>
+                <option value="series">Series Episodes</option>
+              </select></label>
             </form>
+            <p id="catalog-import-error" class="form-error" role="alert"></p>
+            <p class="muted helper-text">Use account-specific playlists here. The same catalog item imported from multiple accounts should become one catalog item with multiple source records.</p>
             <div class="button-row">
+              <button id="reset-catalog-import">Reset</button>
               <button id="import-catalog" class="primary">Import Playlists</button>
             </div>
           </section>
@@ -113,6 +136,60 @@
               <button data-catalog-tab="sources">Sources</button>
             </div>
             <div id="catalog-table" class="table-wrap"></div>
+          </section>
+        </section>
+
+        <section id="providers" class="view">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Providers</h2>
+              <button id="save-provider" class="primary">Add Provider</button>
+            </div>
+            <form id="provider-form" class="form-grid">
+              <label>Name<input name="friendly_name" value="Sample IPTV Provider" /></label>
+              <label>Type<select name="provider_type">
+                <option>IPTV</option>
+                <option>HDHomeRun</option>
+                <option>NextPVR</option>
+                <option>Local Files</option>
+                <option>Emby</option>
+                <option>Jellyfin</option>
+                <option>Other</option>
+              </select></label>
+              <label>Notes<input name="notes" value="" /></label>
+              <label>Enabled<select name="enabled"><option value="true">true</option><option value="false">false</option></select></label>
+            </form>
+          </section>
+          <section class="panel">
+            <div id="providers-list" class="table-wrap"></div>
+          </section>
+        </section>
+
+        <section id="accounts" class="view">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Accounts / Connections</h2>
+              <div class="button-row inline">
+                <button id="cancel-account-edit">New</button>
+                <button id="save-account" class="primary">Add Account</button>
+              </div>
+            </div>
+            <form id="account-form" class="form-grid">
+              <label>Provider *<select name="provider_id" id="account-provider-select" required></select></label>
+              <label>Name *<input name="friendly_name" value="Primary Connection" required /></label>
+              <label>Username<input name="username" value="" /></label>
+              <label>Password<input name="password" type="password" value="" placeholder="Blank unless updating" /></label>
+              <label>Base URL<input name="base_url" value="" /></label>
+              <label>Max Streams<input name="max_simultaneous_streams" type="number" value="1" /></label>
+              <label>Priority<select name="priority_group"><option>Preferred</option><option>Secondary</option><option>Emergency</option></select></label>
+              <label>Weight<input name="weight" type="number" value="100" /></label>
+              <label>Enabled<select name="enabled"><option value="true">true</option><option value="false">false</option></select></label>
+              <label>Notes<input name="notes" value="" /></label>
+            </form>
+            <p id="account-form-error" class="form-error" role="alert"></p>
+          </section>
+          <section class="panel">
+            <div id="accounts-list" class="table-wrap"></div>
           </section>
         </section>
 

@@ -1,14 +1,14 @@
 # API
 
-## Current Sprint 2 API
+## Current Sprint 3 API
 
-The current project exposes Sprint 2 catalog foundation endpoints. Broker, accounts, outputs, and media integrations are deliberately deferred.
+The current project exposes Sprint 3 provider/account availability endpoints. Broker routing, failover, playback, outputs, and media integrations are deliberately deferred.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/health` | Confirms the app process is ready. |
 | `GET` | `/api/foundation` | Returns project phase and module metadata. |
-| `GET` | `/api/dashboard` | Returns Sprint 1 dashboard summary. |
+| `GET` | `/api/dashboard` | Returns dashboard summary, including provider/account availability counts. |
 | `GET` | `/api/settings` | Reads JSON-backed foundation settings. |
 | `PUT` | `/api/settings` | Updates JSON-backed foundation settings. |
 | `GET` | `/api/wizard/steps` | Lists Sprint 1 wizard steps. |
@@ -22,13 +22,28 @@ The current project exposes Sprint 2 catalog foundation endpoints. Broker, accou
 | `POST` | `/api/logs` | Adds a sanitized log entry. |
 | `GET` | `/api/system` | Shows app version, environment, Git, database, and Docker/container status. |
 | `GET` | `/api/catalog/summary` | Returns catalog counts and last import time. |
-| `GET` | `/api/catalog/live` | Lists live channel catalog records. |
-| `GET` | `/api/catalog/movies` | Lists movie catalog records. |
-| `GET` | `/api/catalog/series` | Lists series catalog records. |
-| `GET` | `/api/catalog/episodes` | Lists episode catalog records. |
-| `GET` | `/api/catalog/sources` | Lists source mappings with provider credentials redacted from URLs. |
-| `POST` | `/api/catalog/import` | Queues a catalog import job for M3U file paths. |
+| `GET` | `/api/catalog/live?limit=100&offset=0` | Lists paginated live channel catalog records. |
+| `GET` | `/api/catalog/movies?limit=100&offset=0` | Lists paginated movie catalog records. |
+| `GET` | `/api/catalog/series?limit=100&offset=0` | Lists paginated series catalog records. |
+| `GET` | `/api/catalog/episodes?limit=100&offset=0` | Lists paginated episode catalog records. |
+| `GET` | `/api/catalog/sources?limit=100&offset=0` | Lists paginated source mappings with provider credentials redacted from URLs. |
+| `GET` | `/api/catalog/{id}/sources?limit=100&offset=0` | Lists paginated availability records for one catalog item. |
+| `POST` | `/api/catalog/import` | Queues a streaming M3U import for a playlist path/URL, optionally tied to provider/account. |
 | `POST` | `/api/catalog/clear-test-data` | Clears catalog test/import data for development. |
+| `GET` | `/api/providers` | Lists providers. |
+| `POST` | `/api/providers` | Creates a provider. |
+| `GET` | `/api/providers/{id}` | Reads one provider. |
+| `PUT` | `/api/providers/{id}` | Updates one provider. |
+| `DELETE` | `/api/providers/{id}` | Deletes one provider and its accounts. |
+| `GET` | `/api/accounts` | Lists accounts/connections with secret values hidden. |
+| `POST` | `/api/accounts` | Creates an account/connection; playlist paths/URLs belong to catalog import, not accounts. |
+| `GET` | `/api/accounts/{id}` | Reads one account/connection with secret values hidden. |
+| `PUT` | `/api/accounts/{id}` | Updates one account/connection; blank password leaves the stored secret unchanged and reads never return the secret. |
+| `DELETE` | `/api/accounts/{id}` | Deletes one account/connection. |
+| `POST` | `/api/accounts/{id}/test` | Runs a lightweight non-streaming connection test. |
+| `GET` | `/api/sources?limit=100&offset=0` | Lists paginated source availability records. |
+| `PUT` | `/api/sources/{id}` | Updates source availability flags/notes. |
+| `DELETE` | `/api/sources/{id}` | Deletes one source availability record. |
 
 Interactive OpenAPI docs are available at `/docs` while the server is running.
 
@@ -84,9 +99,15 @@ Deferred:
 - `GET /api/accounts/{id}`
 - `PUT /api/accounts/{id}`
 - `DELETE /api/accounts/{id}`
-- `POST /api/accounts/test`
-- `POST /api/accounts/{id}/disable`
-- `POST /api/accounts/{id}/enable`
+- `POST /api/accounts/{id}/test`
+
+### Providers
+
+- `GET /api/providers`
+- `POST /api/providers`
+- `GET /api/providers/{id}`
+- `PUT /api/providers/{id}`
+- `DELETE /api/providers/{id}`
 
 ### Catalog
 
@@ -96,8 +117,15 @@ Deferred:
 - `GET /api/catalog/series`
 - `GET /api/catalog/episodes`
 - `GET /api/catalog/sources`
+- `GET /api/catalog/{id}/sources`
 - `POST /api/catalog/import`
 - `POST /api/catalog/clear-test-data`
+
+### Source Availability
+
+- `GET /api/sources`
+- `PUT /api/sources/{id}`
+- `DELETE /api/sources/{id}`
 
 ### Broker
 
@@ -138,3 +166,19 @@ Feature APIs should use a consistent error shape:
 ```
 
 FastAPI validation errors may keep their standard shape unless a custom API envelope is adopted later.
+
+## Sprint 3 Import Notes
+
+Catalog import accepts local/container paths such as `/iptvboss/outputs/THREAD1.m3u`, sample paths such as `sample_data/live.m3u`, and HTTP/HTTPS playlist URLs. Accounts describe access/authentication; playlist path/URL association happens during Catalog Import.
+
+If the playlist field is blank, the API returns `400`. If a local/container path is not visible to the app process, the API returns `404` before creating an import job.
+
+Catalog import also validates provider/account pairing before creating a job. Missing provider, missing account, unsupported media type, or an account that belongs to another provider returns `400`; unreadable local files return `403`.
+
+### Catalog Import Manual UI Checklist
+
+1. Create a provider.
+2. Create an account under that provider.
+3. Select the provider on Catalog Import.
+4. Confirm the Account / Connection list filters to accounts for the selected provider.
+5. Submit an import and confirm the request includes `provider_id` and `account_id`.

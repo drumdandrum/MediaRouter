@@ -19,3 +19,4 @@ services:
       MEDIA_ROUTER_GIT_COMMIT: "${MEDIA_ROUTER_GIT_COMMIT:-fdc842f}"
     volumes:
       - ./data:/data
+      - /Users/Shared/IPTVBoss/output:/iptvboss/outputs:ro

@@ -9,6 +9,11 @@ const state = {
   catalogSummary: null,
   catalogRows: [],
   catalogTab: "overview",
+  providers: [],
+  accounts: [],
+  editingAccountId: null,
+  catalogImportProviderId: "",
+  catalogImportAccountId: "",
   jobs: [],
   logs: [],
   system: null,
@@ -18,6 +23,8 @@ const titles = {
   dashboard: "Dashboard",
   wizard: "Wizard",
   catalog: "Catalog",
+  providers: "Providers",
+  accounts: "Accounts",
   settings: "Settings",
   jobs: "Jobs",
   logs: "Logs",
@@ -59,6 +66,11 @@ const userStatus = {
   complete: "Completed",
   failed: "Failed",
   interrupted: "Interrupted",
+  Unknown: "Unknown",
+  Healthy: "Healthy",
+  Degraded: "Degraded",
+  Disabled: "Disabled",
+  Offline: "Offline",
 };
 
 async function api(path, options = {}) {
@@ -80,8 +92,14 @@ function toast(message) {
   setTimeout(() => node.classList.remove("show"), 2200);
 }
 
+function setFormError(id, message = "") {
+  const node = document.getElementById(id);
+  if (node) node.textContent = message;
+}
+
 function badge(label, status = "") {
-  return `<span class="status-badge ${status}">${label || userStatus[status] || status || "Not configured"}</span>`;
+  const css = String(status || label || "").toLowerCase().replaceAll(" ", "_");
+  return `<span class="status-badge ${css}">${label || userStatus[status] || status || "Not configured"}</span>`;
 }
 
 function setBadge(id, label, status) {
@@ -138,6 +156,13 @@ function renderDashboard() {
   document.getElementById("catalog-movies").textContent = data.catalog_movies;
   document.getElementById("catalog-series").textContent = data.catalog_series;
   document.getElementById("catalog-episodes").textContent = data.catalog_episodes;
+  document.getElementById("providers-count").textContent = data.providers_configured;
+  document.getElementById("accounts-count").textContent = data.accounts_configured;
+  document.getElementById("healthy-accounts-count").textContent = data.healthy_accounts;
+  document.getElementById("problem-accounts-count").textContent = data.problem_accounts;
+  document.getElementById("disabled-accounts-count").textContent = data.disabled_accounts;
+  document.getElementById("availability-count").textContent = data.source_availability_records;
+  document.getElementById("average-sources-count").textContent = data.average_sources_per_item;
   document.getElementById("sprint-scope").innerHTML = data.sprint_scope.map((item) => `<div>☑ ${item}</div>`).join("");
   document.getElementById("deferred-scope").innerHTML = data.deferred_scope.map((item) => `<div>☐ ${item}</div>`).join("");
 }
@@ -190,12 +215,16 @@ function renderCatalog() {
       <tr>
         <td>${source.media_type}</td>
         <td><code>${source.catalog_internal_id}</code></td>
-        <td>${source.source_name}</td>
-        <td>${source.cuid || ""}</td>
-        <td class="url-cell">${source.source_url}</td>
+        <td>${source.provider_name || "Manual"}</td>
+        <td>${source.account_name || "No account"}</td>
+        <td>${source.priority_group || ""}</td>
+        <td>${source.weight ?? ""}</td>
+        <td>${badge(source.account_health_status || "Unknown", source.account_health_status || "Unknown")}</td>
+        <td>${source.enabled ? "Enabled" : "Disabled"}</td>
+        <td class="url-cell">${source.location_ref}</td>
       </tr>
     `);
-    target.innerHTML = table(["Type", "Internal ID", "Source", "CUID", "URL"], rows);
+    target.innerHTML = `${table(["Type", "Internal ID", "Provider", "Account", "Priority", "Weight", "Health", "Enabled", "Reference"], rows)}<p class="muted helper-text">Showing up to 100 records. Use the API limit and offset parameters for deeper pages.</p>`;
     return;
   }
   const rows = state.catalogRows.map((item) => `
@@ -210,7 +239,190 @@ function renderCatalog() {
       <td>${item.confidence}</td>
     </tr>
   `);
-  target.innerHTML = table(["Title", "Group", "TVG ID", "CUID", "Show", "Season", "Episode", "Confidence"], rows);
+  target.innerHTML = `${table(["Title", "Group", "TVG ID", "CUID", "Show", "Season", "Episode", "Confidence"], rows)}<p class="muted helper-text">Showing up to 100 records. Use the API limit and offset parameters for deeper pages.</p>`;
+}
+
+function optionList(items, emptyLabel = "None", selectedValue = "") {
+  return `<option value="" ${selectedValue ? "" : "selected"}>${emptyLabel}</option>` + items.map((item) => `<option value="${item.id}" ${item.id === selectedValue ? "selected" : ""}>${item.friendly_name}</option>`).join("");
+}
+
+function syncCatalogImportSelection() {
+  const provider = state.providers.find((item) => item.id === state.catalogImportProviderId);
+  if (!provider) state.catalogImportProviderId = "";
+  const account = state.accounts.find((item) => item.id === state.catalogImportAccountId);
+  if (!account || account.provider_id !== state.catalogImportProviderId) state.catalogImportAccountId = "";
+}
+
+function renderProviderSelectors() {
+  const accountProvider = document.getElementById("account-provider-select");
+  const catalogProvider = document.getElementById("catalog-provider-select");
+  const catalogAccount = document.getElementById("catalog-account-select");
+  const accountProviderValue = accountProvider?.value || "";
+  const providerIds = new Set(state.providers.map((provider) => provider.id));
+  const selectedAccountProvider = providerIds.has(accountProviderValue) ? accountProviderValue : "";
+  syncCatalogImportSelection();
+
+  if (accountProvider) accountProvider.innerHTML = optionList(state.providers, "Select provider", selectedAccountProvider);
+  if (catalogProvider) catalogProvider.innerHTML = optionList(state.providers, "Select provider", state.catalogImportProviderId);
+  if (catalogAccount) {
+    const selectedProvider = state.catalogImportProviderId;
+    const accounts = selectedProvider ? state.accounts.filter((account) => account.provider_id === selectedProvider) : [];
+    catalogAccount.innerHTML = optionList(accounts, "Select account", state.catalogImportAccountId);
+  }
+}
+
+function renderProviders() {
+  renderProviderSelectors();
+  const rows = state.providers.map((provider) => `
+    <tr>
+      <td><strong>${provider.friendly_name}</strong><br><code>${provider.id}</code></td>
+      <td>${provider.provider_type}</td>
+      <td>${badge(provider.health_status, provider.health_status)}</td>
+      <td>${provider.enabled ? "Enabled" : "Disabled"}</td>
+      <td>${provider.notes || ""}</td>
+      <td>
+        <button data-provider-toggle="${provider.id}">${provider.enabled ? "Disable" : "Enable"}</button>
+        <button data-provider-delete="${provider.id}">Delete</button>
+      </td>
+    </tr>
+  `);
+  document.getElementById("providers-list").innerHTML = table(["Provider", "Type", "Health", "Enabled", "Notes", "Actions"], rows);
+  document.querySelectorAll("[data-provider-toggle]").forEach((button) => button.addEventListener("click", async () => {
+    const provider = state.providers.find((item) => item.id === button.dataset.providerToggle);
+    await api(`/api/providers/${provider.id}`, { method: "PUT", body: JSON.stringify({ enabled: !provider.enabled }) });
+    await loadProviders();
+    renderProviders();
+    await loadDashboard();
+    renderDashboard();
+  }));
+  document.querySelectorAll("[data-provider-delete]").forEach((button) => button.addEventListener("click", async () => {
+    await api(`/api/providers/${button.dataset.providerDelete}`, { method: "DELETE" });
+    await loadProviders();
+    renderProviders();
+    await loadDashboard();
+    renderDashboard();
+  }));
+}
+
+function renderAccounts() {
+  renderProviderSelectors();
+  const editingAccount = state.accounts.find((account) => account.id === state.editingAccountId);
+  if (state.editingAccountId && !editingAccount) clearAccountForm();
+  if (editingAccount) setAccountForm(editingAccount);
+  const rows = state.accounts.map((account) => `
+    <tr>
+      <td><strong>${account.friendly_name}</strong><br><code>${account.id}</code></td>
+      <td>${account.provider_name || account.provider_id}</td>
+      <td>${account.priority_group}</td>
+      <td>${account.weight}</td>
+      <td>${account.max_simultaneous_streams}</td>
+      <td>${badge(account.health_status, account.health_status)}</td>
+      <td>${account.enabled ? "Enabled" : "Disabled"}</td>
+      <td>${account.has_secret ? "Stored" : "Blank"}</td>
+      <td>
+        <button data-account-edit="${account.id}">Edit</button>
+        <button data-account-test="${account.id}">Test</button>
+        <button data-account-toggle="${account.id}">${account.enabled ? "Disable" : "Enable"}</button>
+        <button data-account-delete="${account.id}">Delete</button>
+      </td>
+    </tr>
+  `);
+  document.getElementById("accounts-list").innerHTML = table(["Account", "Provider", "Priority", "Weight", "Max Streams", "Health", "Enabled", "Secret", "Actions"], rows);
+  document.querySelectorAll("[data-account-edit]").forEach((button) => button.addEventListener("click", () => {
+    const account = state.accounts.find((item) => item.id === button.dataset.accountEdit);
+    setAccountForm(account);
+  }));
+  document.querySelectorAll("[data-account-test]").forEach((button) => button.addEventListener("click", async () => {
+    const result = await api(`/api/accounts/${button.dataset.accountTest}/test`, { method: "POST" });
+    toast(result.message);
+    await loadAccounts();
+    renderAccounts();
+    await loadDashboard();
+    renderDashboard();
+  }));
+  document.querySelectorAll("[data-account-toggle]").forEach((button) => button.addEventListener("click", async () => {
+    const account = state.accounts.find((item) => item.id === button.dataset.accountToggle);
+    await api(`/api/accounts/${account.id}`, { method: "PUT", body: JSON.stringify({ enabled: !account.enabled }) });
+    await loadAccounts();
+    renderAccounts();
+    await loadDashboard();
+    renderDashboard();
+  }));
+  document.querySelectorAll("[data-account-delete]").forEach((button) => button.addEventListener("click", async () => {
+    if (state.editingAccountId === button.dataset.accountDelete) clearAccountForm();
+    await api(`/api/accounts/${button.dataset.accountDelete}`, { method: "DELETE" });
+    await loadAccounts();
+    renderAccounts();
+    await loadDashboard();
+    renderDashboard();
+  }));
+}
+
+function setAccountForm(account) {
+  const form = document.getElementById("account-form");
+  if (!form || !account) return;
+  state.editingAccountId = account.id;
+  form.elements.provider_id.value = account.provider_id || "";
+  form.elements.friendly_name.value = account.friendly_name || "";
+  form.elements.username.value = account.username || "";
+  form.elements.password.value = "";
+  form.elements.base_url.value = account.base_url || "";
+  form.elements.max_simultaneous_streams.value = account.max_simultaneous_streams || 1;
+  form.elements.priority_group.value = account.priority_group || "Preferred";
+  form.elements.weight.value = account.weight ?? 100;
+  form.elements.enabled.value = String(Boolean(account.enabled));
+  form.elements.notes.value = account.notes || "";
+  document.getElementById("save-account").textContent = "Update Account";
+  document.getElementById("cancel-account-edit").textContent = "Cancel";
+  setFormError("account-form-error");
+}
+
+function clearAccountForm() {
+  const form = document.getElementById("account-form");
+  if (!form) return;
+  state.editingAccountId = null;
+  form.reset();
+  form.elements.provider_id.value = "";
+  form.elements.password.value = "";
+  document.getElementById("save-account").textContent = "Add Account";
+  document.getElementById("cancel-account-edit").textContent = "New";
+  setFormError("account-form-error");
+}
+
+function resetCatalogImportForm() {
+  const form = document.getElementById("catalog-import-form");
+  if (!form) return;
+  form.reset();
+  state.catalogImportProviderId = "";
+  state.catalogImportAccountId = "";
+  setFormError("catalog-import-error");
+  renderProviderSelectors();
+}
+
+function validateAccountValues(values) {
+  if (!values.provider_id) return "Choose a provider before saving the account.";
+  if (!values.friendly_name || !values.friendly_name.trim()) return "Account name is required.";
+  if (Number(values.max_simultaneous_streams || 0) < 1) return "Max streams must be at least 1.";
+  if (Number(values.weight || 0) < 0) return "Weight must be 0 or greater.";
+  return "";
+}
+
+function validateCatalogImportValues(values) {
+  if (!values.provider_id) return "Choose a provider before importing.";
+  if (!values.account_id) return "Choose an account/connection before importing.";
+  const account = state.accounts.find((item) => item.id === values.account_id);
+  if (!account) return "Selected account/connection was not found.";
+  if (account.provider_id !== values.provider_id) return "Selected account does not belong to the selected provider.";
+  if (!values.playlist || !values.playlist.trim()) return "Enter a playlist file, container path, or HTTP/HTTPS URL before importing.";
+  if (!["", "live", "movie", "series"].includes(values.media_type || "")) return "Choose a supported media type.";
+  return "";
+}
+
+function catalogImportValues(form) {
+  const values = Object.fromEntries(new FormData(form).entries());
+  values.provider_id = state.catalogImportProviderId;
+  values.account_id = state.catalogImportAccountId;
+  return values;
 }
 
 function currentWizardStep() {
@@ -357,8 +569,12 @@ function renderFoundation() {
 async function loadDashboard() { state.dashboard = await api("/api/dashboard"); }
 async function loadWizard() { [state.wizardSteps, state.wizardState, state.settings] = await Promise.all([api("/api/wizard/steps"), api("/api/wizard/state"), api("/api/settings")]); }
 async function loadSettings() { [state.settings, state.categories] = await Promise.all([api("/api/settings"), api("/api/settings/categories")]); }
+async function loadProviders() { state.providers = await api("/api/providers"); }
+async function loadAccounts() { state.accounts = await api("/api/accounts"); }
 async function loadCatalog() {
-  state.catalogSummary = await api("/api/catalog/summary");
+  [state.catalogSummary, state.providers, state.accounts] = await Promise.all([api("/api/catalog/summary"), api("/api/providers"), api("/api/accounts")]);
+  syncCatalogImportSelection();
+  renderProviderSelectors();
   const endpoints = {
     live: "/api/catalog/live",
     movies: "/api/catalog/movies",
@@ -366,7 +582,7 @@ async function loadCatalog() {
     episodes: "/api/catalog/episodes",
     sources: "/api/catalog/sources",
   };
-  state.catalogRows = state.catalogTab === "overview" ? [] : await api(endpoints[state.catalogTab]);
+  state.catalogRows = state.catalogTab === "overview" ? [] : await api(`${endpoints[state.catalogTab]}?limit=100&offset=0`);
 }
 async function loadJobs() { state.jobs = await api("/api/jobs"); }
 async function loadLogs() { state.logs = await api("/api/logs"); }
@@ -379,6 +595,8 @@ async function refresh() {
     renderDashboard();
     if (state.view === "wizard") { await loadWizard(); renderWizard(); }
     if (state.view === "catalog") { await loadCatalog(); renderCatalog(); }
+    if (state.view === "providers") { await loadProviders(); renderProviders(); }
+    if (state.view === "accounts") { await Promise.all([loadProviders(), loadAccounts()]); renderAccounts(); }
     if (state.view === "settings") { await loadSettings(); renderSettings(); }
     if (state.view === "jobs") { await loadJobs(); renderJobs(); }
     if (state.view === "logs") { await loadLogs(); renderLogs(); }
@@ -399,18 +617,76 @@ function bind() {
       renderCatalog();
     });
   });
+  document.getElementById("catalog-provider-select").addEventListener("change", (event) => {
+    state.catalogImportProviderId = event.target.value;
+    const selectedAccount = state.accounts.find((account) => account.id === state.catalogImportAccountId);
+    if (!selectedAccount || selectedAccount.provider_id !== state.catalogImportProviderId) state.catalogImportAccountId = "";
+    renderProviderSelectors();
+    setFormError("catalog-import-error");
+  });
+  document.getElementById("catalog-account-select").addEventListener("change", (event) => {
+    state.catalogImportAccountId = event.target.value;
+    setFormError("catalog-import-error");
+  });
   document.getElementById("import-catalog").addEventListener("click", async () => {
     const form = document.getElementById("catalog-import-form");
-    const values = Object.fromEntries(new FormData(form).entries());
-    const paths = [values.live_path, values.movies_path, values.series_path].filter(Boolean);
-    const result = await api("/api/catalog/import", {
-      method: "POST",
-      body: JSON.stringify({ source_name: values.source_name || "Manual Import", paths }),
-    });
-    toast(`Catalog import queued: ${result.job_id}`);
-    state.catalogTab = "overview";
-    setView("jobs");
+    const values = catalogImportValues(form);
+    const error = validateCatalogImportValues(values);
+    if (error) {
+      setFormError("catalog-import-error", error);
+      toast(error);
+      return;
+    }
+    try {
+      setFormError("catalog-import-error");
+      const result = await api("/api/catalog/import", {
+        method: "POST",
+        body: JSON.stringify({ source_name: values.source_name || "Manual Import", playlist: values.playlist || null, media_type: values.media_type || null, provider_id: values.provider_id || null, account_id: values.account_id || null }),
+      });
+      toast(`Catalog import queued: ${result.job_id}`);
+      state.catalogTab = "overview";
+      setView("jobs");
+    } catch (error) {
+      setFormError("catalog-import-error", error.message);
+      toast(error.message);
+    }
   });
+  document.getElementById("reset-catalog-import").addEventListener("click", resetCatalogImportForm);
+  document.getElementById("save-provider").addEventListener("click", async () => {
+    const values = Object.fromEntries(new FormData(document.getElementById("provider-form")).entries());
+    values.enabled = values.enabled === "true";
+    await api("/api/providers", { method: "POST", body: JSON.stringify(values) });
+    toast("Provider added");
+    setView("providers");
+  });
+  document.getElementById("save-account").addEventListener("click", async () => {
+    const values = Object.fromEntries(new FormData(document.getElementById("account-form")).entries());
+    values.enabled = values.enabled === "true";
+    values.max_simultaneous_streams = Number(values.max_simultaneous_streams || 1);
+    values.weight = Number(values.weight || 100);
+    const validationError = validateAccountValues(values);
+    if (validationError) {
+      setFormError("account-form-error", validationError);
+      toast(validationError);
+      return;
+    }
+    const editing = Boolean(state.editingAccountId);
+    const path = editing ? `/api/accounts/${state.editingAccountId}` : "/api/accounts";
+    try {
+      setFormError("account-form-error");
+      await api(path, { method: editing ? "PUT" : "POST", body: JSON.stringify(values) });
+      toast(editing ? "Account updated" : "Account added");
+      clearAccountForm();
+      await Promise.all([loadProviders(), loadAccounts()]);
+      renderAccounts();
+      await loadDashboard();
+      renderDashboard();
+    } catch (error) {
+      setFormError("account-form-error", error.message);
+      toast(error.message);
+    }
+  });
+  document.getElementById("cancel-account-edit").addEventListener("click", clearAccountForm);
   document.getElementById("clear-catalog-test-data").addEventListener("click", async () => {
     await api("/api/catalog/clear-test-data", { method: "POST" });
     toast("Catalog test data cleared");

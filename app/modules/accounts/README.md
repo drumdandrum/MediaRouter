@@ -1,10 +1,16 @@
 # Accounts Module
 
-Owns IPTV account configuration, health state, priority, stream limits, provider-specific request metadata, and secrets handling.
+Owns provider-agnostic account/connection configuration, health state, priority, stream limits, request metadata, and secrets handling.
 
-Initial contracts to design before implementation:
+Sprint 3 responsibilities:
 
-- Account create/update/read models with redacted reads.
-- Credential storage strategy.
-- Provider connection test interface.
-- Health scoring inputs consumed by the broker.
+- Provider records for IPTV, HDHomeRun, NextPVR, Local Files, Emby, Jellyfin, and Other.
+- Account/connection create/update/read models with redacted reads.
+- Lightweight non-streaming connection tests.
+- Health and priority metadata consumed by the future broker.
+
+Deferred:
+
+- Broker routing and failover.
+- Stream slot consumption.
+- Encrypted local secret storage.

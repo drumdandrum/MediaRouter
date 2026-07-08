@@ -16,6 +16,7 @@ class Job:
     status: str
     progress: int
     message: str
+    result: dict | None
     created_at: datetime
     updated_at: datetime
 
@@ -38,7 +39,7 @@ def _persist() -> None:
     path = _jobs_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     jobs = [_serialize(job) for job in sorted(JOBS.values(), key=lambda item: item.created_at, reverse=True)]
-    path.write_text(json.dumps(jobs, indent=2) + "\n")
+    path.write_text(json.dumps(jobs, indent=2, default=str) + "\n")
 
 
 def _load() -> None:
@@ -59,6 +60,7 @@ def _load() -> None:
             status=status,
             progress=int(row.get("progress", 0)),
             message=row.get("message", "Restored from history"),
+            result=row.get("result"),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
@@ -81,7 +83,7 @@ def get_job(job_id: str) -> JobRead | None:
     return _read(job) if job else None
 
 
-def update_job(job_id: str, *, status: str | None = None, progress: int | None = None, message: str | None = None) -> JobRead | None:
+def update_job(job_id: str, *, status: str | None = None, progress: int | None = None, message: str | None = None, result: dict | None = None) -> JobRead | None:
     job = JOBS.get(job_id)
     if job is None:
         return None
@@ -91,6 +93,8 @@ def update_job(job_id: str, *, status: str | None = None, progress: int | None =
         job.progress = progress
     if message is not None:
         job.message = message
+    if result is not None:
+        job.result = result
     job.updated_at = datetime.utcnow()
     _persist()
     return _read(job)
@@ -104,6 +108,7 @@ def create_job(kind: str) -> JobRead:
         status="queued",
         progress=0,
         message="Queued",
+        result=None,
         created_at=now,
         updated_at=now,
     )

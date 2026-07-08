@@ -23,5 +23,12 @@ class DashboardStatus(BaseModel):
     catalog_series: int
     catalog_episodes: int
     catalog_sources: int
+    providers_configured: int
+    accounts_configured: int
+    healthy_accounts: int
+    disabled_accounts: int
+    problem_accounts: int
+    source_availability_records: int
+    average_sources_per_item: float
     sprint_scope: list[str]
     deferred_scope: list[str]

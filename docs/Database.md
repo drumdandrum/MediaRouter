@@ -2,7 +2,7 @@
 
 ## Current Status
 
-Sprint 2 introduces the first SQLite-backed catalog schema while preserving the Sprint 1.5 JSON-backed foundation state.
+Sprint 3 extends the SQLite catalog schema with provider, account/connection, and source availability records while preserving the Sprint 1.5 JSON-backed foundation state.
 
 Docker Compose mounts:
 
@@ -23,7 +23,7 @@ Current persisted files:
 - `/data/jobs.json`
 - `/data/media_router.db`
 
-The JSON files remain the foundation settings store. `media_router.db` stores catalog identity, source mappings, and import history.
+The JSON files remain the foundation settings store. `media_router.db` stores catalog identity, providers, accounts/connections, source availability, legacy source mappings, and import history.
 
 SQLite is the preferred first database because Media Router is initially a single-server home application. The schema should still be designed cleanly enough to migrate to another relational database later.
 
@@ -68,25 +68,47 @@ Important fields:
 - `purpose`
 - `exists_last_checked`
 
-### accounts
+### providers
 
-Stores IPTV provider account metadata.
+Stores provider/origin records.
 
 Important fields:
 
 - `id`
-- `provider_name`
-- `server_url`
-- `username`
-- `password_secret_ref`
-- `maximum_streams`
-- `priority`
+- `friendly_name`
+- `provider_type`
+- `notes`
 - `enabled`
-- `user_agent`
-- `headers_json`
-- `timeout_seconds`
 - `health_status`
-- `failure_count`
+- `created_at`
+- `updated_at`
+
+Provider types are generic: IPTV, HDHomeRun, NextPVR, Local Files, Emby, Jellyfin, and Other.
+
+### accounts
+
+Stores provider account/connection metadata.
+
+Important fields:
+
+- `id`
+- `provider_id`
+- `friendly_name`
+- `username`
+- `password_secret`
+- `base_url`
+- `max_simultaneous_streams`
+- `priority_group`
+- `weight`
+- `enabled`
+- `health_status`
+- `last_success`
+- `last_failure`
+- `notes`
+- `created_at`
+- `updated_at`
+
+Sprint 3 keeps password/secret reads redacted. Local encryption is deferred and tracked as a hardening decision. Existing `playlist_url` columns from early Sprint 3 builds are deprecated and ignored; playlists are associated through catalog imports.
 
 ### catalog_items
 
@@ -136,6 +158,31 @@ Important fields:
 Multiple source rows may point to the same catalog item. This is how account failover and source balancing should be modeled.
 
 Sprint 2 stores source mappings separately from catalog identity records. Broker/account failover is not implemented. Source URLs are stored for future routing, but API/UI read models redact credential path segments.
+
+### source_availability
+
+Connects catalog identity to provider/account availability.
+
+Important fields:
+
+- `id`
+- `catalog_internal_id`
+- `provider_id`
+- `account_id`
+- `external_id`
+- `location_ref`
+- `media_type`
+- `enabled`
+- `last_seen_at`
+- `metadata_confidence`
+- `notes`
+- `raw_extinf`
+- `created_at`
+- `updated_at`
+
+This table answers "where is this catalog item available?" only. The Broker will later decide which source to use.
+
+Large playlist imports stream M3U input line by line and batch commits periodically to avoid loading entire playlists into memory.
 
 ### active_streams
 
@@ -208,10 +255,10 @@ Messages and metadata must be scrubbed before insert.
 
 ## Migration Plan
 
-1. Add migration tooling before Sprint 3 schema expansion.
-2. Formalize the Sprint 2 catalog tables as migration `0001`.
+1. Add migration tooling before Sprint 4 schema expansion.
+2. Formalize the Sprint 2 and Sprint 3 bootstrap tables as migration `0001`.
 3. Create settings and path mapping tables if JSON state moves into SQLite.
-4. Add accounts and secret reference model.
+4. Add encrypted secret storage or secret-provider integration.
 5. Add stream reservations.
 6. Add output plugin state.
 7. Add events/logging.

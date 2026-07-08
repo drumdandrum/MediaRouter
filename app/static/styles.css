@@ -57,6 +57,8 @@ h3 { font-size: 15px; }
 }
 .metric-grid article { padding: 16px; min-width: 0; }
 .metric-grid span, .muted, .muted-list { color: var(--muted); }
+.helper-text { margin-top: 10px; line-height: 1.45; }
+.form-error { min-height: 20px; margin-top: 10px; color: var(--error); font-weight: 700; }
 .metric-grid strong { display: block; margin-top: 7px; font-size: 24px; overflow-wrap: anywhere; }
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .panel { padding: 18px; margin-bottom: 18px; }
@@ -78,10 +80,10 @@ h3 { font-size: 15px; }
   font-size: 12px;
   font-weight: 800;
 }
-.status-badge.ready, .status-badge.complete { background: #e6f5ee; color: var(--ready); }
-.status-badge.needs_setup, .status-badge.running, .status-badge.queued { background: #fff2dd; color: var(--needs); }
-.status-badge.not_configured { background: #eef2f4; color: var(--missing); }
-.status-badge.error { background: #fbe7e7; color: var(--error); }
+.status-badge.ready, .status-badge.complete, .status-badge.healthy { background: #e6f5ee; color: var(--ready); }
+.status-badge.needs_setup, .status-badge.running, .status-badge.queued, .status-badge.unknown, .status-badge.degraded, .status-badge.playlist_failed { background: #fff2dd; color: var(--needs); }
+.status-badge.not_configured, .status-badge.disabled { background: #eef2f4; color: var(--missing); }
+.status-badge.error, .status-badge.offline, .status-badge.authentication_failed { background: #fbe7e7; color: var(--error); }
 
 .wizard-stepper {
   display: grid;
@@ -124,6 +126,7 @@ legend { padding: 0 6px; font-weight: 800; color: var(--accent-strong); }
 label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
 input, select { min-height: 40px; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: white; color: var(--ink); min-width: 0; }
 .button-row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+.button-row.inline { margin-top: 0; }
 
 .job { padding: 14px; display: grid; grid-template-columns: minmax(0, 1fr) 180px auto; gap: 14px; align-items: center; }
 .progress { height: 10px; border-radius: 999px; background: #e6eaee; overflow: hidden; }

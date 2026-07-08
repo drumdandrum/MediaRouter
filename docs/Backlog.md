@@ -51,9 +51,30 @@ Catalog
 
 ## Epic 3
 
-Broker
+Provider And Availability
 
 ### Sprint 3
+
+☑ Provider CRUD  
+☑ Provider types  
+☑ Account CRUD  
+☑ Redacted account reads  
+☑ Priority groups  
+☑ Account weights  
+☑ Lightweight connection test  
+☑ Source availability records  
+☑ Catalog import provider/account assignment  
+☑ Dashboard availability summary  
+☑ Account playlist URL removed  
+☑ Streaming M3U import  
+☑ Catalog/source pagination  
+☐ Secret encryption  
+
+## Epic 4
+
+Broker
+
+### Sprint 4
 
 ☐ Active Streams  
 ☐ Failover  
@@ -62,21 +83,6 @@ Broker
 ☐ Stream reservation expiry  
 ☐ Capacity tracking  
 ☐ Broker URL builder  
-
-## Epic 4
-
-Accounts
-
-### Sprint 4
-
-☐ Account CRUD  
-☐ Credential storage  
-☐ Redacted account reads  
-☐ Provider connection test  
-☐ Account priority  
-☐ Maximum stream limits  
-☐ Health status  
-☐ Headers and User-Agent  
 
 ## Epic 5
 

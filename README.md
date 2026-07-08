@@ -1,6 +1,6 @@
 # Media Router
 
-Media Router is currently a foundation and catalog engine for a future Dockerized home media orchestration platform. The project intentionally does not implement IPTV brokering, STRM rewriting, or DVR integration yet.
+Media Router is currently a foundation, catalog engine, and provider/account availability model for a future Dockerized home media orchestration platform. The project intentionally does not implement brokering, stream playback, STRM rewriting, or DVR integration yet.
 
 The goal of this phase is to lock down module ownership, boundaries, and delivery order before building features.
 
@@ -62,15 +62,18 @@ Settings, wizard state, and job history are written under this mounted path. The
 
 - Minimal FastAPI app.
 - App version `v0.2.1`.
-- Sprint 2 web console.
+- Sprint 3 web console.
 - `/api/health` endpoint.
 - `/api/foundation` endpoint with module metadata.
 - Dashboard, wizard, settings, and jobs APIs.
 - Catalog summary/list/import APIs.
+- Provider and account/connection APIs.
+- Source availability APIs.
+- Paginated catalog/source APIs for large playlists.
 - About/System and logs APIs.
 - JSON-backed settings and wizard state.
 - Persistent JSON-backed job history.
-- SQLite-backed catalog identity and source mapping database under `./data`.
+- SQLite-backed catalog identity, provider/account, and source availability database under `./data`.
 - Sample M3U playlists under `sample_data/`.
 - Domain-level types and contracts.
 - Module folders with README ownership notes.
@@ -92,16 +95,19 @@ Settings, wizard state, and job history are written under this mounted path. The
 
 ## What Is Deliberately Not Implemented Yet
 
-- IPTV account CRUD.
 - Broker routing.
 - STRM import or generation.
 - IPTV Boss watching.
 - HDHomeRun compatibility.
 - Emby/Jellyfin/NextPVR/Channels adapters.
-- Secrets storage.
+- Encrypted secrets storage.
+- Real stream playback.
+- Account failover.
 - Production dashboard UI.
 
-Sprint 2 includes the catalog foundation only; broker, accounts, outputs, STRM, streaming, and integrations are still deferred. Those should be added incrementally after the architecture decisions in `docs/Architecture.md` and `docs/Roadmap.md` are accepted.
+Sprint 3 includes provider/account availability only. Providers and accounts describe where catalog items are available; the Broker later chooses which source to use. Broker routing, failover, outputs, STRM, streaming, and integrations are still deferred.
+
+Secrets note: Sprint 3 stores account secrets locally in SQLite and never returns them through normal API reads or displays them in the UI. Encryption is a future hardening task before production-style secret handling.
 
 ## Sprint 1 Acceptance Test
 
@@ -157,3 +163,37 @@ Sprint 2 includes the catalog foundation only; broker, accounts, outputs, STRM, 
 - [ ] Clear test data from the Catalog page or `POST /api/catalog/clear-test-data`.
 - [ ] Re-import successfully.
 - [ ] Confirm no broker, STRM, HDHomeRun, IPTV parsing beyond M3U metadata import, or media integrations are present.
+
+## Sprint 3 Provider And Availability Acceptance Test
+
+- [ ] Start Docker with `docker compose up -d`.
+- [ ] Create two Providers.
+- [ ] Add multiple Accounts / Connections under each Provider.
+- [ ] Edit one Account / Connection and verify it updates in place without exposing the stored password.
+- [ ] Verify the Account form does not require or own a playlist URL.
+- [ ] Verify Account create/edit shows validation errors for missing provider or account name.
+- [ ] Import using a playlist path/URL plus Provider and Account selection.
+- [ ] Verify Catalog Import shows validation errors for missing provider, missing account, missing playlist, invalid local path, unreadable file, and unsupported media type.
+- [ ] Verify failed imports do not change provider/account records and do not require recreating accounts.
+- [ ] Verify Reset/New clears forms and exits edit mode.
+- [ ] Import `sample_data/live.m3u` and verify it imports more than 0 entries.
+- [ ] Import `/iptvboss/outputs/THREAD1.m3u` when that container path exists and verify it imports more than 0 entries.
+- [ ] Verify a large playlist import does not exhaust memory.
+- [ ] Verify Catalog tables remain responsive after a massive import.
+- [ ] Verify catalog and source API endpoints return paginated results.
+- [ ] Import `sample_data/live.m3u` under Account 1.
+- [ ] Import the same live playlist under Account 2.
+- [ ] Verify catalog item count does not double.
+- [ ] Verify source availability count increases.
+- [ ] Open Catalog > Sources and verify one catalog item can show multiple sources.
+- [ ] Disable one account.
+- [ ] Verify the catalog item remains while account/source status changes.
+- [ ] Run `docker compose down`.
+- [ ] Run `docker compose up -d`.
+- [ ] Verify providers, accounts, and sources persist.
+- [ ] Re-import the same playlist under the same account.
+- [ ] Verify source availability records update, not duplicate.
+- [ ] Verify importing a matched playlist under another account adds source records, not duplicate catalog items.
+- [ ] Run a connection test from Accounts.
+- [ ] Verify health status updates.
+- [ ] Confirm no stream playback, broker routing, failover, STRM generation, HDHomeRun output, or integrations exist yet.

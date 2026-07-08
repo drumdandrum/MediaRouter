@@ -37,10 +37,12 @@ See `docs/adr/0001-foundation-first.md`.
 | SQLite catalog foundation | Accepted | Sprint 2 stores catalog identity and source mappings in `/data/media_router.db`. |
 | Source mappings separate from identity | Accepted | Provider URLs live in `catalog_sources`, not as catalog identity. |
 | Redacted source read models | Accepted | Sprint 2 stores source URLs for future routing but redacts credential path segments in API/UI reads. |
+| Provider-agnostic availability | Accepted | Sprint 3 models providers and accounts separately from catalog identity. |
+| Broker deferred | Accepted | Providers/accounts describe availability; a later Broker chooses sources for playback. |
+| Local secret storage first | Accepted | Sprint 3 stores secrets locally and redacts reads/logs; encryption is deferred to hardening. |
 
 ## Open Decisions
 
-- Secret storage strategy.
 - Migration tool choice.
 - Whether the web UI needs authentication on the local network.
 - Whether import jobs should be fully persisted.

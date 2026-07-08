@@ -15,8 +15,9 @@ MODULES = [
     ),
     ModuleDescriptor(
         name="accounts",
-        label="IPTV Accounts",
-        responsibility="Provider credentials, stream limits, health, and priority metadata.",
+        label="Providers And Accounts",
+        responsibility="Provider-agnostic origins, connection credentials, availability, limits, health, and priority metadata.",
+        status=ServiceStatus.READY,
     ),
     ModuleDescriptor(
         name="catalog",
@@ -97,8 +98,8 @@ def health() -> dict[str, str]:
 def foundation() -> dict:
     return {
         "project": "Media Router",
-        "phase": "sprint_2_catalog_engine",
-        "implementation_scope": "catalog foundation only: M3U import, permanent IDs, source mappings, and catalog UI",
+        "phase": "sprint_3_provider_account_availability",
+        "implementation_scope": "provider/account availability only: no broker routing, playback, failover, or generated outputs",
         "principles": [principle.__dict__ for principle in PRINCIPLES],
         "modules": [module.__dict__ for module in MODULES],
     }

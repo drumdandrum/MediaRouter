@@ -1,14 +1,15 @@
 from app.schemas.dashboard import DashboardStatus
-from app.services.catalog import get_summary
+from app.services.catalog import get_summary, source_availability_summary
 from app.services.jobs import job_counts
 from app.services.logs import log_count
+from app.services.providers import provider_account_summary
 from app.services.settings import get_app_settings
 from app.services.system import get_system_info
 from app.services.wizard import get_wizard_state, get_wizard_steps
 
 
-SPRINT_SCOPE = ["Foundation", "Wizard", "Settings", "Dashboard", "Job System", "Logs", "About/System", "Catalog Engine"]
-DEFERRED_SCOPE = ["Broker", "Accounts", "Outputs", "Integrations"]
+SPRINT_SCOPE = ["Foundation", "Wizard", "Settings", "Dashboard", "Job System", "Logs", "About/System", "Catalog Engine", "Providers", "Accounts", "Source Availability"]
+DEFERRED_SCOPE = ["Broker", "Outputs", "Integrations", "Playback", "Failover"]
 
 
 def get_dashboard_status() -> DashboardStatus:
@@ -18,10 +19,12 @@ def get_dashboard_status() -> DashboardStatus:
     total_jobs, running_jobs = job_counts()
     system = get_system_info()
     catalog = get_summary()
+    providers = provider_account_summary()
+    availability = source_availability_summary()
     services_configured = any([settings.emby_url, settings.jellyfin_url, settings.nextpvr_url, settings.iptv_boss_export_path])
     return DashboardStatus(
         app_name=settings.app_name,
-        phase="Sprint 2",
+        phase="Sprint 3",
         health="ready",
         health_label="Ready",
         setup_status="ready" if wizard.setup_complete else "needs_setup",
@@ -41,6 +44,13 @@ def get_dashboard_status() -> DashboardStatus:
         catalog_series=catalog.series,
         catalog_episodes=catalog.episodes,
         catalog_sources=catalog.sources,
+        providers_configured=providers["providers"],
+        accounts_configured=providers["accounts"],
+        healthy_accounts=providers["healthy_accounts"],
+        disabled_accounts=providers["disabled_accounts"],
+        problem_accounts=providers["problem_accounts"],
+        source_availability_records=availability["source_availability"],
+        average_sources_per_item=availability["average_sources_per_item"],
         sprint_scope=SPRINT_SCOPE,
         deferred_scope=DEFERRED_SCOPE,
     )

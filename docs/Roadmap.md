@@ -64,8 +64,6 @@ Exit criteria:
 
 ## Phase 2: Catalog Engine
 
-Current phase.
-
 Deliverables:
 
 - SQLite-backed catalog database under `/data`.
@@ -85,20 +83,34 @@ Exit criteria:
 - Catalog test data can be cleared and re-imported.
 - No broker, STRM, HDHomeRun, IPTV parsing beyond M3U metadata import, or integrations are implemented.
 
-## Phase 3: Accounts
+## Phase 3: Provider, Account, And Source Availability
+
+Current phase.
 
 Deliverables:
 
-- IPTV account create/read/update/delete.
+- Provider create/read/update/delete.
+- Provider-agnostic provider types.
+- Account/connection create/read/update/delete.
 - Redacted account read models.
-- Credential storage strategy.
+- Local secret field with future encryption task.
 - Provider connection test interface.
 - Account health metadata.
+- Source availability records that connect catalog items to provider/accounts.
+- Catalog import assignment to provider/account.
+- Streaming M3U import with batched writes.
+- Paginated catalog/source APIs and bounded UI tables.
+- Dashboard provider/account/source availability summary.
 
 Exit criteria:
 
-- Accounts can be configured through the UI.
+- Providers and accounts can be configured through the UI.
 - Credentials are not exposed in logs or reads.
+- Importing the same playlist under two accounts keeps one catalog identity and creates multiple availability records.
+- Re-importing the same playlist under the same account updates sources instead of duplicating them.
+- Accounts do not own playlist URLs; Catalog Import associates playlist paths/URLs to provider/accounts.
+- Docker restart preserves providers, accounts, and source availability.
+- No broker routing, failover, stream playback, STRM generation, HDHomeRun output, or integrations are implemented.
 
 ## Phase 4: Broker
 

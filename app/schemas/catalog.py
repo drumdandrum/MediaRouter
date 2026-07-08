@@ -43,9 +43,41 @@ class CatalogSource(BaseModel):
     last_seen_at: datetime
 
 
+class SourceAvailability(BaseModel):
+    id: int
+    catalog_internal_id: str
+    catalog_title: str | None = None
+    provider_id: str | None = None
+    provider_name: str | None = None
+    provider_type: str | None = None
+    account_id: str | None = None
+    account_name: str | None = None
+    priority_group: str | None = None
+    weight: int | None = None
+    account_enabled: bool | None = None
+    account_health_status: str | None = None
+    external_id: str | None = None
+    location_ref: str
+    media_type: str
+    enabled: bool
+    last_seen_at: datetime
+    metadata_confidence: str
+    notes: str
+
+
+class SourceAvailabilityUpdate(BaseModel):
+    enabled: bool | None = None
+    metadata_confidence: str | None = None
+    notes: str | None = None
+
+
 class CatalogImportRequest(BaseModel):
     paths: list[str] = Field(default_factory=list)
+    playlist: str | None = None
     source_name: str = "Manual Import"
+    provider_id: str | None = None
+    account_id: str | None = None
+    media_type: str | None = None
 
 
 class CatalogImportAccepted(BaseModel):
