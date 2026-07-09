@@ -194,6 +194,15 @@ def list_reservations() -> list[BrokerReservation]:
     return _reservation_query()
 
 
+def get_raw_reservation_location_ref(reservation_id: str) -> str | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT location_ref FROM broker_reservations WHERE reservation_id = ?",
+            (reservation_id,),
+        ).fetchone()
+    return row["location_ref"] if row else None
+
+
 def _source_rows(conn: sqlite3.Connection, catalog_item_id: str, media_type: str | None) -> list[sqlite3.Row]:
     media_type = _normalize_media_type(media_type)
     where_media = "AND source_availability.media_type = ?" if media_type else ""

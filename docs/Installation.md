@@ -98,9 +98,11 @@ Expected future environment variables:
 
 ```text
 MEDIA_ROUTER_APP_PORT=8088
-MEDIA_ROUTER_PUBLIC_BASE_URL=http://media-router:8088
+MEDIA_ROUTER_PUBLIC_BASE_URL=http://localhost:8088
 MEDIA_ROUTER_DATABASE_URL=sqlite:////data/media-router.db
 ```
+
+For Sprint 5 runtime URL previews, the preferred user-facing setting is Settings > Runtime > Runtime Public Base URL. Set it to a browser/client-visible address such as `http://localhost:8088` for local testing. If that field is blank, Media Router uses `MEDIA_ROUTER_PUBLIC_BASE_URL` when it is not the Docker-internal `media-router` hostname, then falls back to the current request host/scheme.
 
 ## Verification
 

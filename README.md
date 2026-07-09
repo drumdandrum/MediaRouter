@@ -1,6 +1,6 @@
 # Media Router
 
-Media Router is currently a foundation, catalog engine, provider/account availability model, and Sprint 4 broker decision engine for a future Dockerized home media orchestration platform. The project intentionally does not implement stream playback, proxy streaming, transcoding, STRM rewriting, HDHomeRun output, or DVR/media-server integration yet.
+Media Router is currently a foundation, catalog engine, provider/account availability model, Sprint 4 broker decision engine, and Sprint 5 source resolution runtime for a future Dockerized home media orchestration platform. The project intentionally does not implement stream playback, proxy streaming, transcoding, STRM rewriting, HDHomeRun output, or DVR/media-server integration yet.
 
 The goal of this phase is to lock down module ownership, boundaries, and delivery order before building features.
 
@@ -62,7 +62,7 @@ Settings, wizard state, and job history are written under this mounted path. The
 
 - Minimal FastAPI app.
 - App version `v0.2.1`.
-- Sprint 4 web console.
+- Sprint 5 web console.
 - `/api/health` endpoint.
 - `/api/foundation` endpoint with module metadata.
 - Dashboard, wizard, settings, and jobs APIs.
@@ -71,6 +71,8 @@ Settings, wizard state, and job history are written under this mounted path. The
 - Source availability APIs.
 - Broker decision, reservation, release, and status APIs.
 - Broker UI for account usage, reservation status, source decision testing, and evaluated candidate explanations.
+- Stable runtime resolve URLs at `/r/live/{id}`, `/r/movie/{id}`, and `/r/episode/{id}`.
+- Runtime preview API and Catalog/Broker UI runtime URL previews.
 - Paginated catalog/source APIs for large playlists.
 - About/System and logs APIs.
 - JSON-backed settings and wizard state.
@@ -111,6 +113,16 @@ Settings, wizard state, and job history are written under this mounted path. The
 Sprint 4 includes a decision-only Broker. It chooses the best source for a catalog item and creates a temporary account reservation. It does not play, proxy, transcode, or generate streams. Outputs, STRM, HDHomeRun, and media-server integrations are still deferred.
 
 Sprint 4.1 polishes Broker diagnostics. Resolve results now show the selected account, provider, priority, weight, usage, TTL, selection reason, and every evaluated candidate with a selected/skipped reason.
+
+Sprint 5 adds stable Media Router runtime URLs. Clients call Media Router URLs, Media Router asks the Broker for the current best source, creates a reservation, and returns an HTTP `302` redirect to the selected source. Debug mode (`?debug=true`) returns structured JSON with the catalog item, selected source/account/provider, reservation, and Broker explanation. Sprint 5 does not generate STRM files, emulate HDHomeRun, integrate with media servers, proxy streams, transcode, or play streams.
+
+Set Settings > Runtime > Runtime Public Base URL to the browser/client-visible address for runtime previews. For local testing, use:
+
+```text
+http://localhost:8088
+```
+
+If Runtime Public Base URL is blank, previews use `MEDIA_ROUTER_PUBLIC_BASE_URL` when it is not the Docker-internal `media-router` hostname, then fall back to the current request host/scheme.
 
 Secrets note: Sprint 3 stores account secrets locally in SQLite and never returns them through normal API reads or displays them in the UI. Encryption is a future hardening task before production-style secret handling.
 
@@ -226,3 +238,16 @@ Secrets note: Sprint 3 stores account secrets locally in SQLite and never return
 - [ ] Release one reservation and verify account availability updates.
 - [ ] Use Release All Active and verify active reservations clear.
 - [ ] Use Expire Now and verify status cards refresh immediately.
+
+## Sprint 5 Source Resolution Runtime Acceptance Test
+
+- [ ] Pick a movie catalog item with source availability on Account A and Account B.
+- [ ] Call `/r/movie/{id}?debug=true` and verify the highest-weight available account is selected.
+- [ ] Call the same debug URL again before reservation expiry and verify the next available account is selected.
+- [ ] Call it a third time and verify a clear `all_at_capacity` error is returned.
+- [ ] Release or expire reservations and verify runtime resolve works again.
+- [ ] Call `/r/movie/{id}` without debug and verify it returns HTTP `302`.
+- [ ] Confirm debug mode returns JSON and does not redirect.
+- [ ] Confirm Catalog and Broker UI pages show stable Media Router runtime URLs.
+- [ ] Set Runtime Public Base URL to `http://localhost:8088` and confirm Catalog/Broker previews use it.
+- [ ] Confirm no STRM files are generated in Sprint 5.

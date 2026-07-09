@@ -10,6 +10,7 @@ from app.api.foundation import router as foundation_router
 from app.api.jobs import router as jobs_router
 from app.api.logs import router as logs_router
 from app.api.providers import router as providers_router
+from app.api.runtime import router as runtime_router
 from app.api.settings import router as settings_router
 from app.api.sources import router as sources_router
 from app.api.system import router as system_router
@@ -21,7 +22,7 @@ settings = get_settings()
 
 app = FastAPI(
     title="Media Router",
-    description="Sprint 4 broker decision engine for a modular home media orchestration platform.",
+    description="Sprint 5 source resolution runtime for a modular home media orchestration platform.",
     version=APP_VERSION,
 )
 
@@ -34,6 +35,7 @@ app.include_router(foundation_router)
 app.include_router(jobs_router)
 app.include_router(logs_router)
 app.include_router(providers_router)
+app.include_router(runtime_router)
 app.include_router(settings_router)
 app.include_router(sources_router)
 app.include_router(system_router)

@@ -2,7 +2,7 @@
 
 ## Current Status
 
-Sprint 4 extends the SQLite catalog schema with broker reservations while preserving the Sprint 1.5 JSON-backed foundation state and Sprint 2/3 catalog, provider, account, and source availability records.
+Sprint 4 extends the SQLite catalog schema with broker reservations while preserving the Sprint 1.5 JSON-backed foundation state and Sprint 2/3 catalog, provider, account, and source availability records. Sprint 5 adds runtime resolve routes on top of the existing broker reservations table and does not add new database tables.
 
 Docker Compose mounts:
 
@@ -180,13 +180,13 @@ Important fields:
 - `created_at`
 - `updated_at`
 
-This table answers "where is this catalog item available?" only. The Broker will later decide which source to use.
+This table answers "where is this catalog item available?" only. The Broker decides which source to use, and Sprint 5 runtime URLs call that Broker decision layer.
 
 Large playlist imports stream M3U input line by line and batch commits periodically to avoid loading entire playlists into memory.
 
 ### broker_reservations
 
-Tracks Sprint 4 broker decisions and temporary account reservations. This table does not represent active playback or proxy sessions.
+Tracks Sprint 4 broker decisions and temporary account reservations. Sprint 5 runtime resolve routes also write reservations here before redirecting. This table does not represent active playback or proxy sessions.
 
 Important fields:
 

@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 class AppSettings(BaseModel):
     app_name: str = "Media Router"
     public_base_url: str = "http://media-router:8088"
+    runtime_public_base_url: str = ""
     timezone: str = "America/Los_Angeles"
     log_level: str = "info"
     data_directory: str = "./data"
@@ -28,6 +29,7 @@ class AppSettings(BaseModel):
 class SettingsUpdate(BaseModel):
     app_name: str | None = Field(default=None, min_length=1)
     public_base_url: str | None = None
+    runtime_public_base_url: str | None = None
     timezone: str | None = None
     log_level: str | None = None
     data_directory: str | None = None

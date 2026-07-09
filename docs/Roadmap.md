@@ -112,8 +112,6 @@ Exit criteria:
 
 ## Phase 4: Broker
 
-Current phase.
-
 Deliverables:
 
 - Account selection policy.
@@ -134,7 +132,29 @@ Exit criteria:
 - Broker resolve results explain selected and skipped candidates.
 - No playback, proxy streaming, transcoding, STRM generation, HDHomeRun output, or media integrations are implemented.
 
-## Phase 5: Outputs
+## Phase 5: Source Resolution Runtime
+
+Current phase.
+
+Deliverables:
+
+- Stable Media Router runtime URLs for live channels, movies, and episodes.
+- Runtime routes that call the Broker and create reservations.
+- Redirect mode using HTTP `302` to the selected source URL.
+- JSON/debug mode with Broker decision explanations and evaluated candidates.
+- Runtime URL preview API.
+- Catalog and Broker UI runtime URL previews.
+- User-configurable Runtime Public Base URL for browser/client-visible previews.
+
+Exit criteria:
+
+- Clients can call `/r/live/{id}`, `/r/movie/{id}`, or `/r/episode/{id}` instead of direct provider URLs.
+- Runtime resolution respects source/provider/account enablement, account health, capacity, and Broker TTL.
+- Debug mode returns JSON and does not redirect.
+- Runtime previews do not display Docker-internal hostnames.
+- No STRM generation, HDHomeRun output, media-server integration, proxy streaming, playback, or transcoding is implemented.
+
+## Phase 6: Outputs
 
 Deliverables:
 
@@ -150,7 +170,7 @@ Exit criteria:
 - STRM output preserves folder layout when rewriting existing libraries.
 - Generated outputs can be deleted and rebuilt from catalog/settings.
 
-## Phase 6: Integrations
+## Phase 7: Integrations
 
 Deliverables:
 
@@ -165,7 +185,7 @@ Exit criteria:
 - Media servers can consume broker-backed outputs.
 - IPTV Boss exports can trigger safe catalog updates.
 
-## Phase 7: Hardening
+## Phase 8: Hardening
 
 Deliverables:
 
