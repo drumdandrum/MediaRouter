@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from app.schemas.broker import BrokerDecision, BrokerReleaseRequest, BrokerReservation, BrokerResolveRequest, BrokerStatus
-from app.services.broker import BrokerUnavailable, expire_now, get_status, list_reservations, release_reservation, resolve_source
+from app.services.broker import BrokerUnavailable, expire_now, get_status, list_reservations, release_all_active, release_reservation, resolve_source
 
 router = APIRouter(prefix="/api/broker", tags=["broker"])
 
@@ -35,6 +35,11 @@ def broker_release(payload: BrokerReleaseRequest) -> BrokerReservation:
     if reservation is None:
         raise HTTPException(status_code=404, detail="Reservation not found")
     return reservation
+
+
+@router.post("/release-all", response_model=BrokerStatus)
+def broker_release_all() -> BrokerStatus:
+    return release_all_active()
 
 
 @router.post("/expire-now", response_model=BrokerStatus)

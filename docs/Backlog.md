@@ -83,6 +83,9 @@ Broker
 ☑ Account selection policy  
 ☑ Shared account capacity tracking  
 ☑ Broker status UI  
+☑ Broker explainability  
+☑ Evaluated candidate diagnostics  
+☑ Release All Active  
 ☐ Broker URL builder  
 
 ## Epic 5

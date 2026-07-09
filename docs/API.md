@@ -49,6 +49,7 @@ The current project exposes Sprint 4 broker decision and reservation endpoints. 
 | `GET` | `/api/broker/reservations` | Lists recent broker reservations. |
 | `POST` | `/api/broker/resolve` | Chooses the best available source and creates a temporary reservation. |
 | `POST` | `/api/broker/release` | Releases one active reservation. |
+| `POST` | `/api/broker/release-all` | Releases every active reservation. |
 | `POST` | `/api/broker/expire-now` | Expires stale reservations immediately for testing. |
 
 Interactive OpenAPI docs are available at `/docs` while the server is running.
@@ -139,6 +140,7 @@ Deferred:
 - `GET /api/broker/reservations`
 - `POST /api/broker/resolve`
 - `POST /api/broker/release`
+- `POST /api/broker/release-all`
 - `POST /api/broker/expire-now`
 
 ### Outputs
@@ -200,7 +202,7 @@ Sprint 4 does not play, proxy, transcode, redirect, or validate streams. The Bro
 }
 ```
 
-The response includes the selected source, provider, account/connection, redacted stream/location reference, reservation ID, expiration time, and decision reasons.
+The response includes the selected source, provider, account/connection, redacted stream/location reference, reservation ID, expiration time, TTL, decision reason, and evaluated candidates.
 
 Selection policy:
 
@@ -214,4 +216,8 @@ Selection policy:
 - Lower active reservation count wins after priority and weight.
 - Stable deterministic tie-breaks are used after policy fields.
 
-If no source is available, the API returns `409` with a structured detail code such as `no_sources`, `all_disabled`, `all_unhealthy`, or `all_at_capacity`.
+Each evaluated candidate includes selected/skipped state, account, provider, priority, weight, usage, health, and a human-readable reason such as `selected`, `lower weight`, `at capacity`, `account disabled`, `provider disabled`, or `unhealthy`.
+
+If no source is available, the API returns `409` with a structured detail code such as `no_sources`, `all_disabled`, `all_unhealthy`, or `all_at_capacity`. The error detail includes `failure_code`, `failure_message`, `decision_reasons`, and `evaluated_candidates` so the UI can show friendly diagnostics instead of raw objects.
+
+`POST /api/broker/release-all` releases every active reservation and returns refreshed broker status. `POST /api/broker/expire-now` marks expired active reservations and returns refreshed broker status.

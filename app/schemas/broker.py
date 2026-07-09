@@ -35,6 +35,28 @@ class BrokerSourceSelection(BaseModel):
     max_simultaneous_streams: int
 
 
+class BrokerEvaluatedCandidate(BaseModel):
+    source_availability_id: int | None = None
+    catalog_item_id: str | None = None
+    media_type: str | None = None
+    provider_id: str | None = None
+    provider_name: str | None = None
+    account_id: str | None = None
+    account_name: str | None = None
+    priority_group: str | None = None
+    weight: int | None = None
+    active_reservations: int = 0
+    max_simultaneous_streams: int | None = None
+    source_enabled: bool = False
+    provider_enabled: bool = False
+    account_enabled: bool = False
+    provider_health_status: str | None = None
+    account_health_status: str | None = None
+    selected: bool = False
+    reason: str
+    reason_detail: str
+
+
 class BrokerReservation(BaseModel):
     reservation_id: str
     catalog_item_id: str
@@ -54,17 +76,25 @@ class BrokerReservation(BaseModel):
 
 
 class BrokerDecision(BaseModel):
-    selected_source: BrokerSourceSelection
-    reservation: BrokerReservation
-    stream_url: str
-    expires_at: datetime
+    selected_source: BrokerSourceSelection | None = None
+    reservation: BrokerReservation | None = None
+    stream_url: str | None = None
+    expires_at: datetime | None = None
+    reservation_ttl_seconds: int
+    decision_reason: str
     decision_reasons: list[str]
+    evaluated_candidates: list[BrokerEvaluatedCandidate]
+    failure_code: str | None = None
+    failure_message: str | None = None
 
 
 class BrokerErrorDetail(BaseModel):
     code: str
     message: str
+    failure_code: str
+    failure_message: str
     decision_reasons: list[str]
+    evaluated_candidates: list[BrokerEvaluatedCandidate] = []
 
 
 class BrokerAccountUsage(BaseModel):
@@ -83,6 +113,7 @@ class BrokerAccountUsage(BaseModel):
 
 
 class BrokerStatus(BaseModel):
+    total_reservations: int
     active_reservations: int
     released_reservations: int
     expired_reservations: int

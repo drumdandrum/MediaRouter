@@ -122,12 +122,16 @@ Deliverables:
 - Reservation expiry.
 - Broker status and usage UI.
 - Decision tester UI.
+- Structured decision explanations.
+- Evaluated candidate diagnostics.
+- Release All Active operation.
 
 Exit criteria:
 
 - Broker can choose the best available source and reserve account capacity.
 - Active stream usage is visible.
 - Account capacity is shared across live, movie, and episode reservations.
+- Broker resolve results explain selected and skipped candidates.
 - No playback, proxy streaming, transcoding, STRM generation, HDHomeRun output, or media integrations are implemented.
 
 ## Phase 5: Outputs

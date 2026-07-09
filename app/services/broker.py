@@ -11,6 +11,7 @@ from app.schemas.broker import (
     BrokerAccountUsage,
     BrokerDecision,
     BrokerErrorDetail,
+    BrokerEvaluatedCandidate,
     BrokerReservation,
     BrokerSourceSelection,
     BrokerStatus,
@@ -24,9 +25,16 @@ PRIORITY_ORDER = {"Preferred": 0, "Secondary": 1, "Emergency": 2}
 
 
 class BrokerUnavailable(Exception):
-    def __init__(self, code: str, message: str, decision_reasons: list[str]) -> None:
+    def __init__(self, code: str, message: str, decision_reasons: list[str], evaluated_candidates: list[BrokerEvaluatedCandidate] | None = None) -> None:
         super().__init__(message)
-        self.detail = BrokerErrorDetail(code=code, message=message, decision_reasons=decision_reasons)
+        self.detail = BrokerErrorDetail(
+            code=code,
+            message=message,
+            failure_code=code,
+            failure_message=message,
+            decision_reasons=decision_reasons,
+            evaluated_candidates=evaluated_candidates or [],
+        )
 
 
 def _db_path() -> Path:
@@ -236,11 +244,35 @@ def _source_selection_from_row(row: sqlite3.Row, active_count: int) -> BrokerSou
     )
 
 
-def _classify_no_source(rows: list[sqlite3.Row], decision_reasons: list[str]) -> BrokerUnavailable:
+def _candidate_from_row(row: sqlite3.Row, active_count: int, reason: str, reason_detail: str, selected: bool = False) -> BrokerEvaluatedCandidate:
+    return BrokerEvaluatedCandidate(
+        source_availability_id=row["id"],
+        catalog_item_id=row["catalog_internal_id"],
+        media_type=row["media_type"],
+        provider_id=row["provider_id"],
+        provider_name=row["provider_name"],
+        account_id=row["account_id"],
+        account_name=row["account_name"],
+        priority_group=row["priority_group"],
+        weight=row["weight"],
+        active_reservations=active_count,
+        max_simultaneous_streams=row["max_simultaneous_streams"],
+        source_enabled=bool(row["enabled"]),
+        provider_enabled=bool(row["provider_enabled"]) if row["provider_enabled"] is not None else False,
+        account_enabled=bool(row["account_enabled"]) if row["account_enabled"] is not None else False,
+        provider_health_status=row["provider_health_status"],
+        account_health_status=row["account_health_status"],
+        selected=selected,
+        reason=reason,
+        reason_detail=reason_detail,
+    )
+
+
+def _classify_no_source(rows: list[sqlite3.Row], decision_reasons: list[str], evaluated_candidates: list[BrokerEvaluatedCandidate]) -> BrokerUnavailable:
     if not rows:
-        return BrokerUnavailable("no_sources", "No sources exist for that catalog item.", decision_reasons)
+        return BrokerUnavailable("no_sources", "No catalog sources available.", decision_reasons, evaluated_candidates)
     if all(not bool(row["enabled"]) for row in rows):
-        return BrokerUnavailable("all_disabled", "All sources for that catalog item are disabled.", decision_reasons)
+        return BrokerUnavailable("all_disabled", "All catalog sources are disabled.", decision_reasons, evaluated_candidates)
     if all(
         (not row["provider_id"])
         or (not row["account_id"])
@@ -251,8 +283,8 @@ def _classify_no_source(rows: list[sqlite3.Row], decision_reasons: list[str]) ->
         for row in rows
         if bool(row["enabled"])
     ):
-        return BrokerUnavailable("all_unhealthy", "All sources are disabled or on unavailable providers/accounts.", decision_reasons)
-    return BrokerUnavailable("all_at_capacity", "All eligible accounts are at active reservation capacity.", decision_reasons)
+        return BrokerUnavailable("all_unhealthy", "No healthy accounts found.", decision_reasons, evaluated_candidates)
+    return BrokerUnavailable("all_at_capacity", "All matching accounts are at capacity.", decision_reasons, evaluated_candidates)
 
 
 def resolve_source(
@@ -268,26 +300,33 @@ def resolve_source(
         rows = _source_rows(conn, catalog_item_id, media_type)
         if media_type:
             decision_reasons.append(f"Filtered sources by media type {_normalize_media_type(media_type)}.")
+        evaluated_candidates: list[BrokerEvaluatedCandidate] = []
         if not rows:
-            raise _classify_no_source(rows, decision_reasons)
+            raise _classify_no_source(rows, decision_reasons, evaluated_candidates)
         decision_reasons.append(f"Found {len(rows)} source record(s) for the catalog item.")
         active_counts = _active_counts(conn)
         eligible: list[tuple[tuple, sqlite3.Row, int]] = []
         disabled_count = unhealthy_count = capacity_count = 0
         for row in rows:
+            active_count = active_counts.get(row["account_id"], 0) if row["account_id"] else 0
             if not bool(row["enabled"]) or not row["provider_id"] or not row["account_id"]:
                 disabled_count += 1
+                evaluated_candidates.append(_candidate_from_row(row, active_count, "account disabled", "Source is disabled or not linked to a provider/account."))
                 continue
             if not bool(row["provider_enabled"]) or not bool(row["account_enabled"]):
                 disabled_count += 1
+                reason = "provider disabled" if not bool(row["provider_enabled"]) else "account disabled"
+                detail = "Provider is disabled." if reason == "provider disabled" else "Account is disabled."
+                evaluated_candidates.append(_candidate_from_row(row, active_count, reason, detail))
                 continue
             if row["provider_health_status"] in BLOCKED_HEALTH_STATUSES or row["account_health_status"] in BLOCKED_HEALTH_STATUSES:
                 unhealthy_count += 1
+                evaluated_candidates.append(_candidate_from_row(row, active_count, "unhealthy", "Provider or account health status is unavailable for broker use."))
                 continue
-            active_count = active_counts.get(row["account_id"], 0)
             max_streams = max(int(row["max_simultaneous_streams"] or 1), 1)
             if active_count >= max_streams:
                 capacity_count += 1
+                evaluated_candidates.append(_candidate_from_row(row, active_count, "at capacity", f"Account usage is {active_count} / {max_streams}."))
                 continue
             priority_rank = PRIORITY_ORDER.get(row["priority_group"], 99)
             sort_key = (
@@ -303,9 +342,29 @@ def resolve_source(
         decision_reasons.append(f"Excluded {unhealthy_count} unavailable health source(s).")
         decision_reasons.append(f"Excluded {capacity_count} source(s) at account capacity.")
         if not eligible:
-            raise _classify_no_source(rows, decision_reasons)
+            raise _classify_no_source(rows, decision_reasons, evaluated_candidates)
         eligible.sort(key=lambda item: item[0])
         _, selected, selected_active_count = eligible[0]
+        for index, (_, row, active_count) in enumerate(eligible):
+            if index == 0:
+                evaluated_candidates.append(
+                    _candidate_from_row(
+                        row,
+                        active_count,
+                        "selected",
+                        "Best candidate by priority group, weight, active reservation count, and stable source id.",
+                        selected=True,
+                    )
+                )
+            else:
+                evaluated_candidates.append(
+                    _candidate_from_row(
+                        row,
+                        active_count,
+                        "lower weight",
+                        "Eligible but ranked below the selected source by broker policy.",
+                    )
+                )
         decision_reasons.append(
             "Selected by priority group, weight, active reservation count, then stable source id."
         )
@@ -356,7 +415,10 @@ def resolve_source(
         reservation=reservation,
         stream_url=selection.location_ref,
         expires_at=reservation.expires_at,
+        reservation_ttl_seconds=ttl,
+        decision_reason="Selected by priority group, weight, active reservation count, then stable source id.",
         decision_reasons=decision_reasons,
+        evaluated_candidates=evaluated_candidates,
     )
 
 
@@ -378,6 +440,19 @@ def release_reservation(reservation_id: str) -> BrokerReservation | None:
     return rows[0] if rows else None
 
 
+def release_all_active() -> BrokerStatus:
+    with _connect() as conn:
+        expire_reservations(conn)
+        now = _now().isoformat()
+        result = conn.execute(
+            "UPDATE broker_reservations SET status = 'released', released_at = ? WHERE status = 'active'",
+            (now,),
+        )
+        conn.commit()
+    add_log("info", "broker", f"Released {result.rowcount} active broker reservation(s)")
+    return get_status()
+
+
 def expire_now() -> BrokerStatus:
     with _connect() as conn:
         expire_reservations(conn)
@@ -391,6 +466,7 @@ def get_status() -> BrokerStatus:
             row["status"]: row["count"]
             for row in conn.execute("SELECT status, COUNT(*) AS count FROM broker_reservations GROUP BY status").fetchall()
         }
+        total_reservations = conn.execute("SELECT COUNT(*) AS count FROM broker_reservations").fetchone()["count"]
         active_counts = _active_counts(conn)
         account_rows = conn.execute(
             """
@@ -426,6 +502,7 @@ def get_status() -> BrokerStatus:
             )
         )
     return BrokerStatus(
+        total_reservations=total_reservations,
         active_reservations=counts.get("active", 0),
         released_reservations=counts.get("released", 0),
         expired_reservations=counts.get("expired", 0),

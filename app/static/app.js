@@ -78,6 +78,20 @@ const userStatus = {
   Offline: "Offline",
 };
 
+class ApiError extends Error {
+  constructor(message, detail = null) {
+    super(message);
+    this.detail = detail;
+  }
+}
+
+function friendlyErrorMessage(detail, fallback = "Request failed.") {
+  if (!detail) return fallback;
+  if (typeof detail === "string") return detail;
+  if (typeof detail === "object") return detail.failure_message || detail.message || detail.detail || fallback;
+  return String(detail);
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
@@ -85,7 +99,7 @@ async function api(path, options = {}) {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail || `Request failed: ${response.status}`);
+    throw new ApiError(friendlyErrorMessage(body.detail, `Request failed: ${response.status}`), body.detail || body);
   }
   return response.json();
 }
@@ -178,6 +192,12 @@ function renderDashboard() {
 
 function formatDate(value) {
   return value ? new Date(value).toLocaleString() : "Never";
+}
+
+function remainingTtl(value, status = "active") {
+  if (!value || status !== "active") return "";
+  const seconds = Math.max(0, Math.ceil((new Date(value).getTime() - Date.now()) / 1000));
+  return `${seconds}s`;
 }
 
 function table(headers, rows) {
@@ -441,8 +461,10 @@ function brokerCatalogOptions() {
 function renderBroker() {
   const status = state.brokerStatus;
   document.getElementById("broker-active-reservations").textContent = status.active_reservations;
+  document.getElementById("broker-total-reservations").textContent = status.total_reservations;
   document.getElementById("broker-released-reservations").textContent = status.released_reservations;
   document.getElementById("broker-expired-reservations").textContent = status.expired_reservations;
+  document.getElementById("broker-capacity-accounts").textContent = status.accounts_at_capacity;
   document.getElementById("broker-available-accounts").textContent = status.available_accounts;
   const itemSelect = document.getElementById("broker-catalog-item");
   const selectedItem = itemSelect.value;
@@ -460,20 +482,65 @@ function renderBrokerDecision() {
     return;
   }
   const decision = state.brokerDecision;
+  if (decision.failure_code) {
+    target.innerHTML = `
+      <div class="broker-error">
+        <strong>${decision.failure_message || "No source selected."}</strong>
+        <p>${friendlyBrokerFailure(decision.failure_code)}</p>
+      </div>
+      ${candidateTable(decision.evaluated_candidates || [])}
+    `;
+    return;
+  }
+  const selected = decision.selected_source;
+  const reservation = decision.reservation;
   target.innerHTML = `
     <div class="detail-grid">
-      <div><span>Reservation</span><strong><code>${decision.reservation.reservation_id}</code></strong></div>
-      <div><span>Account</span><strong>${decision.selected_source.account_name}</strong></div>
-      <div><span>Provider</span><strong>${decision.selected_source.provider_name}</strong></div>
+      <div><span>Reservation</span><strong><code>${reservation.reservation_id}</code></strong></div>
+      <div><span>Account</span><strong>${selected.account_name}</strong></div>
+      <div><span>Provider</span><strong>${selected.provider_name}</strong></div>
+      <div><span>Priority</span><strong>${selected.priority_group}</strong></div>
+      <div><span>Weight</span><strong>${selected.weight}</strong></div>
+      <div><span>Usage Before Reserve</span><strong>${selected.active_reservations} / ${selected.max_simultaneous_streams}</strong></div>
+      <div><span>TTL</span><strong>${decision.reservation_ttl_seconds}s</strong></div>
       <div><span>Expires</span><strong>${formatDate(decision.expires_at)}</strong></div>
     </div>
     <p class="muted helper-text url-cell">${decision.stream_url}</p>
+    <p class="helper-text"><strong>Why selected:</strong> ${decision.decision_reason}</p>
     <div class="button-row">
-      <button data-release-reservation="${decision.reservation.reservation_id}">Release Reservation</button>
+      <button data-release-reservation="${reservation.reservation_id}">Release Reservation</button>
     </div>
     <div class="muted-list">${decision.decision_reasons.map((reason) => `<div>${reason}</div>`).join("")}</div>
+    ${candidateTable(decision.evaluated_candidates || [])}
   `;
   bindBrokerReleaseButtons(target);
+}
+
+function friendlyBrokerFailure(code) {
+  const messages = {
+    no_sources: "No catalog sources available.",
+    all_disabled: "All matching sources, providers, or accounts are disabled.",
+    all_unhealthy: "No healthy accounts found.",
+    all_at_capacity: "All matching accounts are at capacity.",
+  };
+  return messages[code] || "No source selected.";
+}
+
+function candidateTable(candidates) {
+  if (!candidates.length) return '<section class="subsection"><h3>Evaluated Candidates</h3><p class="muted">No matching source candidates were found.</p></section>';
+  const rows = candidates.map((candidate) => `
+    <tr>
+      <td>${candidate.selected ? badge("Selected", "active") : badge("Skipped", "disabled")}</td>
+      <td>${candidate.account_name || "No account"}</td>
+      <td>${candidate.provider_name || "No provider"}</td>
+      <td>${candidate.priority_group || ""}</td>
+      <td>${candidate.weight ?? ""}</td>
+      <td>${candidate.max_simultaneous_streams ? `${candidate.active_reservations} / ${candidate.max_simultaneous_streams}` : ""}</td>
+      <td>${badge(candidate.account_health_status || "Unknown", candidate.account_health_status || "Unknown")}</td>
+      <td><strong>${candidate.reason}</strong><br><span class="muted">${candidate.reason_detail}</span></td>
+    </tr>
+  `);
+  return `<section class="subsection"><h3>Evaluated Candidates</h3>${table(["Result", "Account", "Provider", "Priority", "Weight", "Usage", "Health", "Reason"], rows)}</section>`;
 }
 
 function renderBrokerAccountUsage() {
@@ -499,13 +566,14 @@ function renderBrokerReservations() {
       <td><strong>${reservation.catalog_title || reservation.catalog_item_id}</strong><br><code>${reservation.catalog_item_id}</code></td>
       <td>${reservation.media_type}</td>
       <td>${reservation.account_name || reservation.account_id}</td>
+      <td>${remainingTtl(reservation.expires_at, reservation.status)}</td>
       <td>${formatDate(reservation.expires_at)}</td>
       <td>${reservation.client_label || ""}</td>
       <td>${reservation.status === "active" ? `<button data-release-reservation="${reservation.reservation_id}">Release</button>` : ""}</td>
     </tr>
   `);
   const target = document.getElementById("broker-reservations-list");
-  target.innerHTML = table(["Reservation", "Status", "Catalog Item", "Type", "Account", "Expires", "Client", "Actions"], rows);
+  target.innerHTML = table(["Reservation", "Status", "Catalog Item", "Type", "Account", "Remaining", "Expires", "Client", "Actions"], rows);
   bindBrokerReleaseButtons(target);
 }
 
@@ -793,6 +861,15 @@ function bind() {
   document.getElementById("expire-broker-reservations").addEventListener("click", async () => {
     await api("/api/broker/expire-now", { method: "POST" });
     toast("Expired reservations updated");
+    await loadBroker();
+    renderBroker();
+    await loadDashboard();
+    renderDashboard();
+  });
+  document.getElementById("release-all-broker-reservations").addEventListener("click", async () => {
+    await api("/api/broker/release-all", { method: "POST" });
+    toast("Active reservations released");
+    state.brokerDecision = null;
     await loadBroker();
     renderBroker();
     await loadDashboard();

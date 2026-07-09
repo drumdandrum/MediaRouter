@@ -149,9 +149,15 @@
         <section id="broker" class="view">
           <div class="metric-grid compact">
             <article><span>Active</span><strong id="broker-active-reservations">0</strong></article>
+            <article><span>Total</span><strong id="broker-total-reservations">0</strong></article>
             <article><span>Released</span><strong id="broker-released-reservations">0</strong></article>
             <article><span>Expired</span><strong id="broker-expired-reservations">0</strong></article>
+          </div>
+          <div class="metric-grid compact">
+            <article><span>At Capacity</span><strong id="broker-capacity-accounts">0</strong></article>
             <article><span>Available Accounts</span><strong id="broker-available-accounts">0</strong></article>
+            <article><span>Broker Scope</span><strong>Decision Only</strong></article>
+            <article><span>Playback</span><strong>Deferred</strong></article>
           </div>
           <section class="panel">
             <div class="panel-head">
@@ -181,7 +187,10 @@
             <div id="broker-account-usage" class="table-wrap"></div>
           </section>
           <section class="panel">
-            <h2>Reservations</h2>
+            <div class="panel-head">
+              <h2>Reservations</h2>
+              <button id="release-all-broker-reservations">Release All Active</button>
+            </div>
             <div id="broker-reservations-list" class="table-wrap"></div>
           </section>
         </section>

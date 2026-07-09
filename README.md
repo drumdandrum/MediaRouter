@@ -70,7 +70,7 @@ Settings, wizard state, and job history are written under this mounted path. The
 - Provider and account/connection APIs.
 - Source availability APIs.
 - Broker decision, reservation, release, and status APIs.
-- Broker UI for account usage, reservation status, and source decision testing.
+- Broker UI for account usage, reservation status, source decision testing, and evaluated candidate explanations.
 - Paginated catalog/source APIs for large playlists.
 - About/System and logs APIs.
 - JSON-backed settings and wizard state.
@@ -109,6 +109,8 @@ Settings, wizard state, and job history are written under this mounted path. The
 - Production dashboard UI.
 
 Sprint 4 includes a decision-only Broker. It chooses the best source for a catalog item and creates a temporary account reservation. It does not play, proxy, transcode, or generate streams. Outputs, STRM, HDHomeRun, and media-server integrations are still deferred.
+
+Sprint 4.1 polishes Broker diagnostics. Resolve results now show the selected account, provider, priority, weight, usage, TTL, selection reason, and every evaluated candidate with a selected/skipped reason.
 
 Secrets note: Sprint 3 stores account secrets locally in SQLite and never returns them through normal API reads or displays them in the UI. Encryption is a future hardening task before production-style secret handling.
 
@@ -213,3 +215,14 @@ Secrets note: Sprint 3 stores account secrets locally in SQLite and never return
 - [ ] Resolve a movie on Account A, then resolve a live TV channel, and verify Account A is treated as busy across media types.
 - [ ] Confirm reservations expire automatically after the configured TTL and no longer count against account capacity.
 - [ ] Confirm no playback, proxy streaming, transcoding, STRM generation, HDHomeRun output, or media-server integration is present.
+
+## Sprint 4.1 Broker Polish Acceptance Test
+
+- [ ] Resolve with multiple matching accounts and verify the highest-weight available account is selected.
+- [ ] Resolve again and verify the next account is selected when the first account is at capacity.
+- [ ] Resolve a third time and verify a friendly all-at-capacity message appears.
+- [ ] Confirm the Broker UI never shows `[object Object]`.
+- [ ] Confirm evaluated candidates show selected/skipped state, account, provider, priority, weight, usage, health, and reason.
+- [ ] Release one reservation and verify account availability updates.
+- [ ] Use Release All Active and verify active reservations clear.
+- [ ] Use Expire Now and verify status cards refresh immediately.
