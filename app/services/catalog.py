@@ -632,6 +632,23 @@ def list_items(media_type: str, limit: int = 100, offset: int = 0) -> list[Catal
     return [_item_from_row(row) for row in rows]
 
 
+def list_all_items(limit: int = 200, offset: int = 0) -> list[CatalogItem]:
+    ensure_schema()
+    limit = min(max(limit, 1), 500)
+    offset = max(offset, 0)
+    rows = _rows(
+        """
+        SELECT *
+        FROM catalog_items
+        WHERE media_type IN ('channel', 'movie', 'episode')
+        ORDER BY media_type, title
+        LIMIT ? OFFSET ?
+        """,
+        (limit, offset),
+    )
+    return [_item_from_row(row) for row in rows]
+
+
 def list_sources(limit: int = 100, offset: int = 0) -> list[CatalogSource]:
     ensure_schema()
     limit = min(max(limit, 1), 500)

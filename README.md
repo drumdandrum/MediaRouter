@@ -1,6 +1,6 @@
 # Media Router
 
-Media Router is currently a foundation, catalog engine, and provider/account availability model for a future Dockerized home media orchestration platform. The project intentionally does not implement brokering, stream playback, STRM rewriting, or DVR integration yet.
+Media Router is currently a foundation, catalog engine, provider/account availability model, and Sprint 4 broker decision engine for a future Dockerized home media orchestration platform. The project intentionally does not implement stream playback, proxy streaming, transcoding, STRM rewriting, HDHomeRun output, or DVR/media-server integration yet.
 
 The goal of this phase is to lock down module ownership, boundaries, and delivery order before building features.
 
@@ -62,13 +62,15 @@ Settings, wizard state, and job history are written under this mounted path. The
 
 - Minimal FastAPI app.
 - App version `v0.2.1`.
-- Sprint 3 web console.
+- Sprint 4 web console.
 - `/api/health` endpoint.
 - `/api/foundation` endpoint with module metadata.
 - Dashboard, wizard, settings, and jobs APIs.
 - Catalog summary/list/import APIs.
 - Provider and account/connection APIs.
 - Source availability APIs.
+- Broker decision, reservation, release, and status APIs.
+- Broker UI for account usage, reservation status, and source decision testing.
 - Paginated catalog/source APIs for large playlists.
 - About/System and logs APIs.
 - JSON-backed settings and wizard state.
@@ -95,17 +97,18 @@ Settings, wizard state, and job history are written under this mounted path. The
 
 ## What Is Deliberately Not Implemented Yet
 
-- Broker routing.
+- Playback or proxy streaming.
+- Transcoding.
 - STRM import or generation.
 - IPTV Boss watching.
 - HDHomeRun compatibility.
 - Emby/Jellyfin/NextPVR/Channels adapters.
 - Encrypted secrets storage.
 - Real stream playback.
-- Account failover.
+- HDHomeRun output.
 - Production dashboard UI.
 
-Sprint 3 includes provider/account availability only. Providers and accounts describe where catalog items are available; the Broker later chooses which source to use. Broker routing, failover, outputs, STRM, streaming, and integrations are still deferred.
+Sprint 4 includes a decision-only Broker. It chooses the best source for a catalog item and creates a temporary account reservation. It does not play, proxy, transcode, or generate streams. Outputs, STRM, HDHomeRun, and media-server integrations are still deferred.
 
 Secrets note: Sprint 3 stores account secrets locally in SQLite and never returns them through normal API reads or displays them in the UI. Encryption is a future hardening task before production-style secret handling.
 
@@ -197,3 +200,16 @@ Secrets note: Sprint 3 stores account secrets locally in SQLite and never return
 - [ ] Run a connection test from Accounts.
 - [ ] Verify health status updates.
 - [ ] Confirm no stream playback, broker routing, failover, STRM generation, HDHomeRun output, or integrations exist yet.
+
+## Sprint 4 Broker Decision Acceptance Test
+
+- [ ] Create Account A and Account B with max streams set to `1`.
+- [ ] Import the same catalog item under both accounts so it has two source availability records.
+- [ ] Resolve the item once from Broker and verify Account A is selected.
+- [ ] Resolve the item again before releasing and verify Account B is selected.
+- [ ] Resolve a third time and verify the Broker returns no available source because all eligible accounts are at capacity.
+- [ ] Release the first reservation.
+- [ ] Resolve again and verify Account A can be selected again.
+- [ ] Resolve a movie on Account A, then resolve a live TV channel, and verify Account A is treated as busy across media types.
+- [ ] Confirm reservations expire automatically after the configured TTL and no longer count against account capacity.
+- [ ] Confirm no playback, proxy streaming, transcoding, STRM generation, HDHomeRun output, or media-server integration is present.

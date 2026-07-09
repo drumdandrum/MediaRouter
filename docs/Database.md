@@ -2,7 +2,7 @@
 
 ## Current Status
 
-Sprint 3 extends the SQLite catalog schema with provider, account/connection, and source availability records while preserving the Sprint 1.5 JSON-backed foundation state.
+Sprint 4 extends the SQLite catalog schema with broker reservations while preserving the Sprint 1.5 JSON-backed foundation state and Sprint 2/3 catalog, provider, account, and source availability records.
 
 Docker Compose mounts:
 
@@ -23,7 +23,7 @@ Current persisted files:
 - `/data/jobs.json`
 - `/data/media_router.db`
 
-The JSON files remain the foundation settings store. `media_router.db` stores catalog identity, providers, accounts/connections, source availability, legacy source mappings, and import history.
+The JSON files remain the foundation settings store. `media_router.db` stores catalog identity, providers, accounts/connections, source availability, legacy source mappings, import history, and broker reservations.
 
 SQLite is the preferred first database because Media Router is initially a single-server home application. The schema should still be designed cleanly enough to migrate to another relational database later.
 
@@ -184,21 +184,27 @@ This table answers "where is this catalog item available?" only. The Broker will
 
 Large playlist imports stream M3U input line by line and batch commits periodically to avoid loading entire playlists into memory.
 
-### active_streams
+### broker_reservations
 
-Tracks broker reservations.
+Tracks Sprint 4 broker decisions and temporary account reservations. This table does not represent active playback or proxy sessions.
 
 Important fields:
 
 - `id`
 - `reservation_id`
 - `catalog_item_id`
+- `source_availability_id`
+- `provider_id`
 - `account_id`
-- `client_host`
-- `client_user_agent`
-- `started_at`
+- `media_type`
+- `location_ref`
+- `status`
+- `created_at`
 - `expires_at`
 - `released_at`
+- `client_label`
+
+Statuses are `active`, `released`, `expired`, and `failed`. Expired and released reservations do not count against account capacity. Account max stream limits apply across all media types because active reservations are counted by account.
 
 ### imports
 

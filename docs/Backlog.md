@@ -76,12 +76,13 @@ Broker
 
 ### Sprint 4
 
-☐ Active Streams  
-☐ Failover  
-☐ Routing  
-☐ Account selection policy  
-☐ Stream reservation expiry  
-☐ Capacity tracking  
+☑ Reservation model  
+☑ Resolve endpoint  
+☑ Release endpoint  
+☑ Reservation expiry  
+☑ Account selection policy  
+☑ Shared account capacity tracking  
+☑ Broker status UI  
 ☐ Broker URL builder  
 
 ## Epic 5

@@ -38,8 +38,9 @@ See `docs/adr/0001-foundation-first.md`.
 | Source mappings separate from identity | Accepted | Provider URLs live in `catalog_sources`, not as catalog identity. |
 | Redacted source read models | Accepted | Sprint 2 stores source URLs for future routing but redacts credential path segments in API/UI reads. |
 | Provider-agnostic availability | Accepted | Sprint 3 models providers and accounts separately from catalog identity. |
-| Broker deferred | Accepted | Providers/accounts describe availability; a later Broker chooses sources for playback. |
+| Broker deferred through Sprint 3 | Accepted | Sprint 3 stopped at availability; Sprint 4 adds decision-only source selection and reservations. |
 | Local secret storage first | Accepted | Sprint 3 stores secrets locally and redacts reads/logs; encryption is deferred to hardening. |
+| Decision-only broker first | Accepted | Sprint 4 chooses sources and reserves account capacity without playback, proxy streaming, transcoding, or generated outputs. |
 
 ## Open Decisions
 

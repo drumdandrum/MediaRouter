@@ -5,6 +5,7 @@ from app.services.catalog import (
     clear_test_data,
     delete_source_availability,
     get_summary,
+    list_all_items,
     list_items,
     list_source_availability,
     normalize_playlist_sources,
@@ -22,6 +23,11 @@ router = APIRouter(prefix="/api/catalog", tags=["catalog"])
 @router.get("/summary", response_model=CatalogSummary)
 def summary() -> CatalogSummary:
     return get_summary()
+
+
+@router.get("/items", response_model=list[CatalogItem])
+def catalog_items(limit: int = Query(200, ge=1, le=500), offset: int = Query(0, ge=0)) -> list[CatalogItem]:
+    return list_all_items(limit, offset)
 
 
 @router.get("/live", response_model=list[CatalogItem])

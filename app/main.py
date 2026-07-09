@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from app.api.broker import router as broker_router
 from app.api.dashboard import router as dashboard_router
 from app.api.catalog import router as catalog_router
 from app.api.foundation import router as foundation_router
@@ -20,12 +21,13 @@ settings = get_settings()
 
 app = FastAPI(
     title="Media Router",
-    description="Sprint 3 provider and source availability foundation for a modular home media orchestration platform.",
+    description="Sprint 4 broker decision engine for a modular home media orchestration platform.",
     version=APP_VERSION,
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
+app.include_router(broker_router)
 app.include_router(catalog_router)
 app.include_router(dashboard_router)
 app.include_router(foundation_router)

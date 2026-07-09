@@ -14,6 +14,10 @@ const state = {
   editingAccountId: null,
   catalogImportProviderId: "",
   catalogImportAccountId: "",
+  brokerStatus: null,
+  brokerReservations: [],
+  brokerCatalogItems: [],
+  brokerDecision: null,
   jobs: [],
   logs: [],
   system: null,
@@ -23,6 +27,7 @@ const titles = {
   dashboard: "Dashboard",
   wizard: "Wizard",
   catalog: "Catalog",
+  broker: "Broker",
   providers: "Providers",
   accounts: "Accounts",
   settings: "Settings",
@@ -163,6 +168,10 @@ function renderDashboard() {
   document.getElementById("disabled-accounts-count").textContent = data.disabled_accounts;
   document.getElementById("availability-count").textContent = data.source_availability_records;
   document.getElementById("average-sources-count").textContent = data.average_sources_per_item;
+  document.getElementById("broker-active-count").textContent = data.broker_active_reservations;
+  document.getElementById("broker-expired-count").textContent = data.broker_expired_reservations;
+  document.getElementById("broker-capacity-count").textContent = data.broker_accounts_at_capacity;
+  document.getElementById("broker-available-count").textContent = data.broker_available_accounts;
   document.getElementById("sprint-scope").innerHTML = data.sprint_scope.map((item) => `<div>☑ ${item}</div>`).join("");
   document.getElementById("deferred-scope").innerHTML = data.deferred_scope.map((item) => `<div>☐ ${item}</div>`).join("");
 }
@@ -425,6 +434,104 @@ function catalogImportValues(form) {
   return values;
 }
 
+function brokerCatalogOptions() {
+  return `<option value="">Select catalog item</option>` + state.brokerCatalogItems.map((item) => `<option value="${item.internal_id}">${item.media_type}: ${item.title}</option>`).join("");
+}
+
+function renderBroker() {
+  const status = state.brokerStatus;
+  document.getElementById("broker-active-reservations").textContent = status.active_reservations;
+  document.getElementById("broker-released-reservations").textContent = status.released_reservations;
+  document.getElementById("broker-expired-reservations").textContent = status.expired_reservations;
+  document.getElementById("broker-available-accounts").textContent = status.available_accounts;
+  const itemSelect = document.getElementById("broker-catalog-item");
+  const selectedItem = itemSelect.value;
+  itemSelect.innerHTML = brokerCatalogOptions();
+  itemSelect.value = state.brokerCatalogItems.some((item) => item.internal_id === selectedItem) ? selectedItem : "";
+  renderBrokerDecision();
+  renderBrokerAccountUsage();
+  renderBrokerReservations();
+}
+
+function renderBrokerDecision() {
+  const target = document.getElementById("broker-decision");
+  if (!state.brokerDecision) {
+    target.innerHTML = '<p class="muted">No broker decision yet.</p>';
+    return;
+  }
+  const decision = state.brokerDecision;
+  target.innerHTML = `
+    <div class="detail-grid">
+      <div><span>Reservation</span><strong><code>${decision.reservation.reservation_id}</code></strong></div>
+      <div><span>Account</span><strong>${decision.selected_source.account_name}</strong></div>
+      <div><span>Provider</span><strong>${decision.selected_source.provider_name}</strong></div>
+      <div><span>Expires</span><strong>${formatDate(decision.expires_at)}</strong></div>
+    </div>
+    <p class="muted helper-text url-cell">${decision.stream_url}</p>
+    <div class="button-row">
+      <button data-release-reservation="${decision.reservation.reservation_id}">Release Reservation</button>
+    </div>
+    <div class="muted-list">${decision.decision_reasons.map((reason) => `<div>${reason}</div>`).join("")}</div>
+  `;
+  bindBrokerReleaseButtons(target);
+}
+
+function renderBrokerAccountUsage() {
+  const rows = state.brokerStatus.account_usage.map((account) => `
+    <tr>
+      <td><strong>${account.account_name}</strong><br><code>${account.account_id}</code></td>
+      <td>${account.provider_name}</td>
+      <td>${account.priority_group}</td>
+      <td>${account.weight}</td>
+      <td>${account.active_reservations} / ${account.max_simultaneous_streams}</td>
+      <td>${badge(account.health_status, account.health_status)}</td>
+      <td>${account.available ? "Available" : account.at_capacity ? "At capacity" : "Unavailable"}</td>
+    </tr>
+  `);
+  document.getElementById("broker-account-usage").innerHTML = table(["Account", "Provider", "Priority", "Weight", "Usage", "Health", "Status"], rows);
+}
+
+function renderBrokerReservations() {
+  const rows = state.brokerReservations.map((reservation) => `
+    <tr>
+      <td><code>${reservation.reservation_id}</code></td>
+      <td>${badge(reservation.status, reservation.status)}</td>
+      <td><strong>${reservation.catalog_title || reservation.catalog_item_id}</strong><br><code>${reservation.catalog_item_id}</code></td>
+      <td>${reservation.media_type}</td>
+      <td>${reservation.account_name || reservation.account_id}</td>
+      <td>${formatDate(reservation.expires_at)}</td>
+      <td>${reservation.client_label || ""}</td>
+      <td>${reservation.status === "active" ? `<button data-release-reservation="${reservation.reservation_id}">Release</button>` : ""}</td>
+    </tr>
+  `);
+  const target = document.getElementById("broker-reservations-list");
+  target.innerHTML = table(["Reservation", "Status", "Catalog Item", "Type", "Account", "Expires", "Client", "Actions"], rows);
+  bindBrokerReleaseButtons(target);
+}
+
+function bindBrokerReleaseButtons(scope = document) {
+  scope.querySelectorAll("[data-release-reservation]").forEach((button) => button.addEventListener("click", async () => {
+    const reservationId = button.dataset.releaseReservation;
+    await api("/api/broker/release", { method: "POST", body: JSON.stringify({ reservation_id: reservationId }) });
+    toast("Reservation released");
+    await loadBroker();
+    renderBroker();
+    await loadDashboard();
+    renderDashboard();
+  }));
+}
+
+function brokerResolveValues() {
+  const form = document.getElementById("broker-resolve-form");
+  const values = Object.fromEntries(new FormData(form).entries());
+  return {
+    catalog_item_id: values.catalog_item_id,
+    media_type: values.media_type || null,
+    client_label: values.client_label || null,
+    reservation_ttl_seconds: values.reservation_ttl_seconds ? Number(values.reservation_ttl_seconds) : null,
+  };
+}
+
 function currentWizardStep() {
   return state.wizardSteps.find((step) => step.id === state.wizardState.current_step) || state.wizardSteps[0];
 }
@@ -571,6 +678,13 @@ async function loadWizard() { [state.wizardSteps, state.wizardState, state.setti
 async function loadSettings() { [state.settings, state.categories] = await Promise.all([api("/api/settings"), api("/api/settings/categories")]); }
 async function loadProviders() { state.providers = await api("/api/providers"); }
 async function loadAccounts() { state.accounts = await api("/api/accounts"); }
+async function loadBroker() {
+  [state.brokerStatus, state.brokerReservations, state.brokerCatalogItems] = await Promise.all([
+    api("/api/broker/status"),
+    api("/api/broker/reservations"),
+    api("/api/catalog/items?limit=500&offset=0"),
+  ]);
+}
 async function loadCatalog() {
   [state.catalogSummary, state.providers, state.accounts] = await Promise.all([api("/api/catalog/summary"), api("/api/providers"), api("/api/accounts")]);
   syncCatalogImportSelection();
@@ -595,6 +709,7 @@ async function refresh() {
     renderDashboard();
     if (state.view === "wizard") { await loadWizard(); renderWizard(); }
     if (state.view === "catalog") { await loadCatalog(); renderCatalog(); }
+    if (state.view === "broker") { await loadBroker(); renderBroker(); }
     if (state.view === "providers") { await loadProviders(); renderProviders(); }
     if (state.view === "accounts") { await Promise.all([loadProviders(), loadAccounts()]); renderAccounts(); }
     if (state.view === "settings") { await loadSettings(); renderSettings(); }
@@ -652,6 +767,37 @@ function bind() {
     }
   });
   document.getElementById("reset-catalog-import").addEventListener("click", resetCatalogImportForm);
+  document.getElementById("resolve-broker-source").addEventListener("click", async () => {
+    const values = brokerResolveValues();
+    if (!values.catalog_item_id) {
+      setFormError("broker-resolve-error", "Choose a catalog item before resolving.");
+      toast("Choose a catalog item before resolving.");
+      return;
+    }
+    try {
+      setFormError("broker-resolve-error");
+      state.brokerDecision = await api("/api/broker/resolve", { method: "POST", body: JSON.stringify(values) });
+      toast("Broker reservation created");
+      await loadBroker();
+      renderBroker();
+      await loadDashboard();
+      renderDashboard();
+    } catch (error) {
+      state.brokerDecision = null;
+      setFormError("broker-resolve-error", error.message);
+      toast(error.message);
+      await loadBroker();
+      renderBroker();
+    }
+  });
+  document.getElementById("expire-broker-reservations").addEventListener("click", async () => {
+    await api("/api/broker/expire-now", { method: "POST" });
+    toast("Expired reservations updated");
+    await loadBroker();
+    renderBroker();
+    await loadDashboard();
+    renderDashboard();
+  });
   document.getElementById("save-provider").addEventListener("click", async () => {
     const values = Object.fromEntries(new FormData(document.getElementById("provider-form")).entries());
     values.enabled = values.enabled === "true";

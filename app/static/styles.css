@@ -80,10 +80,11 @@ h3 { font-size: 15px; }
   font-size: 12px;
   font-weight: 800;
 }
-.status-badge.ready, .status-badge.complete, .status-badge.healthy { background: #e6f5ee; color: var(--ready); }
+.status-badge.ready, .status-badge.complete, .status-badge.healthy, .status-badge.released { background: #e6f5ee; color: var(--ready); }
 .status-badge.needs_setup, .status-badge.running, .status-badge.queued, .status-badge.unknown, .status-badge.degraded, .status-badge.playlist_failed { background: #fff2dd; color: var(--needs); }
-.status-badge.not_configured, .status-badge.disabled { background: #eef2f4; color: var(--missing); }
-.status-badge.error, .status-badge.offline, .status-badge.authentication_failed { background: #fbe7e7; color: var(--error); }
+.status-badge.not_configured, .status-badge.disabled, .status-badge.expired { background: #eef2f4; color: var(--missing); }
+.status-badge.error, .status-badge.offline, .status-badge.authentication_failed, .status-badge.failed { background: #fbe7e7; color: var(--error); }
+.status-badge.active { background: #e7f0ff; color: #235aa6; }
 
 .wizard-stepper {
   display: grid;

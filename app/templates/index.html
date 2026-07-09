@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Media Router Sprint 3</title>
+    <title>Media Router Sprint 4</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -20,6 +20,7 @@
           <button class="active" data-view="dashboard">Dashboard</button>
           <button data-view="wizard">Wizard</button>
           <button data-view="catalog">Catalog</button>
+          <button data-view="broker">Broker</button>
           <button data-view="providers">Providers</button>
           <button data-view="accounts">Accounts</button>
           <button data-view="settings">Settings</button>
@@ -68,7 +69,13 @@
             <article><span>Disabled Accounts</span><strong id="disabled-accounts-count">0</strong></article>
             <article><span>Source Availability</span><strong id="availability-count">0</strong></article>
             <article><span>Avg Sources / Item</span><strong id="average-sources-count">0</strong></article>
-            <article><span>Broker</span><strong>Deferred</strong></article>
+            <article><span>Active Reservations</span><strong id="broker-active-count">0</strong></article>
+          </div>
+          <div class="metric-grid compact">
+            <article><span>Expired Reservations</span><strong id="broker-expired-count">0</strong></article>
+            <article><span>Accounts At Capacity</span><strong id="broker-capacity-count">0</strong></article>
+            <article><span>Available Accounts</span><strong id="broker-available-count">0</strong></article>
+            <article><span>Broker Scope</span><strong>Decision Only</strong></article>
           </div>
           <div class="split">
             <section class="panel">
@@ -136,6 +143,46 @@
               <button data-catalog-tab="sources">Sources</button>
             </div>
             <div id="catalog-table" class="table-wrap"></div>
+          </section>
+        </section>
+
+        <section id="broker" class="view">
+          <div class="metric-grid compact">
+            <article><span>Active</span><strong id="broker-active-reservations">0</strong></article>
+            <article><span>Released</span><strong id="broker-released-reservations">0</strong></article>
+            <article><span>Expired</span><strong id="broker-expired-reservations">0</strong></article>
+            <article><span>Available Accounts</span><strong id="broker-available-accounts">0</strong></article>
+          </div>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Source Decision Tester</h2>
+              <button id="expire-broker-reservations">Expire Now</button>
+            </div>
+            <form id="broker-resolve-form" class="form-grid">
+              <label>Catalog Item *<select name="catalog_item_id" id="broker-catalog-item" required></select></label>
+              <label>Media Type<select name="media_type">
+                <option value="">Any</option>
+                <option value="live">Live Channels</option>
+                <option value="movie">Movies</option>
+                <option value="series">Series Episodes</option>
+              </select></label>
+              <label>Client Label<input name="client_label" value="Manual broker test" /></label>
+              <label>TTL Seconds<input name="reservation_ttl_seconds" type="number" value="60" min="1" /></label>
+            </form>
+            <p id="broker-resolve-error" class="form-error" role="alert"></p>
+            <p class="muted helper-text">Sprint 4 resolves the best available source and reserves account capacity. It does not play, proxy, or transcode streams.</p>
+            <div class="button-row">
+              <button id="resolve-broker-source" class="primary">Resolve</button>
+            </div>
+            <div id="broker-decision"></div>
+          </section>
+          <section class="panel">
+            <h2>Account Usage</h2>
+            <div id="broker-account-usage" class="table-wrap"></div>
+          </section>
+          <section class="panel">
+            <h2>Reservations</h2>
+            <div id="broker-reservations-list" class="table-wrap"></div>
           </section>
         </section>
 

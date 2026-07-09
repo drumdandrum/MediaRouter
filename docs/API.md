@@ -1,14 +1,14 @@
 # API
 
-## Current Sprint 3 API
+## Current Sprint 4 API
 
-The current project exposes Sprint 3 provider/account availability endpoints. Broker routing, failover, playback, outputs, and media integrations are deliberately deferred.
+The current project exposes Sprint 4 broker decision and reservation endpoints. Playback, proxy streaming, transcoding, outputs, and media integrations are deliberately deferred.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/health` | Confirms the app process is ready. |
 | `GET` | `/api/foundation` | Returns project phase and module metadata. |
-| `GET` | `/api/dashboard` | Returns dashboard summary, including provider/account availability counts. |
+| `GET` | `/api/dashboard` | Returns dashboard summary, including provider/account and broker reservation counts. |
 | `GET` | `/api/settings` | Reads JSON-backed foundation settings. |
 | `PUT` | `/api/settings` | Updates JSON-backed foundation settings. |
 | `GET` | `/api/wizard/steps` | Lists Sprint 1 wizard steps. |
@@ -22,6 +22,7 @@ The current project exposes Sprint 3 provider/account availability endpoints. Br
 | `POST` | `/api/logs` | Adds a sanitized log entry. |
 | `GET` | `/api/system` | Shows app version, environment, Git, database, and Docker/container status. |
 | `GET` | `/api/catalog/summary` | Returns catalog counts and last import time. |
+| `GET` | `/api/catalog/items?limit=200&offset=0` | Lists bounded catalog items for UI selection/testing. |
 | `GET` | `/api/catalog/live?limit=100&offset=0` | Lists paginated live channel catalog records. |
 | `GET` | `/api/catalog/movies?limit=100&offset=0` | Lists paginated movie catalog records. |
 | `GET` | `/api/catalog/series?limit=100&offset=0` | Lists paginated series catalog records. |
@@ -44,6 +45,11 @@ The current project exposes Sprint 3 provider/account availability endpoints. Br
 | `GET` | `/api/sources?limit=100&offset=0` | Lists paginated source availability records. |
 | `PUT` | `/api/sources/{id}` | Updates source availability flags/notes. |
 | `DELETE` | `/api/sources/{id}` | Deletes one source availability record. |
+| `GET` | `/api/broker/status` | Returns reservation counts and account capacity usage. |
+| `GET` | `/api/broker/reservations` | Lists recent broker reservations. |
+| `POST` | `/api/broker/resolve` | Chooses the best available source and creates a temporary reservation. |
+| `POST` | `/api/broker/release` | Releases one active reservation. |
+| `POST` | `/api/broker/expire-now` | Expires stale reservations immediately for testing. |
 
 Interactive OpenAPI docs are available at `/docs` while the server is running.
 
@@ -129,15 +135,11 @@ Deferred:
 
 ### Broker
 
-- `GET /movie/{internal_id}`
-- `GET /series/{internal_id}`
-- `GET /live/{internal_id}`
+- `GET /api/broker/status`
+- `GET /api/broker/reservations`
 - `POST /api/broker/resolve`
-
-### Streams
-
-- `GET /api/streams`
-- `DELETE /api/streams/{reservation_id}`
+- `POST /api/broker/release`
+- `POST /api/broker/expire-now`
 
 ### Outputs
 
@@ -182,3 +184,34 @@ Catalog import also validates provider/account pairing before creating a job. Mi
 3. Select the provider on Catalog Import.
 4. Confirm the Account / Connection list filters to accounts for the selected provider.
 5. Submit an import and confirm the request includes `provider_id` and `account_id`.
+
+## Sprint 4 Broker Notes
+
+Sprint 4 does not play, proxy, transcode, redirect, or validate streams. The Broker only chooses a source availability record for a catalog item and reserves account capacity for a short TTL.
+
+`POST /api/broker/resolve` accepts:
+
+```json
+{
+  "catalog_item_id": "channel_abc123",
+  "media_type": "live",
+  "client_label": "Manual broker test",
+  "reservation_ttl_seconds": 60
+}
+```
+
+The response includes the selected source, provider, account/connection, redacted stream/location reference, reservation ID, expiration time, and decision reasons.
+
+Selection policy:
+
+- Enabled sources only.
+- Enabled providers only.
+- Enabled accounts/connections only.
+- Accounts with `Authentication Failed`, `Playlist Failed`, `Offline`, or `Disabled` health are excluded.
+- Active reservations count against account capacity across all media types.
+- Preferred priority groups are selected before Secondary, then Emergency.
+- Higher account weight wins within a priority group.
+- Lower active reservation count wins after priority and weight.
+- Stable deterministic tie-breaks are used after policy fields.
+
+If no source is available, the API returns `409` with a structured detail code such as `no_sources`, `all_disabled`, `all_unhealthy`, or `all_at_capacity`.

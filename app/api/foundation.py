@@ -28,7 +28,8 @@ MODULES = [
     ModuleDescriptor(
         name="broker",
         label="Stream Broker",
-        responsibility="Account selection, failover, balancing, and active reservations.",
+        responsibility="Decision-only source selection, account capacity checks, and temporary reservations.",
+        status=ServiceStatus.READY,
     ),
     ModuleDescriptor(
         name="outputs",
@@ -98,8 +99,8 @@ def health() -> dict[str, str]:
 def foundation() -> dict:
     return {
         "project": "Media Router",
-        "phase": "sprint_3_provider_account_availability",
-        "implementation_scope": "provider/account availability only: no broker routing, playback, failover, or generated outputs",
+        "phase": "sprint_4_broker_decision_engine",
+        "implementation_scope": "broker decision and reservation engine only: no playback, proxy streaming, transcoding, STRM, HDHomeRun, or media-server integrations",
         "principles": [principle.__dict__ for principle in PRINCIPLES],
         "modules": [module.__dict__ for module in MODULES],
     }

@@ -1,4 +1,5 @@
 from app.schemas.dashboard import DashboardStatus
+from app.services.broker import get_status as get_broker_status
 from app.services.catalog import get_summary, source_availability_summary
 from app.services.jobs import job_counts
 from app.services.logs import log_count
@@ -8,8 +9,8 @@ from app.services.system import get_system_info
 from app.services.wizard import get_wizard_state, get_wizard_steps
 
 
-SPRINT_SCOPE = ["Foundation", "Wizard", "Settings", "Dashboard", "Job System", "Logs", "About/System", "Catalog Engine", "Providers", "Accounts", "Source Availability"]
-DEFERRED_SCOPE = ["Broker", "Outputs", "Integrations", "Playback", "Failover"]
+SPRINT_SCOPE = ["Foundation", "Wizard", "Settings", "Dashboard", "Job System", "Logs", "About/System", "Catalog Engine", "Providers", "Accounts", "Source Availability", "Broker Decision Engine"]
+DEFERRED_SCOPE = ["Outputs", "Integrations", "Playback", "Proxy Streaming", "Transcoding"]
 
 
 def get_dashboard_status() -> DashboardStatus:
@@ -21,10 +22,11 @@ def get_dashboard_status() -> DashboardStatus:
     catalog = get_summary()
     providers = provider_account_summary()
     availability = source_availability_summary()
+    broker = get_broker_status()
     services_configured = any([settings.emby_url, settings.jellyfin_url, settings.nextpvr_url, settings.iptv_boss_export_path])
     return DashboardStatus(
         app_name=settings.app_name,
-        phase="Sprint 3",
+        phase="Sprint 4",
         health="ready",
         health_label="Ready",
         setup_status="ready" if wizard.setup_complete else "needs_setup",
@@ -51,6 +53,10 @@ def get_dashboard_status() -> DashboardStatus:
         problem_accounts=providers["problem_accounts"],
         source_availability_records=availability["source_availability"],
         average_sources_per_item=availability["average_sources_per_item"],
+        broker_active_reservations=broker.active_reservations,
+        broker_expired_reservations=broker.expired_reservations,
+        broker_accounts_at_capacity=broker.accounts_at_capacity,
+        broker_available_accounts=broker.available_accounts,
         sprint_scope=SPRINT_SCOPE,
         deferred_scope=DEFERRED_SCOPE,
     )

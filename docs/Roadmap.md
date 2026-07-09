@@ -85,8 +85,6 @@ Exit criteria:
 
 ## Phase 3: Provider, Account, And Source Availability
 
-Current phase.
-
 Deliverables:
 
 - Provider create/read/update/delete.
@@ -114,18 +112,23 @@ Exit criteria:
 
 ## Phase 4: Broker
 
+Current phase.
+
 Deliverables:
 
 - Account selection policy.
 - Active stream reservation model.
 - Capacity-aware routing.
-- Failover attempt sequence.
-- Stable stream endpoints.
+- Reservation expiry.
+- Broker status and usage UI.
+- Decision tester UI.
 
 Exit criteria:
 
-- Broker can route requests through selected provider accounts.
+- Broker can choose the best available source and reserve account capacity.
 - Active stream usage is visible.
+- Account capacity is shared across live, movie, and episode reservations.
+- No playback, proxy streaming, transcoding, STRM generation, HDHomeRun output, or media integrations are implemented.
 
 ## Phase 5: Outputs
 

@@ -30,5 +30,9 @@ class DashboardStatus(BaseModel):
     problem_accounts: int
     source_availability_records: int
     average_sources_per_item: float
+    broker_active_reservations: int
+    broker_expired_reservations: int
+    broker_accounts_at_capacity: int
+    broker_available_accounts: int
     sprint_scope: list[str]
     deferred_scope: list[str]
