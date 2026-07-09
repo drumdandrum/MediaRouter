@@ -41,6 +41,7 @@ See `docs/adr/0001-foundation-first.md`.
 | Broker deferred through Sprint 3 | Accepted | Sprint 3 stopped at availability; Sprint 4 adds decision-only source selection and reservations. |
 | Local secret storage first | Accepted | Sprint 3 stores secrets locally and redacts reads/logs; encryption is deferred to hardening. |
 | Decision-only broker first | Accepted | Sprint 4 chooses sources and reserves account capacity without playback, proxy streaming, transcoding, or generated outputs. |
+| Runtime URLs before outputs | Accepted | Sprint 5 clients use stable Media Router URLs that resolve through the Broker; STRM generation and output adapters remain deferred. |
 
 ## Open Decisions
 

@@ -40,6 +40,7 @@ const titles = {
 const fieldLabels = {
   app_name: "App Name",
   public_base_url: "Public Base URL",
+  runtime_public_base_url: "Runtime Public Base URL",
   timezone: "Timezone",
   log_level: "Log Level",
   data_directory: "Data Directory",
@@ -210,6 +211,43 @@ function table(headers, rows) {
   `;
 }
 
+function publicBaseUrl() {
+  const runtimeBase = String(state.settings?.runtime_public_base_url || "").trim();
+  if (runtimeBase) return runtimeBase.replace(/\/$/, "");
+  const envBase = String(state.settings?.public_base_url || "").trim().replace(/\/$/, "");
+  if (envBase && !/^https?:\/\/media-router(?::\d+)?(?:\/|$)/i.test(envBase)) return envBase;
+  return window.location.origin.replace(/\/$/, "");
+}
+
+function runtimeRouteFor(item) {
+  const routes = { channel: "live", movie: "movie", episode: "episode" };
+  return routes[item?.media_type] || "";
+}
+
+function runtimeUrlFor(item, debug = false) {
+  const route = runtimeRouteFor(item);
+  if (!route) return "";
+  return `${publicBaseUrl()}/r/${route}/${item.internal_id}${debug ? "?debug=true" : ""}`;
+}
+
+function runtimeCell(item) {
+  const url = runtimeUrlFor(item);
+  if (!url) return '<span class="muted">No runtime route</span>';
+  return `
+    <div class="runtime-preview">
+      <code>${url}</code>
+      <button data-runtime-debug="${runtimeUrlFor(item, true)}">Debug Resolve</button>
+    </div>
+  `;
+}
+
+function bindRuntimeButtons(scope = document) {
+  scope.querySelectorAll("[data-runtime-debug], [data-runtime-open]").forEach((button) => button.addEventListener("click", () => {
+    const url = button.dataset.runtimeDebug || button.dataset.runtimeOpen;
+    if (url) window.open(url, "_blank", "noopener");
+  }));
+}
+
 function renderCatalogSummary() {
   const summary = state.catalogSummary;
   document.getElementById("cat-summary-channels").textContent = summary.channels;
@@ -266,9 +304,11 @@ function renderCatalog() {
       <td>${item.season_number || ""}</td>
       <td>${item.episode_number || ""}</td>
       <td>${item.confidence}</td>
+      <td>${runtimeCell(item)}</td>
     </tr>
   `);
-  target.innerHTML = `${table(["Title", "Group", "TVG ID", "CUID", "Show", "Season", "Episode", "Confidence"], rows)}<p class="muted helper-text">Showing up to 100 records. Use the API limit and offset parameters for deeper pages.</p>`;
+  target.innerHTML = `${table(["Title", "Group", "TVG ID", "CUID", "Show", "Season", "Episode", "Confidence", "Runtime"], rows)}<p class="muted helper-text">Showing up to 100 records. Use the API limit and offset parameters for deeper pages.</p>`;
+  bindRuntimeButtons(target);
 }
 
 function optionList(items, emptyLabel = "None", selectedValue = "") {
@@ -458,6 +498,34 @@ function brokerCatalogOptions() {
   return `<option value="">Select catalog item</option>` + state.brokerCatalogItems.map((item) => `<option value="${item.internal_id}">${item.media_type}: ${item.title}</option>`).join("");
 }
 
+function selectedBrokerCatalogItem() {
+  const itemId = document.getElementById("broker-catalog-item")?.value || "";
+  return state.brokerCatalogItems.find((item) => item.internal_id === itemId) || null;
+}
+
+function renderBrokerRuntimePreview() {
+  const target = document.getElementById("broker-runtime-preview");
+  if (!target) return;
+  const item = selectedBrokerCatalogItem();
+  if (!item) {
+    target.innerHTML = '<p class="muted">Select a catalog item to preview its runtime URL.</p>';
+    return;
+  }
+  const url = runtimeUrlFor(item);
+  if (!url) {
+    target.innerHTML = '<p class="muted">This catalog item does not have a Sprint 5 runtime route.</p>';
+    return;
+  }
+  target.innerHTML = `
+    <div class="runtime-preview">
+      <code>${url}</code>
+      <button data-runtime-debug="${runtimeUrlFor(item, true)}">Resolve JSON/debug</button>
+      <button data-runtime-open="${url}">Resolve redirect/open</button>
+    </div>
+  `;
+  bindRuntimeButtons(target);
+}
+
 function renderBroker() {
   const status = state.brokerStatus;
   document.getElementById("broker-active-reservations").textContent = status.active_reservations;
@@ -470,6 +538,7 @@ function renderBroker() {
   const selectedItem = itemSelect.value;
   itemSelect.innerHTML = brokerCatalogOptions();
   itemSelect.value = state.brokerCatalogItems.some((item) => item.internal_id === selectedItem) ? selectedItem : "";
+  renderBrokerRuntimePreview();
   renderBrokerDecision();
   renderBrokerAccountUsage();
   renderBrokerReservations();
@@ -747,14 +816,15 @@ async function loadSettings() { [state.settings, state.categories] = await Promi
 async function loadProviders() { state.providers = await api("/api/providers"); }
 async function loadAccounts() { state.accounts = await api("/api/accounts"); }
 async function loadBroker() {
-  [state.brokerStatus, state.brokerReservations, state.brokerCatalogItems] = await Promise.all([
+  [state.brokerStatus, state.brokerReservations, state.brokerCatalogItems, state.settings] = await Promise.all([
     api("/api/broker/status"),
     api("/api/broker/reservations"),
     api("/api/catalog/items?limit=500&offset=0"),
+    api("/api/settings"),
   ]);
 }
 async function loadCatalog() {
-  [state.catalogSummary, state.providers, state.accounts] = await Promise.all([api("/api/catalog/summary"), api("/api/providers"), api("/api/accounts")]);
+  [state.catalogSummary, state.providers, state.accounts, state.settings] = await Promise.all([api("/api/catalog/summary"), api("/api/providers"), api("/api/accounts"), api("/api/settings")]);
   syncCatalogImportSelection();
   renderProviderSelectors();
   const endpoints = {
@@ -835,6 +905,7 @@ function bind() {
     }
   });
   document.getElementById("reset-catalog-import").addEventListener("click", resetCatalogImportForm);
+  document.getElementById("broker-catalog-item").addEventListener("change", renderBrokerRuntimePreview);
   document.getElementById("resolve-broker-source").addEventListener("click", async () => {
     const values = brokerResolveValues();
     if (!values.catalog_item_id) {

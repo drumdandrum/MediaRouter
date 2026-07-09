@@ -649,6 +649,12 @@ def list_all_items(limit: int = 200, offset: int = 0) -> list[CatalogItem]:
     return [_item_from_row(row) for row in rows]
 
 
+def get_item(catalog_internal_id: str) -> CatalogItem | None:
+    ensure_schema()
+    rows = _rows("SELECT * FROM catalog_items WHERE internal_id = ?", (catalog_internal_id,))
+    return _item_from_row(rows[0]) if rows else None
+
+
 def list_sources(limit: int = 100, offset: int = 0) -> list[CatalogSource]:
     ensure_schema()
     limit = min(max(limit, 1), 500)
@@ -742,6 +748,16 @@ def source_availability_summary() -> dict[str, float | int]:
         sources = conn.execute("SELECT COUNT(*) AS count FROM source_availability").fetchone()["count"]
         items = conn.execute("SELECT COUNT(*) AS count FROM catalog_items WHERE media_type IN ('channel', 'movie', 'episode')").fetchone()["count"]
     return {"source_availability": sources, "average_sources_per_item": round(sources / items, 2) if items else 0}
+
+
+def count_enabled_source_availability(catalog_internal_id: str) -> int:
+    ensure_schema()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS count FROM source_availability WHERE catalog_internal_id = ? AND enabled = 1",
+            (catalog_internal_id,),
+        ).fetchone()
+    return int(row["count"] if row else 0)
 
 
 def clear_test_data() -> CatalogSummary:

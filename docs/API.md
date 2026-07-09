@@ -1,8 +1,8 @@
 # API
 
-## Current Sprint 4 API
+## Current Sprint 5 API
 
-The current project exposes Sprint 4 broker decision and reservation endpoints. Playback, proxy streaming, transcoding, outputs, and media integrations are deliberately deferred.
+The current project exposes Sprint 5 source resolution runtime endpoints on top of Sprint 4 broker decisions and reservations. Runtime URLs redirect to selected provider/source URLs; playback, proxy streaming, transcoding, STRM output, HDHomeRun output, and media integrations are deliberately deferred.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -51,6 +51,10 @@ The current project exposes Sprint 4 broker decision and reservation endpoints. 
 | `POST` | `/api/broker/release` | Releases one active reservation. |
 | `POST` | `/api/broker/release-all` | Releases every active reservation. |
 | `POST` | `/api/broker/expire-now` | Expires stale reservations immediately for testing. |
+| `GET` | `/api/runtime/preview/{catalog_item_id}` | Returns the stable runtime URL, debug URL, catalog item, media type, and enabled source count. |
+| `GET` | `/r/live/{catalog_item_id}` | Resolves a live channel through the Broker and returns HTTP `302` to the selected source URL. |
+| `GET` | `/r/movie/{catalog_item_id}` | Resolves a movie through the Broker and returns HTTP `302` to the selected source URL. |
+| `GET` | `/r/episode/{catalog_item_id}` | Resolves an episode through the Broker and returns HTTP `302` to the selected source URL. |
 
 Interactive OpenAPI docs are available at `/docs` while the server is running.
 
@@ -143,6 +147,13 @@ Deferred:
 - `POST /api/broker/release-all`
 - `POST /api/broker/expire-now`
 
+### Runtime Resolution
+
+- `GET /api/runtime/preview/{catalog_item_id}`
+- `GET /r/live/{catalog_item_id}`
+- `GET /r/movie/{catalog_item_id}`
+- `GET /r/episode/{catalog_item_id}`
+
 ### Outputs
 
 - `GET /api/outputs`
@@ -221,3 +232,33 @@ Each evaluated candidate includes selected/skipped state, account, provider, pri
 If no source is available, the API returns `409` with a structured detail code such as `no_sources`, `all_disabled`, `all_unhealthy`, or `all_at_capacity`. The error detail includes `failure_code`, `failure_message`, `decision_reasons`, and `evaluated_candidates` so the UI can show friendly diagnostics instead of raw objects.
 
 `POST /api/broker/release-all` releases every active reservation and returns refreshed broker status. `POST /api/broker/expire-now` marks expired active reservations and returns refreshed broker status.
+
+## Sprint 5 Runtime Notes
+
+Sprint 5 adds stable Media Router URLs that clients can call instead of direct provider URLs:
+
+- `/r/live/{catalog_item_id}`
+- `/r/movie/{catalog_item_id}`
+- `/r/episode/{catalog_item_id}`
+
+User-facing runtime previews use this base URL priority:
+
+1. Settings > Runtime > Runtime Public Base URL.
+2. `MEDIA_ROUTER_PUBLIC_BASE_URL`, when it is set to a client-visible hostname.
+3. Current request-derived scheme and host.
+
+The Docker-internal hostname `media-router` is not shown in Catalog or Broker runtime previews. For local testing, set Runtime Public Base URL to `http://localhost:8088`.
+
+Default behavior is redirect mode. A request such as `GET /r/movie/{id}` calls the Broker, creates a temporary reservation, respects disabled providers/accounts/sources and account capacity, then returns HTTP `302` with the selected provider/source URL in the `Location` header.
+
+Debug mode is enabled with `debug=true`. A request such as `GET /r/movie/{id}?debug=true` creates the same reservation but returns JSON instead of redirecting. The response includes the catalog item, selected provider, selected account, selected source, reservation ID, expiration time, redacted stream/location reference, Broker decision reason, and evaluated candidates.
+
+Runtime routes accept optional query parameters:
+
+- `ttl=300` to set reservation TTL seconds for that resolve request.
+- `client_label=emby-test` to store a client label on the reservation.
+- `debug=true` to return JSON diagnostics rather than redirecting.
+
+If no source is available, runtime routes return a structured error with `failure_code`, `failure_message`, `decision_reasons`, and `evaluated_candidates`. Expected failure codes include `catalog_item_not_found`, `no_sources`, `all_disabled`, `all_unhealthy`, and `all_at_capacity`.
+
+Sprint 5 does not proxy, play, transcode, generate STRM files, emulate HDHomeRun, or sync with Emby/Jellyfin/Channels. Future output plugins should use these stable Media Router URLs.
