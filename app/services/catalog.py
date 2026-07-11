@@ -73,6 +73,7 @@ def ensure_schema(conn: sqlite3.Connection | None = None) -> None:
             tvg_id TEXT,
             tvg_name TEXT,
             tvg_logo TEXT,
+            tvg_chno TEXT,
             cuid TEXT,
             show_name TEXT,
             season_number INTEGER,
@@ -137,6 +138,9 @@ def ensure_schema(conn: sqlite3.Connection | None = None) -> None:
         CREATE INDEX IF NOT EXISTS idx_source_availability_account ON source_availability(account_id);
         """
     )
+    columns = {row["name"] if hasattr(row, "keys") else row[1] for row in conn.execute("PRAGMA table_info(catalog_items)").fetchall()}
+    if "tvg_chno" not in columns:
+        conn.execute("ALTER TABLE catalog_items ADD COLUMN tvg_chno TEXT")
     conn.execute(
         """
         INSERT INTO source_availability (
@@ -315,6 +319,7 @@ def _upsert_item(conn: sqlite3.Connection, *, internal_id: str, media_type: str,
         "tvg_id": attrs.get("tvg-id"),
         "tvg_name": attrs.get("tvg-name"),
         "tvg_logo": attrs.get("tvg-logo"),
+        "tvg_chno": attrs.get("tvg-chno") or attrs.get("channel-number") or attrs.get("chno"),
         "cuid": attrs.get("cuid"),
         "show_name": entry.show_name,
         "season_number": entry.season_number,
@@ -330,7 +335,7 @@ def _upsert_item(conn: sqlite3.Connection, *, internal_id: str, media_type: str,
             """
             UPDATE catalog_items SET
                 title=:title, normalized_title=:normalized_title, group_title=:group_title,
-                tvg_id=:tvg_id, tvg_name=:tvg_name, tvg_logo=:tvg_logo, cuid=:cuid,
+                tvg_id=:tvg_id, tvg_name=:tvg_name, tvg_logo=:tvg_logo, tvg_chno=:tvg_chno, cuid=:cuid,
                 show_name=:show_name, season_number=:season_number, episode_number=:episode_number,
                 episode_title=:episode_title, parent_internal_id=:parent_internal_id,
                 confidence=:confidence, raw_title=:raw_title, updated_at=:updated_at
@@ -345,11 +350,11 @@ def _upsert_item(conn: sqlite3.Connection, *, internal_id: str, media_type: str,
             """
             INSERT INTO catalog_items (
                 internal_id, media_type, title, normalized_title, group_title, tvg_id, tvg_name,
-                tvg_logo, cuid, show_name, season_number, episode_number, episode_title,
+                tvg_logo, tvg_chno, cuid, show_name, season_number, episode_number, episode_title,
                 parent_internal_id, confidence, raw_title, created_at, updated_at
             ) VALUES (
                 :internal_id, :media_type, :title, :normalized_title, :group_title, :tvg_id, :tvg_name,
-                :tvg_logo, :cuid, :show_name, :season_number, :episode_number, :episode_title,
+                :tvg_logo, :tvg_chno, :cuid, :show_name, :season_number, :episode_number, :episode_title,
                 :parent_internal_id, :confidence, :raw_title, :created_at, :updated_at
             )
             """,
@@ -555,6 +560,7 @@ def _item_from_row(row: sqlite3.Row) -> CatalogItem:
         tvg_id=row["tvg_id"],
         tvg_name=row["tvg_name"],
         tvg_logo=row["tvg_logo"],
+        tvg_chno=row["tvg_chno"] if "tvg_chno" in row.keys() else None,
         cuid=row["cuid"],
         show_name=row["show_name"],
         season_number=row["season_number"],

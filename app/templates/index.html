@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Media Router Sprint 4</title>
+    <title>Media Router Sprint 6</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -21,6 +21,7 @@
           <button data-view="wizard">Wizard</button>
           <button data-view="catalog">Catalog</button>
           <button data-view="broker">Broker</button>
+          <button data-view="outputs">Outputs</button>
           <button data-view="providers">Providers</button>
           <button data-view="accounts">Accounts</button>
           <button data-view="settings">Settings</button>
@@ -147,6 +148,27 @@
         </section>
 
         <section id="broker" class="view">
+          <section class="panel broker-refresh-panel">
+            <div class="panel-head">
+              <h2>Live Broker Status</h2>
+              <div class="button-row inline">
+                <button id="broker-refresh-now">Refresh Now</button>
+              </div>
+            </div>
+            <form class="form-grid broker-refresh-controls">
+              <label>Auto Refresh<select id="broker-auto-refresh">
+                <option value="true">Enabled</option>
+                <option value="false">Disabled</option>
+              </select></label>
+              <label>Interval<select id="broker-refresh-interval">
+                <option value="2000">2 seconds</option>
+                <option value="3000">3 seconds</option>
+                <option value="5000">5 seconds</option>
+                <option value="10000">10 seconds</option>
+              </select></label>
+            </form>
+            <p class="muted helper-text">Last updated: <strong id="broker-last-updated">Never</strong> <span id="broker-stale-indicator"></span></p>
+          </section>
           <div class="metric-grid compact">
             <article><span>Active</span><strong id="broker-active-reservations">0</strong></article>
             <article><span>Total</span><strong id="broker-total-reservations">0</strong></article>
@@ -173,6 +195,7 @@
                 <option value="series">Series Episodes</option>
               </select></label>
               <label>Client Label<input name="client_label" value="Manual broker test" /></label>
+              <label>Client Session<input name="client_session" value="" placeholder="Optional playback session" /></label>
               <label>TTL Seconds<input name="reservation_ttl_seconds" type="number" value="60" min="1" /></label>
             </form>
             <p id="broker-resolve-error" class="form-error" role="alert"></p>
@@ -193,6 +216,90 @@
               <button id="release-all-broker-reservations">Release All Active</button>
             </div>
             <div id="broker-reservations-list" class="table-wrap"></div>
+          </section>
+        </section>
+
+        <section id="outputs" class="view">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>STRM Output</h2>
+              <div class="button-row inline">
+                <button id="save-strm-settings">Save Settings</button>
+                <button id="validate-strm-paths">Validate Paths</button>
+                <button id="dry-run-strm">Dry Run</button>
+                <button id="generate-strm" class="primary">Generate</button>
+              </div>
+            </div>
+            <form id="strm-settings-form" class="form-grid">
+              <label>Movies STRM Output Directory<input name="movies_output_directory" value="/outputs/movies" /></label>
+              <label>Series STRM Output Directory<input name="series_output_directory" value="/outputs/series" /></label>
+              <label>Filename Format<input name="filename_format" value="default" /></label>
+              <label>Overwrite Existing Files<select name="overwrite_existing_files"><option value="true">true</option><option value="false">false</option></select></label>
+              <label>Remove Orphaned Generated Files<select name="remove_orphaned_files"><option value="false">false</option><option value="true">true</option></select></label>
+              <label>Dry Run Mode<select name="dry_run_mode"><option value="false">false</option><option value="true">true</option></select></label>
+            </form>
+            <p id="strm-settings-error" class="form-error" role="alert"></p>
+            <p class="muted helper-text">STRM files contain Media Router runtime URLs only. The Broker selects the actual source when a media server opens the file.</p>
+            <div class="detail-grid">
+              <div><span>Runtime Base URL</span><strong id="strm-runtime-base">-</strong></div>
+              <div><span>Last Run</span><strong id="strm-last-run">Never</strong></div>
+              <div><span>Tracked Files</span><strong id="strm-generated-count">0</strong></div>
+            </div>
+          </section>
+          <section class="panel">
+            <h2>STRM Path Validation</h2>
+            <div id="strm-path-validation" class="table-wrap subsection"></div>
+          </section>
+          <section class="panel">
+            <h2>STRM Dry Run / Generate Results</h2>
+            <div id="strm-summary"></div>
+            <div id="strm-operations" class="table-wrap"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Live TV M3U Output</h2>
+              <div class="button-row inline">
+                <button id="save-live-m3u-settings">Save Settings</button>
+                <button id="validate-live-m3u-path">Validate Path</button>
+                <button id="dry-run-live-m3u">Dry Run</button>
+                <button id="generate-live-m3u" class="primary">Generate</button>
+              </div>
+            </div>
+            <form id="live-m3u-settings-form" class="form-grid">
+              <label>Output File Path<input name="output_file_path" value="/outputs/live/live.m3u" /></label>
+              <label>Runtime Client Access URL<input name="runtime_client_access_url" placeholder="Blank uses Runtime Public Base URL" /></label>
+              <label>Include Disabled / Unavailable Channels<select name="include_disabled_channels"><option value="false">false</option><option value="true">true</option></select></label>
+              <label>Include Logos<select name="include_logos"><option value="true">true</option><option value="false">false</option></select></label>
+              <label>Include Group Title<select name="include_group_title"><option value="true">true</option><option value="false">false</option></select></label>
+              <label>Include TVG ID<select name="include_tvg_id"><option value="true">true</option><option value="false">false</option></select></label>
+              <label>Include TVG Name<select name="include_tvg_name"><option value="true">true</option><option value="false">false</option></select></label>
+              <label>Channel Limit<input name="channel_limit" type="number" value="0" min="0" /></label>
+              <label>Dry Run Mode<select name="dry_run_mode"><option value="false">false</option><option value="true">true</option></select></label>
+            </form>
+            <p id="live-m3u-settings-error" class="form-error" role="alert"></p>
+            <p class="muted helper-text">Live M3U entries point to Media Router runtime URLs. The Broker still chooses the actual account/source at playback time.</p>
+            <div class="detail-grid">
+              <div><span>Output File</span><strong id="live-m3u-output-file">-</strong></div>
+              <div><span>Playlist URL</span><strong id="live-m3u-playlist-url">-</strong></div>
+              <div><span>Runtime Base URL</span><strong id="live-m3u-runtime-base">-</strong></div>
+              <div><span>Last Run</span><strong id="live-m3u-last-run">Never</strong></div>
+              <div><span>Last Generated</span><strong id="live-m3u-last-generated">Never</strong></div>
+              <div><span>Channels</span><strong id="live-m3u-channel-count">0</strong></div>
+              <div><span>Skipped</span><strong id="live-m3u-skipped-count">0</strong></div>
+            </div>
+          </section>
+          <section class="panel">
+            <h2>Live TV M3U Path Validation</h2>
+            <div id="live-m3u-path-validation" class="table-wrap subsection"></div>
+          </section>
+          <section class="panel">
+            <h2>Live TV M3U Preview / Results</h2>
+            <div id="live-m3u-summary"></div>
+            <div id="live-m3u-preview" class="table-wrap"></div>
+          </section>
+          <section class="panel">
+            <h2>Recent Generated Files</h2>
+            <div id="strm-generated-files" class="table-wrap"></div>
           </section>
         </section>
 

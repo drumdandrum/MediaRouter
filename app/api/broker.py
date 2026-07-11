@@ -23,6 +23,7 @@ def broker_resolve(payload: BrokerResolveRequest) -> BrokerDecision:
             catalog_item_id=payload.catalog_item_id,
             media_type=payload.media_type,
             client_label=payload.client_label,
+            client_session=payload.client_session,
             reservation_ttl_seconds=payload.reservation_ttl_seconds,
         )
     except BrokerUnavailable as exc:

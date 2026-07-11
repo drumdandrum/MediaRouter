@@ -119,6 +119,7 @@ Deliverables:
 - Capacity-aware routing.
 - Reservation expiry.
 - Broker status and usage UI.
+- Broker status auto-refresh by polling.
 - Decision tester UI.
 - Structured decision explanations.
 - Evaluated candidate diagnostics.
@@ -128,19 +129,20 @@ Exit criteria:
 
 - Broker can choose the best available source and reserve account capacity.
 - Active stream usage is visible.
+- Broker page updates active reservations and account capacity without manual refresh.
 - Account capacity is shared across live, movie, and episode reservations.
 - Broker resolve results explain selected and skipped candidates.
 - No playback, proxy streaming, transcoding, STRM generation, HDHomeRun output, or media integrations are implemented.
 
 ## Phase 5: Source Resolution Runtime
 
-Current phase.
-
 Deliverables:
 
 - Stable Media Router runtime URLs for live channels, movies, and episodes.
 - Runtime routes that call the Broker and create reservations.
 - Redirect mode using HTTP `302` to the selected source URL.
+- HEAD support for media-server redirect probes.
+- Idempotent reservation reuse for repeated media-server startup GET probes.
 - JSON/debug mode with Broker decision explanations and evaluated candidates.
 - Runtime URL preview API.
 - Catalog and Broker UI runtime URL previews.
@@ -151,6 +153,8 @@ Exit criteria:
 - Clients can call `/r/live/{id}`, `/r/movie/{id}`, or `/r/episode/{id}` instead of direct provider URLs.
 - Runtime resolution respects source/provider/account enablement, account health, capacity, and Broker TTL.
 - Debug mode returns JSON and does not redirect.
+- HEAD probes return redirect headers without consuming long-lived account capacity.
+- Repeated GET probes from the same short-lived client/session reuse one reservation.
 - Runtime previews do not display Docker-internal hostnames.
 - No STRM generation, HDHomeRun output, media-server integration, proxy streaming, playback, or transcoding is implemented.
 
@@ -159,16 +163,28 @@ Exit criteria:
 Deliverables:
 
 - STRM output plugin.
-- M3U output plugin.
+- Live TV M3U output plugin.
 - XMLTV output plugin.
 - HDHomeRun output plugin.
 - Output build/status jobs.
+- STRM dry-run and generated-file tracking.
+- STRM output path validation and generate diagnostics.
+- Live TV M3U settings, path validation, dry-run, generation job, history, and preview.
+- Live TV M3U channel number and group preservation.
+- Runtime playback reservation TTL defaults for generated/runtime URLs.
 
 Exit criteria:
 
-- Outputs are generated from catalog and broker contracts.
-- STRM output preserves folder layout when rewriting existing libraries.
+- Movie and episode STRM outputs are generated from catalog and runtime URL contracts.
+- Generated STRM files contain Media Router runtime URLs, not provider URLs.
+- Dry-run previews create, update, skip, and tracked orphan cleanup actions without writing files.
+- Generate fails gracefully with a clear path-specific reason when output directories are missing, invalid, or not writable.
+- Generated Live TV M3U playlists contain `/r/live/{catalog_item_id}` runtime URLs, not provider URLs.
+- Generated Live TV M3U playlists preserve channel numbers and groups and sort by channel number, group, then title.
+- Broker remains responsible for choosing the actual account/source when a client opens a runtime URL.
+- Runtime reservations release by TTL expiration until heartbeat/client release is implemented later.
 - Generated outputs can be deleted and rebuilt from catalog/settings.
+- XMLTV, HDHomeRun output, integrations, proxy streaming, playback, and transcoding remain deferred.
 
 ## Phase 7: Integrations
 
@@ -179,6 +195,8 @@ Deliverables:
 - NextPVR adapter.
 - Channels DVR validation.
 - IPTV Boss folder watcher.
+- Runtime proxy mode for media servers that cannot reliably consume redirects.
+- WebSockets or Server-Sent Events for live Broker updates if polling becomes insufficient.
 
 Exit criteria:
 

@@ -1,13 +1,19 @@
 # Outputs Module
 
-Owns plugin contracts for generated outputs.
+Owns generated outputs.
+
+Sprint 6 responsibilities:
+
+- STRM output
+
+Sprint 7 responsibilities:
+
+- Live TV M3U output
 
 Planned plugins:
 
-- STRM output
-- M3U output
 - XMLTV output
 - HDHomeRun output
 - REST API output
 
-Plugins should consume catalog and broker contracts rather than provider URLs directly.
+Outputs consume catalog and runtime URL contracts rather than provider URLs directly. Generated files are disposable artifacts and should be safe to delete and rebuild.

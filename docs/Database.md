@@ -2,7 +2,7 @@
 
 ## Current Status
 
-Sprint 4 extends the SQLite catalog schema with broker reservations while preserving the Sprint 1.5 JSON-backed foundation state and Sprint 2/3 catalog, provider, account, and source availability records. Sprint 5 adds runtime resolve routes on top of the existing broker reservations table and does not add new database tables.
+Sprint 4 extends the SQLite catalog schema with broker reservations while preserving the Sprint 1.5 JSON-backed foundation state and Sprint 2/3 catalog, provider, account, and source availability records. Sprint 5 adds runtime resolve routes on top of the existing broker reservations table. Sprint 6 adds STRM output metadata tables while generated `.strm` files remain disposable artifacts. Sprint 7 adds JSON-backed Live TV M3U output settings and uses the existing output history/tracking metadata; generated `.m3u` files remain disposable artifacts.
 
 Docker Compose mounts:
 
@@ -21,9 +21,11 @@ Current persisted files:
 - `/data/settings.json`
 - `/data/wizard_state.json`
 - `/data/jobs.json`
+- `/data/outputs_strm_settings.json`
+- `/data/outputs_live_m3u_settings.json`
 - `/data/media_router.db`
 
-The JSON files remain the foundation settings store. `media_router.db` stores catalog identity, providers, accounts/connections, source availability, legacy source mappings, import history, and broker reservations.
+The JSON files remain the foundation and output settings stores. `media_router.db` stores catalog identity, providers, accounts/connections, source availability, legacy source mappings, import history, broker reservations, and generated output metadata.
 
 SQLite is the preferred first database because Media Router is initially a single-server home application. The schema should still be designed cleanly enough to migrate to another relational database later.
 
@@ -122,6 +124,10 @@ Important fields:
 - `title`
 - `sort_title`
 - `group_title`
+- `tvg_id`
+- `tvg_name`
+- `tvg_logo`
+- `tvg_chno`
 - `season_number`
 - `episode_number`
 - `external_ids_json`
@@ -135,6 +141,8 @@ Sprint 2 implemented fields also include:
 - `parent_internal_id`
 - `confidence`
 - `raw_title`
+
+Sprint 7 preserves imported live TV channel numbers in `tvg_chno` when M3U `#EXTINF` metadata includes `tvg-chno`, `channel-number`, or `chno`. Live TV M3U output emits `tvg-chno` and sorts by numeric channel number when available, then group title, then display title.
 
 Constraints:
 
@@ -203,8 +211,14 @@ Important fields:
 - `expires_at`
 - `released_at`
 - `client_label`
+- `client_session`
+- `client_fingerprint`
 
 Statuses are `active`, `released`, `expired`, and `failed`. Expired and released reservations do not count against account capacity. Account max stream limits apply across all media types because active reservations are counted by account.
+
+Runtime playback reservations currently release by TTL expiration. Manual Broker tests default to a short 60-second TTL; runtime live/movie/episode routes default to four hours unless a `ttl` query parameter is supplied. Client heartbeat and client-driven playback-end release are deferred.
+
+Runtime requests also store short-lived reuse identity when available. `client_session` stores explicit session IDs or label-derived session keys; `client_fingerprint` stores a temporary derived fingerprint for existing runtime URLs that do not pass parameters. These values are used only to reuse repeated playback startup/probe requests within the configured reuse window.
 
 ### imports
 
@@ -243,6 +257,54 @@ Important fields:
 - `last_build_at`
 
 Generated output files are not authoritative state. They should be reproducible from catalog, settings, and plugin configuration.
+
+### output_generated_files
+
+Tracks generated output files so regeneration, history display, and STRM orphan cleanup can be safe. Sprint 6 uses this for movie/episode STRM files; Sprint 7 records the generated Live TV M3U file as disposable output metadata.
+
+Important fields:
+
+- `output_id`
+- `catalog_item_id`
+- `media_type`
+- `output_type`
+- `output_path`
+- `last_content_hash`
+- `last_generated_at`
+
+### output_run_history
+
+Tracks recent output runs for UI/job diagnostics.
+
+Important fields:
+
+- `id`
+- `output_id`
+- `output_type`
+- `mode`
+- `status`
+- `summary_json`
+- `message`
+- `created_at`
+
+Sprint 6 STRM and Sprint 7 Live TV M3U runs both write summaries here. The generated output files themselves are not authoritative state.
+- `status`
+
+Only tracked generated files may be removed by orphan cleanup. The STRM file content is disposable and should contain Media Router runtime URLs, not provider URLs.
+
+### output_run_history
+
+Stores recent output run summaries.
+
+Important fields:
+
+- `output_id`
+- `output_type`
+- `mode`
+- `status`
+- `summary_json`
+- `started_at`
+- `finished_at`
 
 ### events
 

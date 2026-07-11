@@ -9,6 +9,7 @@ from app.api.catalog import router as catalog_router
 from app.api.foundation import router as foundation_router
 from app.api.jobs import router as jobs_router
 from app.api.logs import router as logs_router
+from app.api.outputs import router as outputs_router
 from app.api.providers import router as providers_router
 from app.api.runtime import router as runtime_router
 from app.api.settings import router as settings_router
@@ -22,7 +23,7 @@ settings = get_settings()
 
 app = FastAPI(
     title="Media Router",
-    description="Sprint 5 source resolution runtime for a modular home media orchestration platform.",
+    description="Sprint 7 Live TV M3U output generator for a modular home media orchestration platform.",
     version=APP_VERSION,
 )
 
@@ -34,6 +35,7 @@ app.include_router(dashboard_router)
 app.include_router(foundation_router)
 app.include_router(jobs_router)
 app.include_router(logs_router)
+app.include_router(outputs_router)
 app.include_router(providers_router)
 app.include_router(runtime_router)
 app.include_router(settings_router)

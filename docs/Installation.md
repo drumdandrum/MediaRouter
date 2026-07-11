@@ -77,9 +77,7 @@ MEDIA_ROUTER_DATA_DIR=/data
 
 Settings, wizard state, and job history are stored in `/data` inside the container and `./data` on the host.
 
-The foundation compose file intentionally does not mount media folders, Docker sockets, or IPTV Boss exports yet.
-
-Those mounts should be introduced only when their modules are implemented.
+The compose file should mount output folders for implemented output modules as read-write container paths. IPTVBoss exports may be mounted read-only for imports.
 
 ## Future Production Shape
 
@@ -88,6 +86,10 @@ Expected future media-related Docker mounts:
 ```yaml
 volumes:
   - ./data:/data
+  - /Users/Shared/IPTVBoss/output:/iptvboss/output:ro
+  - /Users/Shared/MediaRouter/strm/movies:/outputs/movies
+  - /Users/Shared/MediaRouter/strm/series:/outputs/series
+  - /Users/Shared/MediaRouter/live:/outputs/live
   - /var/run/docker.sock:/var/run/docker.sock:ro
   - /mnt:/mnt:ro
   - /media:/media:ro
@@ -103,6 +105,17 @@ MEDIA_ROUTER_DATABASE_URL=sqlite:////data/media-router.db
 ```
 
 For Sprint 5 runtime URL previews, the preferred user-facing setting is Settings > Runtime > Runtime Public Base URL. Set it to a browser/client-visible address such as `http://localhost:8088` for local testing. If that field is blank, Media Router uses `MEDIA_ROUTER_PUBLIC_BASE_URL` when it is not the Docker-internal `media-router` hostname, then falls back to the current request host/scheme.
+
+For Sprint 6 STRM output, configure output directories as container paths such as `/outputs/movies` and `/outputs/series`. Mount host folders into those paths with Docker as read-write volumes. Do not enter Mac host paths in the Media Router UI. IPTVBoss imports can be mounted read-only, for example `/Users/Shared/IPTVBoss/output:/iptvboss/output:ro`.
+
+For Sprint 7 Live TV M3U output, configure the output file as a container path such as `/outputs/live/live.m3u`. Mount the parent host folder as read-write:
+
+```yaml
+volumes:
+  - /Users/Shared/MediaRouter/live:/outputs/live
+```
+
+Generated Live TV M3U playlists are disposable. They contain Media Router runtime URLs such as `http://localhost:8088/r/live/channel_abc123`, not direct provider URLs or credentials.
 
 ## Verification
 

@@ -83,6 +83,7 @@ Broker
 ☑ Account selection policy
 ☑ Shared account capacity tracking
 ☑ Broker status UI
+☑ Broker page polling updates
 ☑ Broker explainability
 ☑ Evaluated candidate diagnostics
 ☑ Release All Active
@@ -97,7 +98,10 @@ Source Resolution Runtime
 ☑ Runtime resolve routes
 ☑ Runtime redirect mode
 ☑ Runtime JSON/debug mode
+☑ Runtime HEAD redirect probes
+☑ Runtime repeated GET reservation reuse
 ☑ Reservation TTL query parameter
+☑ Runtime client_session query parameter
 ☑ Client label query parameter
 ☑ Runtime preview API
 ☑ Catalog runtime URL preview
@@ -113,20 +117,44 @@ Outputs
 
 ### Sprint 6
 
-☐ STRM Output
-☐ M3U Output
+☑ STRM Output
+☑ STRM settings persistence
+☑ STRM dry-run
+☑ STRM generation job
+☑ Generated STRM file tracking
+☑ STRM Outputs UI
+☑ STRM output path validation
+☑ STRM generation diagnostics
 ☐ XMLTV Output
 ☐ HDHomeRun Output
 ☐ Output plugin registry
-☐ Build status
-☐ Rebuild jobs
-☐ Disposable output validation
+☑ Build status
+☑ Rebuild jobs
+☑ Disposable output validation
+
+### Sprint 7
+
+☑ Live TV M3U Output
+☑ Live M3U settings persistence
+☑ Live M3U path validation
+☑ Live M3U dry-run preview
+☑ Live M3U generation job
+☑ Live M3U history
+☑ Live M3U preview API
+☑ Live M3U Outputs UI
+☑ Runtime URL-only generated playlists
+☑ Live M3U `tvg-chno` preservation
+☑ Live M3U channel sorting
+☑ Runtime playback TTL defaults
+☐ Client heartbeat / playback-end release
+☐ Runtime proxy mode for media-server compatibility
+☐ WebSockets / Server-Sent Events for live Broker updates
 
 ## Epic 7
 
 Integrations
 
-### Sprint 7
+### Future Sprint
 
 ☐ IPTV Boss import watcher
 ☐ Emby adapter

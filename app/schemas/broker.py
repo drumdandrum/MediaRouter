@@ -11,6 +11,7 @@ class BrokerResolveRequest(BaseModel):
     catalog_item_id: str
     media_type: str | None = None
     client_label: str | None = None
+    client_session: str | None = None
     reservation_ttl_seconds: int | None = Field(default=None, ge=1, le=86400)
 
 
@@ -73,6 +74,9 @@ class BrokerReservation(BaseModel):
     expires_at: datetime
     released_at: datetime | None = None
     client_label: str | None = None
+    client_session: str | None = None
+    last_reused_at: datetime | None = None
+    reuse_count: int = 0
 
 
 class BrokerDecision(BaseModel):
@@ -86,6 +90,9 @@ class BrokerDecision(BaseModel):
     evaluated_candidates: list[BrokerEvaluatedCandidate]
     failure_code: str | None = None
     failure_message: str | None = None
+    reservation_created: bool = False
+    reservation_reused: bool = False
+    reuse_reason: str | None = None
 
 
 class BrokerErrorDetail(BaseModel):

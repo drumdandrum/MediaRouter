@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -20,6 +21,7 @@ from app.services.logs import add_log
 
 
 DEFAULT_RESERVATION_TTL_SECONDS = 60
+DEFAULT_REUSE_WINDOW_SECONDS = int(os.getenv("MEDIA_ROUTER_RESERVATION_REUSE_WINDOW_SECONDS", "30"))
 BLOCKED_HEALTH_STATUSES = {"Authentication Failed", "Playlist Failed", "Offline", "Disabled"}
 PRIORITY_ORDER = {"Preferred": 0, "Secondary": 1, "Emergency": 2}
 
@@ -76,18 +78,43 @@ def ensure_broker_schema(conn: sqlite3.Connection | None = None) -> None:
             expires_at TEXT NOT NULL,
             released_at TEXT,
             client_label TEXT,
+            client_session TEXT,
+            client_fingerprint TEXT,
+            reused_from_reservation_id TEXT,
+            last_reused_at TEXT,
+            reuse_count INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY(catalog_item_id) REFERENCES catalog_items(internal_id) ON DELETE CASCADE,
             FOREIGN KEY(source_availability_id) REFERENCES source_availability(id) ON DELETE CASCADE,
             FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE CASCADE,
             FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
         );
-
+        """
+    )
+    columns = {row["name"] if hasattr(row, "keys") else row[1] for row in conn.execute("PRAGMA table_info(broker_reservations)").fetchall()}
+    migrations = {
+        "client_session": "ALTER TABLE broker_reservations ADD COLUMN client_session TEXT",
+        "client_fingerprint": "ALTER TABLE broker_reservations ADD COLUMN client_fingerprint TEXT",
+        "reused_from_reservation_id": "ALTER TABLE broker_reservations ADD COLUMN reused_from_reservation_id TEXT",
+        "last_reused_at": "ALTER TABLE broker_reservations ADD COLUMN last_reused_at TEXT",
+        "reuse_count": "ALTER TABLE broker_reservations ADD COLUMN reuse_count INTEGER NOT NULL DEFAULT 0",
+    }
+    applied: list[str] = []
+    for column, statement in migrations.items():
+        if column not in columns:
+            conn.execute(statement)
+            applied.append(column)
+    conn.executescript(
+        """
         CREATE INDEX IF NOT EXISTS idx_broker_reservations_status ON broker_reservations(status);
         CREATE INDEX IF NOT EXISTS idx_broker_reservations_account ON broker_reservations(account_id, status);
         CREATE INDEX IF NOT EXISTS idx_broker_reservations_expires ON broker_reservations(expires_at);
+        CREATE INDEX IF NOT EXISTS idx_broker_reservations_reuse_session ON broker_reservations(catalog_item_id, media_type, status, client_session, created_at);
+        CREATE INDEX IF NOT EXISTS idx_broker_reservations_reuse_fingerprint ON broker_reservations(catalog_item_id, media_type, status, client_fingerprint, created_at);
         """
     )
     conn.commit()
+    if applied:
+        add_log("info", "broker", f"Applied broker reservation schema migration: {', '.join(applied)}")
     if owns_conn:
         conn.close()
 
@@ -157,6 +184,9 @@ def _reservation_from_row(row: sqlite3.Row) -> BrokerReservation:
         expires_at=datetime.fromisoformat(row["expires_at"]),
         released_at=datetime.fromisoformat(row["released_at"]) if row["released_at"] else None,
         client_label=row["client_label"],
+        client_session=row["client_session"] if "client_session" in row.keys() else None,
+        last_reused_at=datetime.fromisoformat(row["last_reused_at"]) if "last_reused_at" in row.keys() and row["last_reused_at"] else None,
+        reuse_count=int(row["reuse_count"] or 0) if "reuse_count" in row.keys() else 0,
     )
 
 
@@ -201,6 +231,68 @@ def get_raw_reservation_location_ref(reservation_id: str) -> str | None:
             (reservation_id,),
         ).fetchone()
     return row["location_ref"] if row else None
+
+
+def _reservation_detail_row(conn: sqlite3.Connection, reservation_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT
+            broker_reservations.*,
+            catalog_items.title AS catalog_title,
+            providers.friendly_name AS provider_name,
+            accounts.friendly_name AS account_name
+        FROM broker_reservations
+        LEFT JOIN catalog_items ON catalog_items.internal_id = broker_reservations.catalog_item_id
+        LEFT JOIN providers ON providers.id = broker_reservations.provider_id
+        LEFT JOIN accounts ON accounts.id = broker_reservations.account_id
+        WHERE broker_reservations.reservation_id = ?
+        """,
+        (reservation_id,),
+    ).fetchone()
+
+
+def _find_reusable_reservation(
+    conn: sqlite3.Connection,
+    *,
+    catalog_item_id: str,
+    media_type: str | None,
+    client_session: str | None,
+    client_fingerprint: str | None,
+    reuse_window_seconds: int,
+) -> sqlite3.Row | None:
+    normalized_media_type = _normalize_media_type(media_type)
+    cutoff = (_now() - timedelta(seconds=max(reuse_window_seconds, 1))).isoformat()
+    if client_session:
+        return conn.execute(
+            """
+            SELECT *
+            FROM broker_reservations
+            WHERE status = 'active'
+              AND catalog_item_id = ?
+              AND (? IS NULL OR media_type = ?)
+              AND client_session = ?
+              AND created_at >= ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (catalog_item_id, normalized_media_type, normalized_media_type, client_session, cutoff),
+        ).fetchone()
+    if client_fingerprint:
+        return conn.execute(
+            """
+            SELECT *
+            FROM broker_reservations
+            WHERE status = 'active'
+              AND catalog_item_id = ?
+              AND (? IS NULL OR media_type = ?)
+              AND client_fingerprint = ?
+              AND created_at >= ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (catalog_item_id, normalized_media_type, normalized_media_type, client_fingerprint, cutoff),
+        ).fetchone()
+    return None
 
 
 def _source_rows(conn: sqlite3.Connection, catalog_item_id: str, media_type: str | None) -> list[sqlite3.Row]:
@@ -296,10 +388,69 @@ def _classify_no_source(rows: list[sqlite3.Row], decision_reasons: list[str], ev
     return BrokerUnavailable("all_at_capacity", "All matching accounts are at capacity.", decision_reasons, evaluated_candidates)
 
 
+def _reused_decision(
+    conn: sqlite3.Connection,
+    *,
+    reusable: sqlite3.Row,
+    ttl: int,
+    decision_reasons: list[str],
+    evaluated_candidates: list[BrokerEvaluatedCandidate],
+    reuse_reason: str,
+) -> BrokerDecision:
+    rows = _source_rows(conn, reusable["catalog_item_id"], reusable["media_type"])
+    selected_row = next((row for row in rows if int(row["id"]) == int(reusable["source_availability_id"])), None)
+    if selected_row is None:
+        raise BrokerUnavailable("no_sources", "Reusable reservation source is no longer available.", decision_reasons, evaluated_candidates)
+    active_counts = _active_counts(conn)
+    active_count = active_counts.get(reusable["account_id"], 0)
+    selected_candidate = _candidate_from_row(
+        selected_row,
+        active_count,
+        "selected",
+        reuse_reason,
+        selected=True,
+    )
+    evaluated_candidates.append(selected_candidate)
+    reservation_row = _reservation_detail_row(conn, reusable["reservation_id"])
+    if reservation_row is None:
+        raise BrokerUnavailable("no_sources", "Reusable reservation was not available.", decision_reasons, evaluated_candidates)
+    conn.execute(
+        """
+        UPDATE broker_reservations
+        SET last_reused_at = ?, reuse_count = COALESCE(reuse_count, 0) + 1
+        WHERE reservation_id = ?
+        """,
+        (_now().isoformat(), reusable["reservation_id"]),
+    )
+    conn.commit()
+    selection = _source_selection_from_row(selected_row, active_count)
+    reservation = _reservation_from_row(reservation_row)
+    decision_reasons.append(reuse_reason)
+    add_log("info", "broker", f"Reused reservation {reservation.reservation_id} for {selection.catalog_item_id} on account {selection.account_name}")
+    return BrokerDecision(
+        selected_source=selection,
+        reservation=reservation,
+        stream_url=selection.location_ref,
+        expires_at=reservation.expires_at,
+        reservation_ttl_seconds=ttl,
+        decision_reason=reuse_reason,
+        decision_reasons=decision_reasons,
+        evaluated_candidates=evaluated_candidates,
+        reservation_created=False,
+        reservation_reused=True,
+        reuse_reason=reuse_reason,
+    )
+
+
 def resolve_source(
     catalog_item_id: str,
     media_type: str | None = None,
     client_label: str | None = None,
+    client_session: str | None = None,
+    client_fingerprint: str | None = None,
+    allow_reservation_reuse: bool = False,
+    reuse_window_seconds: int = DEFAULT_REUSE_WINDOW_SECONDS,
+    reserve: bool = True,
     reservation_ttl_seconds: int | None = None,
 ) -> BrokerDecision:
     ttl = reservation_ttl_seconds or DEFAULT_RESERVATION_TTL_SECONDS
@@ -313,6 +464,25 @@ def resolve_source(
         if not rows:
             raise _classify_no_source(rows, decision_reasons, evaluated_candidates)
         decision_reasons.append(f"Found {len(rows)} source record(s) for the catalog item.")
+        if allow_reservation_reuse:
+            reusable = _find_reusable_reservation(
+                conn,
+                catalog_item_id=catalog_item_id,
+                media_type=media_type,
+                client_session=client_session,
+                client_fingerprint=client_fingerprint,
+                reuse_window_seconds=reuse_window_seconds,
+            )
+            if reusable is not None:
+                identity_reason = "client_session" if client_session else "short-lived client fingerprint"
+                return _reused_decision(
+                    conn,
+                    reusable=reusable,
+                    ttl=ttl,
+                    decision_reasons=decision_reasons,
+                    evaluated_candidates=evaluated_candidates,
+                    reuse_reason=f"Reused active reservation within {reuse_window_seconds}s by {identity_reason}.",
+                )
         active_counts = _active_counts(conn)
         eligible: list[tuple[tuple, sqlite3.Row, int]] = []
         disabled_count = unhealthy_count = capacity_count = 0
@@ -380,45 +550,55 @@ def resolve_source(
         now = _now()
         expires_at = now + timedelta(seconds=ttl)
         reservation_id = uuid4().hex
-        conn.execute(
-            """
-            INSERT INTO broker_reservations (
-                reservation_id, catalog_item_id, source_availability_id, provider_id, account_id,
-                media_type, location_ref, status, created_at, expires_at, released_at, client_label
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, ?)
-            """,
-            (
-                reservation_id,
-                selected["catalog_internal_id"],
-                selected["id"],
-                selected["provider_id"],
-                selected["account_id"],
-                selected["media_type"],
-                selected["location_ref"],
-                now.isoformat(),
-                expires_at.isoformat(),
-                client_label or None,
-            ),
-        )
-        conn.commit()
-        reservation_row = conn.execute(
-            """
-            SELECT
-                broker_reservations.*,
-                catalog_items.title AS catalog_title,
-                providers.friendly_name AS provider_name,
-                accounts.friendly_name AS account_name
-            FROM broker_reservations
-            LEFT JOIN catalog_items ON catalog_items.internal_id = broker_reservations.catalog_item_id
-            LEFT JOIN providers ON providers.id = broker_reservations.provider_id
-            LEFT JOIN accounts ON accounts.id = broker_reservations.account_id
-            WHERE broker_reservations.reservation_id = ?
-            """,
-            (reservation_id,),
-        ).fetchone()
+        if reserve:
+            conn.execute(
+                """
+                INSERT INTO broker_reservations (
+                    reservation_id, catalog_item_id, source_availability_id, provider_id, account_id,
+                    media_type, location_ref, status, created_at, expires_at, released_at, client_label,
+                    client_session, client_fingerprint
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, ?, ?, ?)
+                """,
+                (
+                    reservation_id,
+                    selected["catalog_internal_id"],
+                    selected["id"],
+                    selected["provider_id"],
+                    selected["account_id"],
+                    selected["media_type"],
+                    selected["location_ref"],
+                    now.isoformat(),
+                    expires_at.isoformat(),
+                    client_label or None,
+                    client_session or None,
+                    client_fingerprint or None,
+                ),
+            )
+            conn.commit()
+            reservation_row = _reservation_detail_row(conn, reservation_id)
+        else:
+            reservation_row = {
+                "reservation_id": reservation_id,
+                "catalog_item_id": selected["catalog_internal_id"],
+                "catalog_title": selected["catalog_title"],
+                "source_availability_id": selected["id"],
+                "provider_id": selected["provider_id"],
+                "provider_name": selected["provider_name"],
+                "account_id": selected["account_id"],
+                "account_name": selected["account_name"],
+                "media_type": selected["media_type"],
+                "location_ref": selected["location_ref"],
+                "status": "released",
+                "created_at": now.isoformat(),
+                "expires_at": expires_at.isoformat(),
+                "released_at": now.isoformat(),
+                "client_label": client_label or None,
+                "client_session": client_session or None,
+            }
     selection = _source_selection_from_row(selected, selected_active_count)
     reservation = _reservation_from_row(reservation_row)
-    add_log("info", "broker", f"Reserved {selection.catalog_item_id} on account {selection.account_name}")
+    if reserve:
+        add_log("info", "broker", f"Reserved {selection.catalog_item_id} on account {selection.account_name}")
     return BrokerDecision(
         selected_source=selection,
         reservation=reservation,
@@ -428,6 +608,9 @@ def resolve_source(
         decision_reason="Selected by priority group, weight, active reservation count, then stable source id.",
         decision_reasons=decision_reasons,
         evaluated_candidates=evaluated_candidates,
+        reservation_created=reserve,
+        reservation_reused=False,
+        reuse_reason=None,
     )
 
 

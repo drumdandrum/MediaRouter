@@ -1,6 +1,6 @@
 # Media Router
 
-Media Router is currently a foundation, catalog engine, provider/account availability model, Sprint 4 broker decision engine, and Sprint 5 source resolution runtime for a future Dockerized home media orchestration platform. The project intentionally does not implement stream playback, proxy streaming, transcoding, STRM rewriting, HDHomeRun output, or DVR/media-server integration yet.
+Media Router is currently a foundation, catalog engine, provider/account availability model, broker decision engine, source resolution runtime, STRM output generator, and Sprint 7 Live TV M3U output generator for a future Dockerized home media orchestration platform. The project intentionally does not implement stream playback, proxy streaming, transcoding, HDHomeRun output, XMLTV output, or DVR/media-server integration yet.
 
 The goal of this phase is to lock down module ownership, boundaries, and delivery order before building features.
 
@@ -62,7 +62,7 @@ Settings, wizard state, and job history are written under this mounted path. The
 
 - Minimal FastAPI app.
 - App version `v0.2.1`.
-- Sprint 5 web console.
+- Sprint 7 web console.
 - `/api/health` endpoint.
 - `/api/foundation` endpoint with module metadata.
 - Dashboard, wizard, settings, and jobs APIs.
@@ -73,6 +73,8 @@ Settings, wizard state, and job history are written under this mounted path. The
 - Broker UI for account usage, reservation status, source decision testing, and evaluated candidate explanations.
 - Stable runtime resolve URLs at `/r/live/{id}`, `/r/movie/{id}`, and `/r/episode/{id}`.
 - Runtime preview API and Catalog/Broker UI runtime URL previews.
+- STRM output settings, dry-run, generation job, history, and generated-file tracking for movies and episodes.
+- Live TV M3U output settings, validation, dry-run, generation job, history, and preview.
 - Paginated catalog/source APIs for large playlists.
 - About/System and logs APIs.
 - JSON-backed settings and wizard state.
@@ -101,10 +103,11 @@ Settings, wizard state, and job history are written under this mounted path. The
 
 - Playback or proxy streaming.
 - Transcoding.
-- STRM import or generation.
+- STRM import or live TV STRM generation.
 - IPTV Boss watching.
 - HDHomeRun compatibility.
 - Emby/Jellyfin/NextPVR/Channels adapters.
+- XMLTV output.
 - Encrypted secrets storage.
 - Real stream playback.
 - HDHomeRun output.
@@ -116,6 +119,12 @@ Sprint 4.1 polishes Broker diagnostics. Resolve results now show the selected ac
 
 Sprint 5 adds stable Media Router runtime URLs. Clients call Media Router URLs, Media Router asks the Broker for the current best source, creates a reservation, and returns an HTTP `302` redirect to the selected source. Debug mode (`?debug=true`) returns structured JSON with the catalog item, selected source/account/provider, reservation, and Broker explanation. Sprint 5 does not generate STRM files, emulate HDHomeRun, integrate with media servers, proxy streams, transcode, or play streams.
 
+Runtime playback reservations currently release by TTL expiration. Live, movie, and episode runtime URLs default to a four-hour reservation TTL; the `ttl=` query parameter can override this per request. Manual Broker/API decision tests keep the short 60-second default for diagnostics. Client heartbeat and explicit playback-end release are future work.
+
+Runtime URLs support `GET` and `HEAD`. `HEAD` returns the same redirect `Location` as redirect-mode `GET` while reusing an active matching reservation or doing a non-reserving source lookup, so media-server checks do not consume extra account capacity. Redirect mode works for simple clients such as VLC and may work for Jellyfin/Emby, but some media servers may eventually require a future proxy mode.
+
+Repeated runtime `GET` requests from the same short-lived playback startup are idempotent within the reservation reuse window, currently 30 seconds by default. Media Router uses `client_session` when supplied, then `client_label`, then a temporary fingerprint derived from catalog item, remote address, User-Agent, and media type. Reused requests return the same redirect target and reservation ID without increasing account usage.
+
 Set Settings > Runtime > Runtime Public Base URL to the browser/client-visible address for runtime previews. For local testing, use:
 
 ```text
@@ -123,6 +132,24 @@ http://localhost:8088
 ```
 
 If Runtime Public Base URL is blank, previews use `MEDIA_ROUTER_PUBLIC_BASE_URL` when it is not the Docker-internal `media-router` hostname, then fall back to the current request host/scheme.
+
+Sprint 6 generates disposable `.strm` files for movies and episodes only. Each file contains a Media Router runtime URL such as `http://localhost:8088/r/movie/movie_abc123` or `http://localhost:8088/r/episode/episode_xyz789`; direct provider URLs and credentials are never written to STRM files. Configure container output paths on the Outputs page, for example `/outputs/movies` and `/outputs/series`.
+
+For Docker, mount host folders into those container paths instead of entering Mac host paths in the UI:
+
+```yaml
+volumes:
+  - /Users/Shared/IPTVBoss/output:/iptvboss/output:ro
+  - /Users/Shared/MediaRouter/strm/movies:/outputs/movies
+  - /Users/Shared/MediaRouter/strm/series:/outputs/series
+  - /Users/Shared/MediaRouter/live:/outputs/live
+```
+
+The IPTVBoss import path can be read-only. STRM output paths must be read-write. Use Outputs > Validate Paths before Generate to confirm Movies and Series are writable and `/data` is writable.
+
+Sprint 7 generates disposable Live TV M3U playlists for live/channel catalog items only. Each channel URL points to a stable Media Router runtime URL such as `http://localhost:8088/r/live/channel_abc123`; direct provider URLs and credentials are never written to generated M3U files. Channel metadata preserves `tvg-chno`, `tvg-id`, `tvg-name`, `tvg-logo`, `group-title`, and display title when available. Configure the Live TV M3U output file on the Outputs page, for example `/outputs/live/live.m3u`, and use Validate Path before Dry Run or Generate.
+
+Guide XML is currently external from Media Router and can continue to come from IPTV Boss or a separate webserver. Sprint 7 does not generate XMLTV.
 
 Secrets note: Sprint 3 stores account secrets locally in SQLite and never returns them through normal API reads or displays them in the UI. Encryption is a future hardening task before production-style secret handling.
 
@@ -251,3 +278,35 @@ Secrets note: Sprint 3 stores account secrets locally in SQLite and never return
 - [ ] Confirm Catalog and Broker UI pages show stable Media Router runtime URLs.
 - [ ] Set Runtime Public Base URL to `http://localhost:8088` and confirm Catalog/Broker previews use it.
 - [ ] Confirm no STRM files are generated in Sprint 5.
+
+## Sprint 6 STRM Output Acceptance Test
+
+- [ ] Configure Movies output path and Series output path using container paths.
+- [ ] Validate paths and confirm Movies and Series output directories are writable.
+- [ ] Run STRM dry-run and confirm no files are written.
+- [ ] Run Generate and confirm movie and episode `.strm` files are created.
+- [ ] Open a generated `.strm` file and confirm it contains a Media Router runtime URL.
+- [ ] Confirm no provider URL or credentials appear in generated files.
+- [ ] Re-run Generate and confirm unchanged files are skipped.
+- [ ] Change Runtime Public Base URL and re-run Generate; confirm files update.
+- [ ] Run dry-run with orphan cleanup enabled and confirm orphan cleanup preview only includes tracked generated files.
+- [ ] Make an output path invalid or read-only and confirm Generate fails gracefully with the path and reason.
+- [ ] Restart Docker and confirm STRM settings and generated file history persist.
+
+## Sprint 7 Live TV M3U Output Acceptance Test
+
+- [ ] Configure Live M3U output path, for example `/outputs/live/live.m3u`.
+- [ ] Validate output path and confirm the parent directory is writable.
+- [ ] Run Live M3U dry-run and confirm no file is written.
+- [ ] Confirm the preview contains `/r/live/{catalog_item_id}` runtime URLs only.
+- [ ] Run Generate and confirm the M3U file is created.
+- [ ] Open the generated M3U file and confirm no provider URLs or credentials appear.
+- [ ] Confirm `#EXTINF` includes `tvg-chno` when source data has it.
+- [ ] Confirm `group-title` is preserved.
+- [ ] Confirm channel ordering follows channel number, group, then title.
+- [ ] Confirm runtime live resolve defaults to a long live-TV TTL.
+- [ ] Confirm `ttl` query parameter still overrides the runtime TTL.
+- [ ] Confirm Recent Generated Files appears at the bottom of the Outputs page.
+- [ ] Open one generated channel URL in VLC and confirm playback routes through Media Router.
+- [ ] Resolve the same channel multiple times and confirm Broker capacity behavior still works.
+- [ ] Restart Docker and confirm Live M3U settings and run history persist.

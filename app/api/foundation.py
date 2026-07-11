@@ -35,6 +35,7 @@ MODULES = [
         name="outputs",
         label="Outputs",
         responsibility="Plugin boundary for STRM, M3U, XMLTV, HDHomeRun, REST, and future outputs.",
+        status=ServiceStatus.READY,
     ),
     ModuleDescriptor(
         name="integrations",
@@ -99,8 +100,8 @@ def health() -> dict[str, str]:
 def foundation() -> dict:
     return {
         "project": "Media Router",
-        "phase": "sprint_4_broker_decision_engine",
-        "implementation_scope": "broker decision and reservation engine only: no playback, proxy streaming, transcoding, STRM, HDHomeRun, or media-server integrations",
+        "phase": "sprint_7_live_tv_m3u_output",
+        "implementation_scope": "catalog, provider/account availability, broker decisions, runtime URLs, STRM output, and Live TV M3U output only: no playback, proxy streaming, transcoding, XMLTV, HDHomeRun, or media-server integrations",
         "principles": [principle.__dict__ for principle in PRINCIPLES],
         "modules": [module.__dict__ for module in MODULES],
     }

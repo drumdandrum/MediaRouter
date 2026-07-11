@@ -1,5 +1,6 @@
 from dataclasses import asdict, dataclass
 from datetime import datetime
+import logging
 import re
 from uuid import uuid4
 
@@ -27,6 +28,7 @@ class LogRecord:
 
 
 LOGS: list[LogRecord] = []
+UVICORN_LOGGER = logging.getLogger("uvicorn.error")
 
 
 def scrub(message: str) -> str:
@@ -44,15 +46,18 @@ def scrub(message: str) -> str:
 
 
 def add_log(level: str, category: str, message: str) -> LogEntry:
+    scrubbed = scrub(message)
     record = LogRecord(
         id=uuid4().hex,
         level=level,
         category=category,
-        message=scrub(message),
+        message=scrubbed,
         created_at=datetime.utcnow(),
     )
     LOGS.insert(0, record)
     del LOGS[100:]
+    uvicorn_method = getattr(UVICORN_LOGGER, level if level in {"debug", "info", "warning", "error", "critical"} else "info")
+    uvicorn_method("[%s] %s", category, scrubbed)
     return LogEntry(**asdict(record))
 
 

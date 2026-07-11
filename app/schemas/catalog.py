@@ -20,6 +20,7 @@ class CatalogItem(BaseModel):
     tvg_id: str | None = None
     tvg_name: str | None = None
     tvg_logo: str | None = None
+    tvg_chno: str | None = None
     cuid: str | None = None
     show_name: str | None = None
     season_number: int | None = None

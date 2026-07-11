@@ -18,6 +18,22 @@ const state = {
   brokerReservations: [],
   brokerCatalogItems: [],
   brokerDecision: null,
+  brokerAutoRefresh: localStorage.getItem("mediaRouterBrokerAutoRefresh") !== "false",
+  brokerRefreshIntervalMs: Number(localStorage.getItem("mediaRouterBrokerRefreshIntervalMs") || 3000) || 3000,
+  brokerPollTimer: null,
+  brokerTtlTimer: null,
+  brokerPollInFlight: false,
+  brokerPollFailures: 0,
+  brokerLastUpdatedAt: null,
+  strmSettings: null,
+  strmHistory: [],
+  strmGeneratedFiles: [],
+  strmResult: null,
+  strmPathValidation: null,
+  liveM3uSettings: null,
+  liveM3uHistory: [],
+  liveM3uResult: null,
+  liveM3uPathValidation: null,
   jobs: [],
   logs: [],
   system: null,
@@ -28,6 +44,7 @@ const titles = {
   wizard: "Wizard",
   catalog: "Catalog",
   broker: "Broker",
+  outputs: "Outputs",
   providers: "Providers",
   accounts: "Accounts",
   settings: "Settings",
@@ -129,11 +146,15 @@ function setBadge(id, label, status) {
 }
 
 function setView(view) {
+  const leavingBroker = state.view === "broker" && view !== "broker";
+  if (leavingBroker) stopBrokerPolling();
   state.view = view;
   document.querySelectorAll(".view").forEach((node) => node.classList.toggle("active", node.id === view));
   document.querySelectorAll("nav button").forEach((node) => node.classList.toggle("active", node.dataset.view === view));
   document.getElementById("view-title").textContent = titles[view];
-  refresh();
+  refresh().then(() => {
+    if (view === "broker") startBrokerPolling({ immediate: false });
+  });
 }
 
 function inputFor(key, value) {
@@ -527,21 +548,60 @@ function renderBrokerRuntimePreview() {
 }
 
 function renderBroker() {
+  renderBrokerRefreshControls();
+  renderBrokerLive();
+  renderBrokerCatalogSelect();
+  renderBrokerRuntimePreview();
+  renderBrokerDecision();
+}
+
+function renderBrokerLive() {
   const status = state.brokerStatus;
+  if (!status) return;
   document.getElementById("broker-active-reservations").textContent = status.active_reservations;
   document.getElementById("broker-total-reservations").textContent = status.total_reservations;
   document.getElementById("broker-released-reservations").textContent = status.released_reservations;
   document.getElementById("broker-expired-reservations").textContent = status.expired_reservations;
   document.getElementById("broker-capacity-accounts").textContent = status.accounts_at_capacity;
   document.getElementById("broker-available-accounts").textContent = status.available_accounts;
+  renderBrokerRefreshStatus();
+  renderBrokerAccountUsage();
+  renderBrokerReservations();
+  updateBrokerTtls();
+}
+
+function renderBrokerCatalogSelect() {
   const itemSelect = document.getElementById("broker-catalog-item");
+  if (!itemSelect) return;
   const selectedItem = itemSelect.value;
   itemSelect.innerHTML = brokerCatalogOptions();
   itemSelect.value = state.brokerCatalogItems.some((item) => item.internal_id === selectedItem) ? selectedItem : "";
-  renderBrokerRuntimePreview();
-  renderBrokerDecision();
-  renderBrokerAccountUsage();
-  renderBrokerReservations();
+}
+
+function renderBrokerRefreshControls() {
+  const auto = document.getElementById("broker-auto-refresh");
+  const interval = document.getElementById("broker-refresh-interval");
+  if (auto) auto.value = String(Boolean(state.brokerAutoRefresh));
+  if (interval) interval.value = String(state.brokerRefreshIntervalMs);
+  renderBrokerRefreshStatus();
+}
+
+function renderBrokerRefreshStatus() {
+  const updated = document.getElementById("broker-last-updated");
+  const stale = document.getElementById("broker-stale-indicator");
+  if (updated) updated.textContent = state.brokerLastUpdatedAt ? new Date(state.brokerLastUpdatedAt).toLocaleTimeString() : "Never";
+  if (!stale) return;
+  if (document.hidden && state.brokerAutoRefresh) {
+    stale.innerHTML = `${badge("Paused", "warning")}`;
+  } else if (!state.brokerAutoRefresh) {
+    stale.innerHTML = `${badge("Auto refresh off", "disabled")}`;
+  } else if (state.brokerPollFailures >= 3) {
+    stale.innerHTML = `${badge("Stale", "error")}`;
+  } else if (state.brokerPollInFlight) {
+    stale.innerHTML = `${badge("Updating", "running")}`;
+  } else {
+    stale.innerHTML = `${badge("Live", "ready")}`;
+  }
 }
 
 function renderBrokerDecision() {
@@ -635,15 +695,22 @@ function renderBrokerReservations() {
       <td><strong>${reservation.catalog_title || reservation.catalog_item_id}</strong><br><code>${reservation.catalog_item_id}</code></td>
       <td>${reservation.media_type}</td>
       <td>${reservation.account_name || reservation.account_id}</td>
-      <td>${remainingTtl(reservation.expires_at, reservation.status)}</td>
+      <td><span data-ttl-expires="${reservation.expires_at}" data-ttl-status="${reservation.status}">${remainingTtl(reservation.expires_at, reservation.status)}</span></td>
       <td>${formatDate(reservation.expires_at)}</td>
       <td>${reservation.client_label || ""}</td>
+      <td>${reservation.reuse_count ? `${reservation.reuse_count} reuse(s)<br><span class="muted">${formatDate(reservation.last_reused_at)}</span>` : ""}</td>
       <td>${reservation.status === "active" ? `<button data-release-reservation="${reservation.reservation_id}">Release</button>` : ""}</td>
     </tr>
   `);
   const target = document.getElementById("broker-reservations-list");
-  target.innerHTML = table(["Reservation", "Status", "Catalog Item", "Type", "Account", "Remaining", "Expires", "Client", "Actions"], rows);
+  target.innerHTML = table(["Reservation", "Status", "Catalog Item", "Type", "Account", "Remaining", "Expires", "Client", "Reuse", "Actions"], rows);
   bindBrokerReleaseButtons(target);
+}
+
+function updateBrokerTtls() {
+  document.querySelectorAll("[data-ttl-expires]").forEach((node) => {
+    node.textContent = remainingTtl(node.dataset.ttlExpires, node.dataset.ttlStatus);
+  });
 }
 
 function bindBrokerReleaseButtons(scope = document) {
@@ -651,8 +718,7 @@ function bindBrokerReleaseButtons(scope = document) {
     const reservationId = button.dataset.releaseReservation;
     await api("/api/broker/release", { method: "POST", body: JSON.stringify({ reservation_id: reservationId }) });
     toast("Reservation released");
-    await loadBroker();
-    renderBroker();
+    await refreshBrokerLive({ force: true });
     await loadDashboard();
     renderDashboard();
   }));
@@ -665,8 +731,191 @@ function brokerResolveValues() {
     catalog_item_id: values.catalog_item_id,
     media_type: values.media_type || null,
     client_label: values.client_label || null,
+    client_session: values.client_session || null,
     reservation_ttl_seconds: values.reservation_ttl_seconds ? Number(values.reservation_ttl_seconds) : null,
   };
+}
+
+function setStrmSettingsForm() {
+  const form = document.getElementById("strm-settings-form");
+  if (!form || !state.strmSettings) return;
+  Object.entries(state.strmSettings).forEach(([key, value]) => {
+    if (form.elements[key]) form.elements[key].value = String(value);
+  });
+}
+
+function strmSettingsValues() {
+  const values = Object.fromEntries(new FormData(document.getElementById("strm-settings-form")).entries());
+  values.overwrite_existing_files = values.overwrite_existing_files === "true";
+  values.remove_orphaned_files = values.remove_orphaned_files === "true";
+  values.dry_run_mode = values.dry_run_mode === "true";
+  return values;
+}
+
+function renderStrmSummary(result = state.strmResult) {
+  const target = document.getElementById("strm-summary");
+  const operationsTarget = document.getElementById("strm-operations");
+  if (!result) {
+    target.innerHTML = '<p class="muted">Run a dry run or generate job to see STRM output changes.</p>';
+    operationsTarget.innerHTML = "";
+    return;
+  }
+  const summary = result.summary;
+  target.innerHTML = `
+    <div class="detail-grid">
+      <div><span>Mode</span><strong>${summary.mode}</strong></div>
+      <div><span>Movies</span><strong>${summary.movie_count}</strong></div>
+      <div><span>Episodes</span><strong>${summary.episode_count}</strong></div>
+      <div><span>Created</span><strong>${summary.created_count}</strong></div>
+      <div><span>Updated</span><strong>${summary.updated_count}</strong></div>
+      <div><span>Skipped</span><strong>${summary.skipped_count}</strong></div>
+      <div><span>Removed</span><strong>${summary.removed_count}</strong></div>
+      <div><span>Failed</span><strong>${summary.failed_count}</strong></div>
+    </div>
+  `;
+  const rows = result.operations.slice(0, 200).map((operation) => `
+    <tr>
+      <td>${badge(operation.action, operation.action)}</td>
+      <td>${operation.media_type}</td>
+      <td>${operation.title || operation.catalog_item_id || ""}</td>
+      <td class="url-cell">${operation.output_path}</td>
+      <td class="url-cell">${operation.runtime_url || ""}</td>
+      <td>${operation.reason}</td>
+    </tr>
+  `);
+  operationsTarget.innerHTML = table(["Action", "Type", "Catalog Item", "Output Path", "Runtime URL", "Reason"], rows);
+}
+
+function renderStrmPathValidation() {
+  const target = document.getElementById("strm-path-validation");
+  if (!target) return;
+  const generateButton = document.getElementById("generate-strm");
+  if (!state.strmPathValidation) {
+    target.innerHTML = '<p class="muted">Validate paths before generating STRM files.</p>';
+    if (generateButton) generateButton.disabled = false;
+    return;
+  }
+  const rows = state.strmPathValidation.paths.map((item) => `
+    <tr>
+      <td>${item.purpose}</td>
+      <td class="url-cell">${item.path}</td>
+      <td>${badge(item.status === "ok" ? (item.writable ? "Writable" : "Readable") : item.status === "warning" ? "Missing" : item.writable ? "Writable" : item.readable ? "Readable" : "Not writable", item.status)}</td>
+      <td>${item.exists ? "Yes" : "No"}</td>
+      <td>${item.readable ? "Yes" : "No"}</td>
+      <td>${item.writable ? "Yes" : "No"}</td>
+      <td>${item.can_create ? "Yes" : "No"}</td>
+      <td>${item.message}</td>
+    </tr>
+  `);
+  target.innerHTML = `<h3>Path Validation</h3>${table(["Purpose", "Path", "Status", "Exists", "Readable", "Writable", "Can Create", "Message"], rows)}`;
+  if (generateButton) generateButton.disabled = !state.strmPathValidation.can_generate;
+}
+
+function setLiveM3uSettingsForm() {
+  const form = document.getElementById("live-m3u-settings-form");
+  if (!form || !state.liveM3uSettings) return;
+  Object.entries(state.liveM3uSettings).forEach(([key, value]) => {
+    if (form.elements[key]) form.elements[key].value = String(value);
+  });
+}
+
+function liveM3uSettingsValues() {
+  const values = Object.fromEntries(new FormData(document.getElementById("live-m3u-settings-form")).entries());
+  ["include_disabled_channels", "include_logos", "include_group_title", "include_tvg_id", "include_tvg_name", "dry_run_mode"].forEach((key) => {
+    values[key] = values[key] === "true";
+  });
+  values.channel_limit = Number(values.channel_limit || 0);
+  return values;
+}
+
+function renderLiveM3uPathValidation() {
+  const target = document.getElementById("live-m3u-path-validation");
+  const generateButton = document.getElementById("generate-live-m3u");
+  if (!target) return;
+  if (!state.liveM3uPathValidation) {
+    target.innerHTML = '<p class="muted">Validate the output file path before generating Live M3U.</p>';
+    if (generateButton) generateButton.disabled = false;
+    return;
+  }
+  const rows = state.liveM3uPathValidation.paths.map((item) => `
+    <tr>
+      <td>${item.purpose}</td>
+      <td class="url-cell">${item.path}</td>
+      <td>${badge(item.status === "ok" ? (item.writable ? "Writable" : "Ready") : item.status, item.status)}</td>
+      <td>${item.exists ? "Yes" : "No"}</td>
+      <td>${item.readable ? "Yes" : "No"}</td>
+      <td>${item.writable ? "Yes" : "No"}</td>
+      <td>${item.can_create ? "Yes" : "No"}</td>
+      <td>${item.message}</td>
+    </tr>
+  `);
+  target.innerHTML = `<h3>Live M3U Path Validation</h3>${table(["Purpose", "Path", "Status", "Exists", "Readable", "Writable", "Can Create", "Message"], rows)}`;
+  if (generateButton) generateButton.disabled = !state.liveM3uPathValidation.can_generate;
+}
+
+function renderLiveM3uSummary() {
+  const target = document.getElementById("live-m3u-summary");
+  const preview = document.getElementById("live-m3u-preview");
+  if (!state.liveM3uResult) {
+    target.innerHTML = '<p class="muted">Run a dry run or preview to see generated Live M3U entries.</p>';
+    preview.innerHTML = "";
+    return;
+  }
+  const summary = state.liveM3uResult.summary;
+  target.innerHTML = `
+    <div class="detail-grid">
+      <div><span>Total Channels</span><strong>${summary.total_live_channels}</strong></div>
+      <div><span>Written</span><strong>${summary.written_count}</strong></div>
+      <div><span>Skipped</span><strong>${summary.skipped_count}</strong></div>
+      <div><span>Created</span><strong>${summary.created_count}</strong></div>
+      <div><span>Updated</span><strong>${summary.updated_count}</strong></div>
+      <div><span>Failed</span><strong>${summary.failed_count}</strong></div>
+    </div>
+  `;
+  const rows = state.liveM3uResult.preview_entries.map((entry) => `
+    <tr>
+      <td>${entry.channel_number || ""}</td>
+      <td>${entry.title}</td>
+      <td>${entry.group_title || ""}</td>
+      <td><code>${entry.catalog_item_id}</code></td>
+      <td class="url-cell">${entry.extinf}</td>
+      <td class="url-cell">${entry.runtime_url}</td>
+    </tr>
+  `);
+  preview.innerHTML = table(["Ch", "Channel", "Group", "Catalog ID", "EXTINF", "Runtime URL"], rows);
+}
+
+function renderOutputs() {
+  setStrmSettingsForm();
+  setLiveM3uSettingsForm();
+  document.getElementById("strm-runtime-base").textContent = publicBaseUrl();
+  document.getElementById("strm-generated-count").textContent = state.strmGeneratedFiles.length;
+  const lastRun = state.strmHistory[0];
+  document.getElementById("strm-last-run").textContent = lastRun ? `${lastRun.status} ${formatDate(lastRun.finished_at || lastRun.started_at)}` : "Never";
+  renderStrmSummary();
+  renderStrmPathValidation();
+  document.getElementById("live-m3u-runtime-base").textContent = state.liveM3uSettings?.runtime_client_access_url || publicBaseUrl();
+  document.getElementById("live-m3u-output-file").textContent = state.liveM3uSettings?.output_file_path || "-";
+  document.getElementById("live-m3u-playlist-url").textContent = "Future hosted playlist URL";
+  const liveLastRun = state.liveM3uHistory[0];
+  const liveLastGenerate = state.liveM3uHistory.find((run) => run.mode === "generate");
+  const liveSummary = state.liveM3uResult?.summary || liveLastRun?.summary || null;
+  document.getElementById("live-m3u-last-run").textContent = liveLastRun ? `${liveLastRun.status} ${formatDate(liveLastRun.finished_at || liveLastRun.started_at)}` : "Never";
+  document.getElementById("live-m3u-last-generated").textContent = liveLastGenerate ? formatDate(liveLastGenerate.finished_at || liveLastGenerate.started_at) : "Never";
+  document.getElementById("live-m3u-channel-count").textContent = liveSummary ? String(liveSummary.written_count) : "0";
+  document.getElementById("live-m3u-skipped-count").textContent = liveSummary ? String(liveSummary.skipped_count) : "0";
+  renderLiveM3uPathValidation();
+  renderLiveM3uSummary();
+  const rows = state.strmGeneratedFiles.map((file) => `
+    <tr>
+      <td>${file.media_type}</td>
+      <td><code>${file.catalog_item_id}</code></td>
+      <td class="url-cell">${file.output_path}</td>
+      <td>${badge(file.status, file.status)}</td>
+      <td>${formatDate(file.last_generated_at)}</td>
+    </tr>
+  `);
+  document.getElementById("strm-generated-files").innerHTML = table(["Type", "Catalog Item", "Output Path", "Status", "Last Generated"], rows);
 }
 
 function currentWizardStep() {
@@ -753,16 +1002,23 @@ function renderJobs() {
     return;
   }
   list.innerHTML = state.jobs
-    .map((job) => `
-      <article class="job">
+    .map((job) => {
+      const result = job.result || {};
+      const resultText = result.created_count !== undefined
+        ? `<p>${result.created_count} created, ${result.updated_count} updated, ${result.skipped_count} skipped, ${result.removed_count} removed, ${result.failed_count} failed${result.failure_reason ? ` — ${result.failure_reason}` : ""}</p>`
+        : "";
+      return `
+      <article class="job ${job.status}">
         <div>
           <strong>${job.kind}</strong>
           <p>${job.message}</p>
+          ${resultText}
         </div>
         <div class="progress"><span style="width:${job.progress}%"></span></div>
         ${badge(userStatus[job.status], job.status)}
       </article>
-    `)
+    `;
+    })
     .join("");
 }
 
@@ -822,6 +1078,29 @@ async function loadBroker() {
     api("/api/catalog/items?limit=500&offset=0"),
     api("/api/settings"),
   ]);
+  state.brokerLastUpdatedAt = Date.now();
+  state.brokerPollFailures = 0;
+}
+
+async function loadBrokerLive() {
+  [state.brokerStatus, state.brokerReservations] = await Promise.all([
+    api("/api/broker/status"),
+    api("/api/broker/reservations"),
+  ]);
+  state.brokerLastUpdatedAt = Date.now();
+  state.brokerPollFailures = 0;
+}
+async function loadOutputs() {
+  [state.strmSettings, state.strmHistory, state.strmGeneratedFiles, state.settings, state.strmPathValidation, state.liveM3uSettings, state.liveM3uHistory, state.liveM3uPathValidation] = await Promise.all([
+    api("/api/outputs/strm/settings"),
+    api("/api/outputs/strm/history"),
+    api("/api/outputs/strm/generated-files"),
+    api("/api/settings"),
+    api("/api/outputs/strm/validate-paths").catch(() => null),
+    api("/api/outputs/live-m3u/settings"),
+    api("/api/outputs/live-m3u/history"),
+    api("/api/outputs/live-m3u/validate-paths").catch(() => null),
+  ]);
 }
 async function loadCatalog() {
   [state.catalogSummary, state.providers, state.accounts, state.settings] = await Promise.all([api("/api/catalog/summary"), api("/api/providers"), api("/api/accounts"), api("/api/settings")]);
@@ -848,6 +1127,7 @@ async function refresh() {
     if (state.view === "wizard") { await loadWizard(); renderWizard(); }
     if (state.view === "catalog") { await loadCatalog(); renderCatalog(); }
     if (state.view === "broker") { await loadBroker(); renderBroker(); }
+    if (state.view === "outputs") { await loadOutputs(); renderOutputs(); }
     if (state.view === "providers") { await loadProviders(); renderProviders(); }
     if (state.view === "accounts") { await Promise.all([loadProviders(), loadAccounts()]); renderAccounts(); }
     if (state.view === "settings") { await loadSettings(); renderSettings(); }
@@ -858,6 +1138,65 @@ async function refresh() {
   } catch (error) {
     toast(error.message);
   }
+}
+
+async function refreshBrokerLive({ force = false } = {}) {
+  if (state.view !== "broker") return;
+  if (!force && (!state.brokerAutoRefresh || document.hidden)) {
+    renderBrokerRefreshStatus();
+    return;
+  }
+  if (state.brokerPollInFlight) return;
+  state.brokerPollInFlight = true;
+  renderBrokerRefreshStatus();
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+  try {
+    await loadBrokerLive();
+    if (state.view !== "broker") return;
+    renderBrokerLive();
+    await loadDashboard();
+    renderDashboard();
+    window.scrollTo(scrollX, scrollY);
+  } catch (error) {
+    state.brokerPollFailures += 1;
+    renderBrokerRefreshStatus();
+    if (force) toast(error.message);
+  } finally {
+    state.brokerPollInFlight = false;
+    renderBrokerRefreshStatus();
+  }
+}
+
+function startBrokerPolling({ immediate = false } = {}) {
+  stopBrokerPolling();
+  if (state.view !== "broker") return;
+  state.brokerTtlTimer = setInterval(updateBrokerTtls, 1000);
+  if (state.brokerAutoRefresh) {
+    state.brokerPollTimer = setInterval(() => refreshBrokerLive(), state.brokerRefreshIntervalMs);
+    if (immediate && !document.hidden) refreshBrokerLive({ force: true });
+  }
+  renderBrokerRefreshStatus();
+}
+
+function stopBrokerPolling() {
+  if (state.brokerPollTimer) clearInterval(state.brokerPollTimer);
+  if (state.brokerTtlTimer) clearInterval(state.brokerTtlTimer);
+  state.brokerPollTimer = null;
+  state.brokerTtlTimer = null;
+  state.brokerPollInFlight = false;
+}
+
+function setBrokerAutoRefresh(value) {
+  state.brokerAutoRefresh = value;
+  localStorage.setItem("mediaRouterBrokerAutoRefresh", String(value));
+  startBrokerPolling({ immediate: value });
+}
+
+function setBrokerRefreshInterval(value) {
+  state.brokerRefreshIntervalMs = Number(value) || 3000;
+  localStorage.setItem("mediaRouterBrokerRefreshIntervalMs", String(state.brokerRefreshIntervalMs));
+  startBrokerPolling({ immediate: state.brokerAutoRefresh });
 }
 
 function bind() {
@@ -906,6 +1245,23 @@ function bind() {
   });
   document.getElementById("reset-catalog-import").addEventListener("click", resetCatalogImportForm);
   document.getElementById("broker-catalog-item").addEventListener("change", renderBrokerRuntimePreview);
+  document.getElementById("broker-auto-refresh").addEventListener("change", (event) => {
+    setBrokerAutoRefresh(event.target.value === "true");
+  });
+  document.getElementById("broker-refresh-interval").addEventListener("change", (event) => {
+    setBrokerRefreshInterval(event.target.value);
+  });
+  document.getElementById("broker-refresh-now").addEventListener("click", () => {
+    refreshBrokerLive({ force: true });
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (state.view !== "broker") return;
+    if (document.hidden) {
+      renderBrokerRefreshStatus();
+      return;
+    }
+    startBrokerPolling({ immediate: true });
+  });
   document.getElementById("resolve-broker-source").addEventListener("click", async () => {
     const values = brokerResolveValues();
     if (!values.catalog_item_id) {
@@ -917,23 +1273,20 @@ function bind() {
       setFormError("broker-resolve-error");
       state.brokerDecision = await api("/api/broker/resolve", { method: "POST", body: JSON.stringify(values) });
       toast("Broker reservation created");
-      await loadBroker();
-      renderBroker();
+      await refreshBrokerLive({ force: true });
       await loadDashboard();
       renderDashboard();
     } catch (error) {
       state.brokerDecision = null;
       setFormError("broker-resolve-error", error.message);
       toast(error.message);
-      await loadBroker();
-      renderBroker();
+      await refreshBrokerLive({ force: true });
     }
   });
   document.getElementById("expire-broker-reservations").addEventListener("click", async () => {
     await api("/api/broker/expire-now", { method: "POST" });
     toast("Expired reservations updated");
-    await loadBroker();
-    renderBroker();
+    await refreshBrokerLive({ force: true });
     await loadDashboard();
     renderDashboard();
   });
@@ -941,10 +1294,147 @@ function bind() {
     await api("/api/broker/release-all", { method: "POST" });
     toast("Active reservations released");
     state.brokerDecision = null;
-    await loadBroker();
-    renderBroker();
+    await refreshBrokerLive({ force: true });
     await loadDashboard();
     renderDashboard();
+  });
+  document.getElementById("save-strm-settings").addEventListener("click", async () => {
+    try {
+      setFormError("strm-settings-error");
+      state.strmSettings = await api("/api/outputs/strm/settings", { method: "PUT", body: JSON.stringify(strmSettingsValues()) });
+      toast("STRM settings saved");
+      await loadOutputs();
+      renderOutputs();
+    } catch (error) {
+      setFormError("strm-settings-error", error.message);
+      toast(error.message);
+    }
+  });
+  document.getElementById("validate-strm-paths").addEventListener("click", async () => {
+    try {
+      setFormError("strm-settings-error");
+      state.strmSettings = await api("/api/outputs/strm/settings", { method: "PUT", body: JSON.stringify(strmSettingsValues()) });
+      state.strmPathValidation = await api("/api/outputs/strm/validate-paths");
+      toast(state.strmPathValidation.can_generate ? "Output paths are writable" : "One or more output paths need attention");
+      await loadOutputs();
+      renderOutputs();
+    } catch (error) {
+      setFormError("strm-settings-error", error.message);
+      toast(error.message);
+    }
+  });
+  document.getElementById("dry-run-strm").addEventListener("click", async () => {
+    try {
+      setFormError("strm-settings-error");
+      state.strmSettings = await api("/api/outputs/strm/settings", { method: "PUT", body: JSON.stringify(strmSettingsValues()) });
+      state.strmPathValidation = await api("/api/outputs/strm/validate-paths");
+      state.strmResult = await api("/api/outputs/strm/dry-run", { method: "POST" });
+      toast("STRM dry run complete");
+      await loadOutputs();
+      renderOutputs();
+    } catch (error) {
+      setFormError("strm-settings-error", error.message);
+      toast(error.message);
+    }
+  });
+  document.getElementById("generate-strm").addEventListener("click", async () => {
+    try {
+      setFormError("strm-settings-error");
+      state.strmSettings = await api("/api/outputs/strm/settings", { method: "PUT", body: JSON.stringify(strmSettingsValues()) });
+      state.strmPathValidation = await api("/api/outputs/strm/validate-paths");
+      if (!state.strmPathValidation.can_generate) {
+        renderOutputs();
+        setFormError("strm-settings-error", "One or more output paths are not writable. Validate paths before generating.");
+        toast("Output paths are not ready");
+        return;
+      }
+      const job = await api("/api/outputs/strm/generate", { method: "POST" });
+      toast(`STRM generation queued: ${job.id}`);
+      setView("jobs");
+      const timer = setInterval(async () => {
+        await loadJobs();
+        renderJobs();
+        await loadDashboard();
+        renderDashboard();
+        if (!state.jobs.some((item) => ["queued", "running"].includes(item.status))) {
+          clearInterval(timer);
+          await loadOutputs();
+          state.strmResult = null;
+        }
+      }, 700);
+    } catch (error) {
+      setFormError("strm-settings-error", error.message);
+      toast(error.message);
+    }
+  });
+  document.getElementById("save-live-m3u-settings").addEventListener("click", async () => {
+    try {
+      setFormError("live-m3u-settings-error");
+      state.liveM3uSettings = await api("/api/outputs/live-m3u/settings", { method: "PUT", body: JSON.stringify(liveM3uSettingsValues()) });
+      toast("Live M3U settings saved");
+      await loadOutputs();
+      renderOutputs();
+    } catch (error) {
+      setFormError("live-m3u-settings-error", error.message);
+      toast(error.message);
+    }
+  });
+  document.getElementById("validate-live-m3u-path").addEventListener("click", async () => {
+    try {
+      setFormError("live-m3u-settings-error");
+      state.liveM3uSettings = await api("/api/outputs/live-m3u/settings", { method: "PUT", body: JSON.stringify(liveM3uSettingsValues()) });
+      state.liveM3uPathValidation = await api("/api/outputs/live-m3u/validate-paths");
+      toast(state.liveM3uPathValidation.can_generate ? "Live M3U output path is writable" : "Live M3U output path needs attention");
+      await loadOutputs();
+      renderOutputs();
+    } catch (error) {
+      setFormError("live-m3u-settings-error", error.message);
+      toast(error.message);
+    }
+  });
+  document.getElementById("dry-run-live-m3u").addEventListener("click", async () => {
+    try {
+      setFormError("live-m3u-settings-error");
+      state.liveM3uSettings = await api("/api/outputs/live-m3u/settings", { method: "PUT", body: JSON.stringify(liveM3uSettingsValues()) });
+      state.liveM3uPathValidation = await api("/api/outputs/live-m3u/validate-paths");
+      state.liveM3uResult = await api("/api/outputs/live-m3u/dry-run", { method: "POST" });
+      toast("Live M3U dry run complete");
+      await loadOutputs();
+      renderOutputs();
+    } catch (error) {
+      setFormError("live-m3u-settings-error", error.message);
+      toast(error.message);
+    }
+  });
+  document.getElementById("generate-live-m3u").addEventListener("click", async () => {
+    try {
+      setFormError("live-m3u-settings-error");
+      state.liveM3uSettings = await api("/api/outputs/live-m3u/settings", { method: "PUT", body: JSON.stringify(liveM3uSettingsValues()) });
+      state.liveM3uPathValidation = await api("/api/outputs/live-m3u/validate-paths");
+      if (!state.liveM3uPathValidation.can_generate) {
+        renderOutputs();
+        setFormError("live-m3u-settings-error", "The Live M3U output path is not writable. Validate the path before generating.");
+        toast("Live M3U output path is not ready");
+        return;
+      }
+      const job = await api("/api/outputs/live-m3u/generate", { method: "POST" });
+      toast(`Live M3U generation queued: ${job.id}`);
+      setView("jobs");
+      const timer = setInterval(async () => {
+        await loadJobs();
+        renderJobs();
+        await loadDashboard();
+        renderDashboard();
+        if (!state.jobs.some((item) => ["queued", "running"].includes(item.status))) {
+          clearInterval(timer);
+          await loadOutputs();
+          state.liveM3uResult = null;
+        }
+      }, 700);
+    } catch (error) {
+      setFormError("live-m3u-settings-error", error.message);
+      toast(error.message);
+    }
   });
   document.getElementById("save-provider").addEventListener("click", async () => {
     const values = Object.fromEntries(new FormData(document.getElementById("provider-form")).entries());

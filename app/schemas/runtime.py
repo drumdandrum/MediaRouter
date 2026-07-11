@@ -22,6 +22,8 @@ class RuntimeResolveDebug(BaseModel):
     reservation_id: str
     expires_at: datetime
     stream_url: str
+    reservation_action: str
+    reuse_reason: str | None = None
     broker_decision: BrokerDecision
     evaluated_candidates: list[BrokerEvaluatedCandidate]
 

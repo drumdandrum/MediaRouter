@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import re
+from urllib.parse import urlsplit, urlunsplit
+
 from app.schemas.broker import BrokerErrorDetail
 from app.schemas.catalog import CatalogItem
 from app.schemas.runtime import RuntimeErrorDetail, RuntimePreview, RuntimeResolveDebug
 from app.core.config import get_settings
-from app.services.broker import BrokerUnavailable, get_raw_reservation_location_ref, resolve_source
+from app.services.broker import DEFAULT_REUSE_WINDOW_SECONDS, BrokerUnavailable, get_raw_reservation_location_ref, resolve_source
 from app.services.catalog import count_enabled_source_availability, get_item
 from app.services.settings import get_app_settings
 
@@ -18,6 +22,11 @@ MEDIA_TYPE_TO_ROUTE = {
     "channel": "live",
     "movie": "movie",
     "episode": "episode",
+}
+RUNTIME_DEFAULT_TTL_SECONDS = {
+    "live": 4 * 60 * 60,
+    "movie": 4 * 60 * 60,
+    "episode": 4 * 60 * 60,
 }
 
 
@@ -70,6 +79,26 @@ def route_for_media_type(media_type: str) -> str | None:
     return MEDIA_TYPE_TO_ROUTE.get(media_type)
 
 
+def mask_runtime_target(value: str) -> str:
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return "[invalid-url]"
+    netloc = parts.netloc
+    if "@" in netloc:
+        host = netloc.rsplit("@", 1)[1]
+        netloc = f"[redacted]@{host}"
+    path = re.sub(r"(/(?:live|movie|series)/)[^/]+/[^/]+/", r"\1[redacted]/[redacted]/", parts.path, flags=re.IGNORECASE)
+    path = re.sub(r"(/)([^/?#]{4,})/([^/?#]{4,})(/[^/?#]+)$", r"/[redacted]/[redacted]\4", path)
+    query = "[redacted]" if parts.query else ""
+    return urlunsplit((parts.scheme, netloc, path, query, ""))
+
+
+def runtime_client_fingerprint(catalog_item_id: str, media_type: str, remote_addr: str | None, user_agent: str | None) -> str:
+    raw = "|".join([catalog_item_id, media_type, remote_addr or "unknown", user_agent or "unknown"])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
 def runtime_url_for(catalog_item: CatalogItem, debug: bool = False, request_base_url: str | None = None) -> str:
     route = route_for_media_type(catalog_item.media_type)
     if route is None:
@@ -115,14 +144,23 @@ def resolve_runtime(
     catalog_item_id: str,
     ttl: int | None = None,
     client_label: str | None = None,
+    client_session: str | None = None,
+    client_fingerprint: str | None = None,
+    reserve: bool = True,
 ) -> tuple[RuntimeResolveDebug, str]:
     catalog_item = _validate_route(get_item(catalog_item_id), route_media_type)
+    effective_ttl = ttl or RUNTIME_DEFAULT_TTL_SECONDS[route_media_type]
     try:
         decision = resolve_source(
             catalog_item_id=catalog_item.internal_id,
             media_type=route_media_type,
             client_label=client_label,
-            reservation_ttl_seconds=ttl,
+            client_session=client_session,
+            client_fingerprint=client_fingerprint,
+            allow_reservation_reuse=True,
+            reuse_window_seconds=DEFAULT_REUSE_WINDOW_SECONDS,
+            reserve=reserve,
+            reservation_ttl_seconds=effective_ttl,
         )
     except BrokerUnavailable as exc:
         detail: BrokerErrorDetail = exc.detail
@@ -137,7 +175,7 @@ def resolve_runtime(
     if decision.selected_source is None or decision.reservation is None or decision.expires_at is None:
         raise RuntimeResolveUnavailable(409, "no_sources", "No source selected.")
 
-    raw_location_ref = get_raw_reservation_location_ref(decision.reservation.reservation_id)
+    raw_location_ref = get_raw_reservation_location_ref(decision.reservation.reservation_id) if (reserve or decision.reservation_reused) else decision.stream_url
     if not raw_location_ref:
         raise RuntimeResolveUnavailable(409, "no_sources", "Selected source location was not available.")
 
@@ -161,6 +199,8 @@ def resolve_runtime(
         reservation_id=decision.reservation.reservation_id,
         expires_at=decision.expires_at,
         stream_url=decision.stream_url or selected.location_ref,
+        reservation_action="reservation_reused" if decision.reservation_reused else "reservation_created" if decision.reservation_created else "reservation_probe",
+        reuse_reason=decision.reuse_reason,
         broker_decision=decision,
         evaluated_candidates=decision.evaluated_candidates,
     )

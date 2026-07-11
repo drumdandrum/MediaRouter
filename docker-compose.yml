@@ -20,3 +20,6 @@ services:
     volumes:
       - ./data:/data
       - /Users/Shared/IPTVBoss/output:/iptvboss/outputs:ro
+      - /Users/Shared/MediaRouter/strm/movies:/outputs/movies
+      - /Users/Shared/MediaRouter/strm/series:/outputs/series
+      - /Users/Shared/MediaRouter/live:/outputs/live

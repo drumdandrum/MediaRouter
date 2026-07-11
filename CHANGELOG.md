@@ -9,14 +9,44 @@ All notable changes to Media Router will be documented in this file.
 
 ## Planned
 
-- Runtime URL configuration
 - Provider adapters
-- STRM generation
-- Live TV M3U generation
 - XMLTV generation
 - Local media providers
 - HDHomeRun emulation
 - Additional runtime improvements
+
+## Added
+
+- STRM output settings for movie and series output directories.
+- STRM dry-run preview for create, update, skip, and orphan cleanup actions.
+- STRM generation job for movie and episode catalog items.
+- Generated STRM file tracking in SQLite.
+- Outputs UI page with settings, runtime base preview, run summary, and generated-file history.
+- STRM output path validation for output directories, `/data`, and configured IPTVBoss import path.
+- Live TV M3U output settings, dry-run preview, generation job, validation, history, and preview API.
+- Live TV M3U channel-number preservation with `tvg-chno` import, output, and channel-number sorting.
+
+## Fixed
+
+- Hardened STRM Generate path handling so missing child directories are created under configured output roots.
+- Improved STRM Generate failures with path-specific job messages and Logs page diagnostics.
+- Added Docker/application logging for STRM dry-run, generate, validation, counts, and exceptions.
+- Runtime playback reservations now default to four-hour TTLs while manual Broker tests keep the short testing TTL.
+- Outputs page ordering now keeps recent generated files at the bottom and warns about overlapping output paths.
+- Added `HEAD` support for runtime redirect URLs so Jellyfin/media-server probes receive `302` instead of `405`.
+- Repeated runtime `GET` requests from the same short-lived client/session now reuse the active reservation instead of consuming extra account capacity.
+- Broker page now auto-refreshes reservation/account status with polling while visible.
+
+## Notes
+
+- Generated STRM files contain Media Router runtime URLs only.
+- Generated Live TV M3U playlists contain Media Router runtime URLs only.
+- Guide XML is currently external and served separately from IPTV Boss/webserver output.
+- Broker reservations currently release by TTL expiration; client heartbeat and explicit playback-end release are future work.
+- Runtime redirect mode may work in clients such as VLC, but some media servers may eventually require a future proxy mode.
+- Broker live status uses polling for now; WebSockets or Server-Sent Events remain future options.
+- Provider URLs and credentials are not written to generated STRM files.
+- XMLTV, HDHomeRun output, media-server sync, proxy streaming, and transcoding remain deferred.
 
 ---
 

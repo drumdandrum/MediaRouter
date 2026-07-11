@@ -1,16 +1,18 @@
 from app.schemas.dashboard import DashboardStatus
+from app.schemas.broker import BrokerStatus
 from app.services.broker import get_status as get_broker_status
 from app.services.catalog import get_summary, source_availability_summary
 from app.services.jobs import job_counts
 from app.services.logs import log_count
+from app.services.logs import add_log
 from app.services.providers import provider_account_summary
 from app.services.settings import get_app_settings
 from app.services.system import get_system_info
 from app.services.wizard import get_wizard_state, get_wizard_steps
 
 
-SPRINT_SCOPE = ["Foundation", "Wizard", "Settings", "Dashboard", "Job System", "Logs", "About/System", "Catalog Engine", "Providers", "Accounts", "Source Availability", "Broker Decision Engine"]
-DEFERRED_SCOPE = ["Outputs", "Integrations", "Playback", "Proxy Streaming", "Transcoding"]
+SPRINT_SCOPE = ["Foundation", "Wizard", "Settings", "Dashboard", "Job System", "Logs", "About/System", "Catalog Engine", "Providers", "Accounts", "Source Availability", "Broker Decision Engine", "Runtime URLs", "STRM Output", "Live TV M3U Output"]
+DEFERRED_SCOPE = ["XMLTV Output", "HDHomeRun Output", "Integrations", "Playback", "Proxy Streaming", "Transcoding"]
 
 
 def get_dashboard_status() -> DashboardStatus:
@@ -22,11 +24,24 @@ def get_dashboard_status() -> DashboardStatus:
     catalog = get_summary()
     providers = provider_account_summary()
     availability = source_availability_summary()
-    broker = get_broker_status()
+    try:
+        broker = get_broker_status()
+    except Exception as exc:
+        add_log("error", "broker", f"Broker status unavailable during dashboard load: {exc}")
+        broker = BrokerStatus(
+            total_reservations=0,
+            active_reservations=0,
+            released_reservations=0,
+            expired_reservations=0,
+            failed_reservations=0,
+            accounts_at_capacity=0,
+            available_accounts=0,
+            account_usage=[],
+        )
     services_configured = any([settings.emby_url, settings.jellyfin_url, settings.nextpvr_url, settings.iptv_boss_export_path])
     return DashboardStatus(
         app_name=settings.app_name,
-        phase="Sprint 4",
+        phase="Sprint 7",
         health="ready",
         health_label="Ready",
         setup_status="ready" if wizard.setup_complete else "needs_setup",

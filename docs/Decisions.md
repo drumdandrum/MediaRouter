@@ -42,6 +42,10 @@ See `docs/adr/0001-foundation-first.md`.
 | Local secret storage first | Accepted | Sprint 3 stores secrets locally and redacts reads/logs; encryption is deferred to hardening. |
 | Decision-only broker first | Accepted | Sprint 4 chooses sources and reserves account capacity without playback, proxy streaming, transcoding, or generated outputs. |
 | Runtime URLs before outputs | Accepted | Sprint 5 clients use stable Media Router URLs that resolve through the Broker; STRM generation and output adapters remain deferred. |
+| STRM outputs use runtime URLs | Accepted | Sprint 6 generates movie and episode STRM files containing Media Router runtime URLs only; provider URLs remain behind the Broker. |
+| Live M3U outputs use runtime URLs | Accepted | Sprint 7 generates live/channel M3U playlists containing `/r/live/{catalog_item_id}` URLs only; Broker still chooses the provider account/source at playback time. |
+| Runtime reservations release by TTL first | Accepted | Sprint 7 runtime playback reservations use longer route defaults and expire by TTL; heartbeat and explicit client release are deferred. |
+| Runtime startup probes reuse reservations | Accepted | Repeated GET probes from the same short-lived client/session reuse an active reservation briefly instead of consuming extra account capacity. |
 
 ## Open Decisions
 
