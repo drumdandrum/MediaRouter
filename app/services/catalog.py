@@ -11,9 +11,10 @@ import sqlite3
 import time
 from typing import Any
 from urllib.request import urlopen
+from urllib.parse import urlsplit, urlunsplit
 
 from app.core.config import get_settings
-from app.schemas.catalog import CatalogItem, CatalogSource, CatalogSummary, SourceAvailability, SourceAvailabilityUpdate
+from app.schemas.catalog import CatalogItem, CatalogSource, CatalogSummary, ChannelPlacement, SourceAvailability, SourceAvailabilityUpdate
 from app.services.jobs import update_job
 from app.services.logs import add_log
 from app.services.providers import ensure_provider_schema, get_account
@@ -136,6 +137,31 @@ def ensure_schema(conn: sqlite3.Connection | None = None) -> None:
         CREATE INDEX IF NOT EXISTS idx_catalog_sources_item ON catalog_sources(catalog_internal_id);
         CREATE INDEX IF NOT EXISTS idx_source_availability_item ON source_availability(catalog_internal_id);
         CREATE INDEX IF NOT EXISTS idx_source_availability_account ON source_availability(account_id);
+
+        CREATE TABLE IF NOT EXISTS channel_placements (
+            placement_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            catalog_item_id TEXT NOT NULL,
+            source_identity TEXT NOT NULL,
+            source_name TEXT NOT NULL,
+            source_playlist TEXT NOT NULL,
+            import_job_id TEXT,
+            group_title TEXT,
+            channel_number TEXT,
+            display_title TEXT NOT NULL,
+            placement_index INTEGER NOT NULL,
+            tvg_id TEXT,
+            tvg_name TEXT,
+            tvg_logo TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            import_run_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(source_identity, placement_index),
+            FOREIGN KEY(catalog_item_id) REFERENCES catalog_items(internal_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_channel_placements_catalog ON channel_placements(catalog_item_id, active);
+        CREATE INDEX IF NOT EXISTS idx_channel_placements_source ON channel_placements(source_identity, active, placement_index);
         """
     )
     columns = {row["name"] if hasattr(row, "keys") else row[1] for row in conn.execute("PRAGMA table_info(catalog_items)").fetchall()}
@@ -170,6 +196,20 @@ def ensure_schema(conn: sqlite3.Connection | None = None) -> None:
         )
         """
     )
+    now = datetime.utcnow().isoformat()
+    conn.execute("""
+        INSERT INTO channel_placements (
+            catalog_item_id, source_identity, source_name, source_playlist, import_job_id,
+            group_title, channel_number, display_title, placement_index,
+            tvg_id, tvg_name, tvg_logo, active, import_run_id, created_at, updated_at
+        )
+        SELECT internal_id, 'legacy-canonical', 'Legacy canonical catalog', '', NULL,
+            group_title, tvg_chno, COALESCE(NULLIF(tvg_name, ''), title), id,
+            tvg_id, tvg_name, tvg_logo, 1, 'migration', ?, ?
+        FROM catalog_items c
+        WHERE media_type='channel' AND NOT EXISTS (
+            SELECT 1 FROM channel_placements p WHERE p.catalog_item_id=c.internal_id)
+    """, (now, now))
     conn.commit()
     if owns_conn:
         conn.close()
@@ -427,6 +467,39 @@ def _upsert_availability(
     return "new"
 
 
+def _upsert_channel_placement(
+    conn: sqlite3.Connection, *, internal_id: str, entry: ParsedEntry,
+    source_identity: str, source_name: str, source_playlist: str,
+    import_job_id: str | None, placement_index: int, import_run_id: str,
+) -> str:
+    now = datetime.utcnow().isoformat()
+    attrs = entry.attrs
+    existing = conn.execute(
+        "SELECT placement_id FROM channel_placements WHERE source_identity=? AND placement_index=?",
+        (source_identity, placement_index),
+    ).fetchone()
+    conn.execute("""
+        INSERT INTO channel_placements (
+            catalog_item_id, source_identity, source_name, source_playlist, import_job_id,
+            group_title, channel_number, display_title, placement_index,
+            tvg_id, tvg_name, tvg_logo, active, import_run_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        ON CONFLICT(source_identity, placement_index) DO UPDATE SET
+            catalog_item_id=excluded.catalog_item_id, source_name=excluded.source_name,
+            source_playlist=excluded.source_playlist, import_job_id=excluded.import_job_id,
+            group_title=excluded.group_title, channel_number=excluded.channel_number,
+            display_title=excluded.display_title, tvg_id=excluded.tvg_id,
+            tvg_name=excluded.tvg_name, tvg_logo=excluded.tvg_logo,
+            active=1, import_run_id=excluded.import_run_id, updated_at=excluded.updated_at
+    """, (
+        internal_id, source_identity, source_name, source_playlist, import_job_id,
+        attrs.get("group-title"), attrs.get("tvg-chno") or attrs.get("channel-number") or attrs.get("chno"),
+        attrs.get("tvg-name") or entry.title, placement_index, attrs.get("tvg-id"),
+        attrs.get("tvg-name"), attrs.get("tvg-logo"), import_run_id, now, now,
+    ))
+    return "updated" if existing else "new"
+
+
 def import_paths(
     paths: list[str],
     source_name: str,
@@ -460,6 +533,9 @@ def import_paths(
         "series": 0,
         "episodes": 0,
         "sources": 0,
+        "new_channel_placements": 0,
+        "updated_channel_placements": 0,
+        "stale_channel_placements": 0,
     }
     with _connect() as conn:
         for index, raw_path in enumerate(paths):
@@ -468,11 +544,13 @@ def import_paths(
             if not is_remote and not path.exists():
                 raise FileNotFoundError(f"Playlist not found: {raw_path}")
             source_label = raw_path.rsplit("/", 1)[-1]
+            source_identity = stable_id("playlist", raw_path)
+            import_run_id = f"{job_id or 'sync'}:{datetime.utcnow().isoformat()}:{index}"
             summary["files"] += 1
             if job_id:
                 update_job(job_id, status="running", progress=min(90, 10 + (index * 80 // max(len(paths), 1))), message=f"Importing {source_label}: 0 processed")
             try:
-                for entry in parse_m3u_entries(raw_path, media_type_hint):
+                for placement_index, entry in enumerate(parse_m3u_entries(raw_path, media_type_hint)):
                     summary["entries"] += 1
                     item_type, internal_id, title = _item_key(entry)
                     parent_id = None
@@ -495,6 +573,14 @@ def import_paths(
                     summary["new_source_availability" if source_result == "new" else "updated_source_availability"] += 1
                     if account_id is None:
                         _upsert_source(conn, internal_id=internal_id, media_type=item_type, entry=entry, source_name=source_name)
+                    if item_type == "channel":
+                        placement_result = _upsert_channel_placement(
+                            conn, internal_id=internal_id, entry=entry,
+                            source_identity=source_identity, source_name=source_name,
+                            source_playlist=raw_path, import_job_id=job_id,
+                            placement_index=placement_index, import_run_id=import_run_id,
+                        )
+                        summary[f"{placement_result}_channel_placements"] += 1
                     if summary["entries"] % 750 == 0:
                         conn.commit()
                         if job_id:
@@ -513,6 +599,10 @@ def import_paths(
             except Exception:
                 summary["failed_records"] += 1
                 raise
+            stale = conn.execute("""UPDATE channel_placements SET active=0, updated_at=?
+                WHERE source_identity=? AND active=1 AND COALESCE(import_run_id, '') != ?""",
+                (datetime.utcnow().isoformat(), source_identity, import_run_id)).rowcount
+            summary["stale_channel_placements"] += stale
             imported_at = datetime.utcnow().isoformat()
             conn.execute(
                 "INSERT INTO catalog_imports (job_id, source_name, file_path, status, summary_json, imported_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -661,6 +751,27 @@ def get_item(catalog_internal_id: str) -> CatalogItem | None:
     return _item_from_row(rows[0]) if rows else None
 
 
+def list_channel_placements(catalog_internal_id: str, limit: int = 100, offset: int = 0) -> list[ChannelPlacement]:
+    limit = min(max(limit, 1), 500)
+    offset = max(offset, 0)
+    rows = _rows("""SELECT * FROM channel_placements p WHERE catalog_item_id=? AND active=1
+        AND (source_identity != 'legacy-canonical' OR NOT EXISTS (
+            SELECT 1 FROM channel_placements real WHERE real.catalog_item_id=p.catalog_item_id
+            AND real.active=1 AND real.source_identity != 'legacy-canonical'))
+        ORDER BY CASE WHEN source_identity='legacy-canonical' THEN 1 ELSE 0 END,
+        source_name, placement_index LIMIT ? OFFSET ?""", (catalog_internal_id, limit, offset))
+    return [ChannelPlacement(
+        placement_id=row["placement_id"], catalog_item_id=row["catalog_item_id"],
+        source_identity=row["source_identity"], source_name=row["source_name"],
+        source_playlist=_redact_playlist_reference(row["source_playlist"]), import_job_id=row["import_job_id"],
+        group_title=row["group_title"], channel_number=row["channel_number"],
+        display_title=row["display_title"], placement_index=row["placement_index"],
+        tvg_id=row["tvg_id"], tvg_name=row["tvg_name"], tvg_logo=row["tvg_logo"],
+        active=bool(row["active"]), created_at=datetime.fromisoformat(row["created_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+    ) for row in rows]
+
+
 def list_sources(limit: int = 100, offset: int = 0) -> list[CatalogSource]:
     ensure_schema()
     limit = min(max(limit, 1), 500)
@@ -780,3 +891,13 @@ def clear_test_data() -> CatalogSummary:
 
 def _redact_url(url: str) -> str:
     return re.sub(r"(/(?:live|movie|series)/)[^/]+/[^/]+/", r"\1[redacted]/[redacted]/", url, flags=re.IGNORECASE)
+
+
+def _redact_playlist_reference(reference: str) -> str:
+    if not reference.startswith(("http://", "https://")):
+        return reference
+    parsed = urlsplit(reference)
+    host = parsed.hostname or "remote-playlist"
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    return urlunsplit((parsed.scheme, host, parsed.path, "", ""))

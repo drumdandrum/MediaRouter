@@ -45,7 +45,11 @@ See `docs/adr/0001-foundation-first.md`.
 | STRM outputs use runtime URLs | Accepted | Sprint 6 generates movie and episode STRM files containing Media Router runtime URLs only; provider URLs remain behind the Broker. |
 | Live M3U outputs use runtime URLs | Accepted | Sprint 7 generates live/channel M3U playlists containing `/r/live/{catalog_item_id}` URLs only; Broker still chooses the provider account/source at playback time. |
 | Runtime reservations release by TTL first | Accepted | Sprint 7 runtime playback reservations use longer route defaults and expire by TTL; heartbeat and explicit client release are deferred. |
-| Runtime startup probes reuse reservations | Accepted | Repeated GET probes from the same short-lived client/session reuse an active reservation briefly instead of consuming extra account capacity. |
+| Runtime startup probes reuse reservations | Superseded | The original short reuse window is superseded by active-lifetime runtime identity reuse. |
+| Active-lifetime runtime identity reuse | Accepted | Explicit sessions and stable hashed fallback fingerprints reuse one active reservation through probes, seeks, and reconnects; SQLite write locking makes reuse-or-create atomic. Weak fingerprints may collide for indistinguishable clients behind shared NAT, so explicit sessions remain preferred. |
+| Bounded STRM batches | Accepted | v0.8.1 paginates movie/episode reads, commits tracking per batch, bounds UI previews, and stores collision/cleanup working sets in temporary SQLite tables so memory remains approximately stable. |
+| Cooperative STRM cancellation | Accepted | Cancellation is checked between batches; completed files and tracking commits remain valid, orphan cleanup is skipped, and the job is reported as cancelled. |
+| Editorial placement separate from identity | Accepted | Catalog channels remain deduplicated by CUID/identity, while `channel_placements` owns repeated playlist group membership, numbering, metadata, and source order. Live M3U emits placements that share the same stable runtime URL. |
 
 ## Open Decisions
 

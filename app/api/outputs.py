@@ -4,12 +4,15 @@ from app.schemas.jobs import JobRead
 from app.schemas.outputs import (
     GeneratedOutputFile,
     LiveM3uOutputResult,
+    LiveM3uGenerateRequest,
+    LiveM3uEstimate,
     LiveM3uRunHistory,
     LiveM3uSettings,
     LiveM3uSettingsUpdate,
     OutputPathValidationResult,
     OutputRunHistory,
     StrmOutputResult,
+    StrmGenerateRequest,
     StrmSettings,
     StrmSettingsUpdate,
 )
@@ -19,6 +22,7 @@ from app.services.outputs import (
     dry_run_live_m3u_output,
     get_strm_settings,
     get_live_m3u_settings,
+    get_live_m3u_estimate,
     list_generated_files,
     list_live_m3u_history,
     list_output_history,
@@ -70,7 +74,10 @@ def strm_validate_paths() -> OutputPathValidationResult:
 
 
 @router.post("/strm/generate", response_model=JobRead, status_code=201)
-def strm_generate(request: Request, background_tasks: BackgroundTasks) -> JobRead:
+def strm_generate(request: Request, background_tasks: BackgroundTasks, payload: StrmGenerateRequest = StrmGenerateRequest()) -> JobRead:
+    settings = get_strm_settings()
+    if settings.generation_mode == "Unlimited" and not payload.confirm_unlimited:
+        raise HTTPException(status_code=400, detail="Unlimited STRM generation requires explicit confirmation.")
     job = create_job("strm_generate")
     background_tasks.add_task(run_strm_generate_job, job.id, _request_base_url(request))
     return job
@@ -82,13 +89,18 @@ def strm_history() -> list[OutputRunHistory]:
 
 
 @router.get("/strm/generated-files", response_model=list[GeneratedOutputFile])
-def strm_generated_files() -> list[GeneratedOutputFile]:
-    return list_generated_files()
+def strm_generated_files(limit: int = 100, offset: int = 0) -> list[GeneratedOutputFile]:
+    return list_generated_files(limit=limit, offset=offset)
 
 
 @router.get("/live-m3u/settings", response_model=LiveM3uSettings)
 def read_live_m3u_settings() -> LiveM3uSettings:
     return get_live_m3u_settings()
+
+
+@router.get("/live-m3u/estimate", response_model=LiveM3uEstimate)
+def live_m3u_estimate() -> LiveM3uEstimate:
+    return get_live_m3u_estimate()
 
 
 @router.put("/live-m3u/settings", response_model=LiveM3uSettings)
@@ -116,7 +128,10 @@ def live_m3u_dry_run(request: Request) -> LiveM3uOutputResult:
 
 
 @router.post("/live-m3u/generate", response_model=JobRead, status_code=201)
-def live_m3u_generate(request: Request, background_tasks: BackgroundTasks) -> JobRead:
+def live_m3u_generate(request: Request, background_tasks: BackgroundTasks, payload: LiveM3uGenerateRequest = LiveM3uGenerateRequest()) -> JobRead:
+    settings = get_live_m3u_settings()
+    if settings.generation_mode == "Unlimited" and not payload.confirm_unlimited:
+        raise HTTPException(status_code=400, detail="Unlimited Live M3U generation requires explicit confirmation.")
     job = create_job("live_m3u_generate")
     background_tasks.add_task(run_live_m3u_generate_job, job.id, _request_base_url(request))
     return job

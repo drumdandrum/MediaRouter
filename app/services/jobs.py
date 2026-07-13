@@ -22,6 +22,7 @@ class Job:
 
 
 JOBS: dict[str, Job] = {}
+CANCEL_REQUESTS: set[str] = set()
 
 
 def _jobs_path():
@@ -116,6 +117,22 @@ def create_job(kind: str) -> JobRead:
     _persist()
     add_log("info", "jobs", f"Queued job {kind}")
     return _read(job)
+
+
+def request_job_cancel(job_id: str) -> JobRead | None:
+    job = JOBS.get(job_id)
+    if job is None or job.kind != "strm_generate" or job.status not in {"queued", "running"}:
+        return None
+    CANCEL_REQUESTS.add(job_id)
+    return update_job(job_id, message="Cancellation requested; stopping after the current batch")
+
+
+def is_job_cancel_requested(job_id: str) -> bool:
+    return job_id in CANCEL_REQUESTS
+
+
+def clear_job_cancel_request(job_id: str) -> None:
+    CANCEL_REQUESTS.discard(job_id)
 
 
 async def run_job(job_id: str) -> None:

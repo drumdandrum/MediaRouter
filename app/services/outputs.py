@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import sqlite3
 import time
+from uuid import uuid4
 
 from app.core.config import get_settings
 from app.core.json_store import JsonStore
@@ -16,6 +17,7 @@ from app.schemas.catalog import CatalogItem
 from app.schemas.outputs import (
     GeneratedOutputFile,
     LiveM3uOutputResult,
+    LiveM3uEstimate,
     LiveM3uOutputSummary,
     LiveM3uPreviewEntry,
     LiveM3uRunHistory,
@@ -30,8 +32,8 @@ from app.schemas.outputs import (
     StrmSettings,
     StrmSettingsUpdate,
 )
-from app.services.catalog import ensure_schema, list_items
-from app.services.jobs import update_job
+from app.services.catalog import ensure_schema, get_summary, list_items
+from app.services.jobs import clear_job_cancel_request, is_job_cancel_requested, update_job
 from app.services.logs import add_log
 from app.services.runtime import public_runtime_base_url, route_for_media_type
 from app.services.settings import get_app_settings
@@ -42,6 +44,9 @@ OUTPUT_ID = "strm"
 LIVE_M3U_OUTPUT_TYPE = "live-m3u"
 LIVE_M3U_OUTPUT_ID = "live-m3u"
 MAX_OUTPUT_ROWS = 500
+MAX_OPERATION_PREVIEW = 500
+STRM_GENERATION_PRESETS = {"Test": (500, 500), "Small": (2000, 2000), "Medium": (5000, 10000)}
+LIVE_GENERATION_PRESETS = {"Test": 500, "Small": 2000, "Medium": 5000}
 UVICORN_LOGGER = logging.getLogger("uvicorn.error")
 
 
@@ -100,6 +105,9 @@ def ensure_outputs_schema(conn: sqlite3.Connection | None = None) -> None:
         CREATE INDEX IF NOT EXISTS idx_output_run_history_type ON output_run_history(output_type, started_at);
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(output_generated_files)").fetchall()}
+    if "generation_run_id" not in columns:
+        conn.execute("ALTER TABLE output_generated_files ADD COLUMN generation_run_id TEXT")
     conn.commit()
     if owns_conn:
         conn.close()
@@ -120,11 +128,30 @@ def get_strm_settings() -> StrmSettings:
 
 
 def get_live_m3u_settings() -> LiveM3uSettings:
-    return LiveM3uSettings(**_live_m3u_settings_store().read())
+    store = _live_m3u_settings_store()
+    stored_values: dict = {}
+    if store.path.exists():
+        try:
+            stored_values = json.loads(store.path.read_text())
+        except (json.JSONDecodeError, OSError):
+            stored_values = {}
+    values = store.read()
+    if "generation_mode" not in stored_values:
+        legacy_limit = int(stored_values.get("channel_limit") or 0)
+        values["generation_mode"] = "Custom" if legacy_limit > 0 and legacy_limit != 500 else "Test"
+        values["maximum_live_channels"] = legacy_limit if legacy_limit > 0 else 500
+    values["channel_limit"] = values.get("maximum_live_channels", 500)
+    return LiveM3uSettings(**values)
 
 
 def update_strm_settings(payload: StrmSettingsUpdate) -> StrmSettings:
     values = payload.model_dump(exclude_unset=True)
+    mode = values.get("generation_mode", get_strm_settings().generation_mode)
+    if mode in STRM_GENERATION_PRESETS:
+        values["maximum_movies"], values["maximum_episodes"] = STRM_GENERATION_PRESETS[mode]
+    elif mode == "Unlimited":
+        values["maximum_movies"] = 0
+        values["maximum_episodes"] = 0
     candidate = StrmSettings(**{**get_strm_settings().model_dump(), **values})
     _validate_settings(candidate)
     return StrmSettings(**_settings_store().update(values))
@@ -132,7 +159,16 @@ def update_strm_settings(payload: StrmSettingsUpdate) -> StrmSettings:
 
 def update_live_m3u_settings(payload: LiveM3uSettingsUpdate) -> LiveM3uSettings:
     values = payload.model_dump(exclude_unset=True)
-    candidate = LiveM3uSettings(**{**get_live_m3u_settings().model_dump(), **values})
+    current = get_live_m3u_settings()
+    mode = values.get("generation_mode", current.generation_mode)
+    if mode in LIVE_GENERATION_PRESETS:
+        values["maximum_live_channels"] = LIVE_GENERATION_PRESETS[mode]
+    elif mode == "Unlimited":
+        values["maximum_live_channels"] = 0
+    elif "maximum_live_channels" not in values and "channel_limit" in values:
+        values["maximum_live_channels"] = values["channel_limit"]
+    values["channel_limit"] = values.get("maximum_live_channels", current.maximum_live_channels)
+    candidate = LiveM3uSettings(**{**current.model_dump(), **values})
     _validate_live_m3u_settings(candidate)
     return LiveM3uSettings(**_live_m3u_settings_store().update(values))
 
@@ -148,6 +184,10 @@ def _validate_settings(settings: StrmSettings) -> None:
             raise ValueError(f"{label} must be a container absolute path.")
         if value.startswith("/Users/"):
             raise ValueError(f"{label} must use a Docker/container path, not a Mac host path.")
+    if settings.generation_mode == "Custom" and (settings.maximum_movies <= 0 or settings.maximum_episodes <= 0):
+        raise ValueError("Custom mode requires positive maximum movie and episode limits.")
+    if settings.generation_mode != "Unlimited" and (settings.maximum_movies <= 0 or settings.maximum_episodes <= 0):
+        raise ValueError("Zero or blank limits are allowed only in explicitly selected Unlimited mode.")
 
 
 def _validate_live_m3u_settings(settings: LiveM3uSettings) -> None:
@@ -160,6 +200,10 @@ def _validate_live_m3u_settings(settings: LiveM3uSettings) -> None:
         raise ValueError("Live M3U output file path must use a Docker/container path, not a Mac host path.")
     if Path(path).suffix.lower() not in {".m3u", ".m3u8"}:
         raise ValueError("Live M3U output file path must end in .m3u or .m3u8.")
+    if settings.generation_mode == "Custom" and settings.maximum_live_channels <= 0:
+        raise ValueError("Custom mode requires a positive maximum live channel limit.")
+    if settings.generation_mode != "Unlimited" and settings.maximum_live_channels <= 0:
+        raise ValueError("Zero or blank live channel limits are allowed only in explicitly selected Unlimited mode.")
 
 
 def _path_status(path: str, purpose: str, *, require_writable: bool, create: bool) -> OutputPathValidation:
@@ -426,6 +470,25 @@ def _enabled_source_counts(catalog_item_ids: list[str]) -> dict[str, int]:
     return {row["catalog_internal_id"]: row["count"] for row in rows}
 
 
+def get_live_m3u_estimate() -> LiveM3uEstimate:
+    settings = get_live_m3u_settings()
+    with _connect() as conn:
+        placement_filter = """p.active=1 AND (
+            p.source_identity != 'legacy-canonical' OR NOT EXISTS (
+                SELECT 1 FROM channel_placements real WHERE real.catalog_item_id=p.catalog_item_id
+                AND real.active=1 AND real.source_identity != 'legacy-canonical'))"""
+        total = conn.execute(f"SELECT COUNT(*) AS count FROM channel_placements p WHERE {placement_filter}").fetchone()["count"]
+        eligible_filter = "" if settings.include_disabled_channels else """ AND EXISTS (
+            SELECT 1 FROM source_availability s WHERE s.catalog_internal_id=p.catalog_item_id
+            AND s.media_type='channel' AND s.enabled=1)"""
+        eligible = conn.execute(f"SELECT COUNT(*) AS count FROM channel_placements p WHERE {placement_filter}{eligible_filter}").fetchone()["count"]
+    limit = None if settings.generation_mode == "Unlimited" else settings.maximum_live_channels
+    included = eligible if limit is None else min(eligible, limit)
+    return LiveM3uEstimate(total_live_channels=total, eligible_live_channels=eligible,
+        configured_limit=limit, included_channels=included, excluded_by_limit=eligible-included,
+        capped=settings.generation_mode != "Unlimited")
+
+
 def _live_m3u_entry(item: CatalogItem, settings: LiveM3uSettings, runtime_base_url: str) -> LiveM3uPreviewEntry:
     attrs: list[str] = []
     if item.tvg_chno:
@@ -449,6 +512,28 @@ def _live_m3u_entry(item: CatalogItem, settings: LiveM3uSettings, runtime_base_u
         group_title=item.group_title,
         extinf=extinf,
         runtime_url=runtime_url,
+    )
+
+
+def _live_m3u_placement_entry(row: sqlite3.Row, settings: LiveM3uSettings, runtime_base_url: str) -> LiveM3uPreviewEntry:
+    attrs: list[str] = []
+    if row["channel_number"]:
+        attrs.append(f'tvg-chno="{_xml_attr(row["channel_number"])}"')
+    if settings.include_tvg_id and row["tvg_id"]:
+        attrs.append(f'tvg-id="{_xml_attr(row["tvg_id"])}"')
+    if settings.include_tvg_name and row["tvg_name"]:
+        attrs.append(f'tvg-name="{_xml_attr(row["tvg_name"])}"')
+    if settings.include_logos and row["tvg_logo"]:
+        attrs.append(f'tvg-logo="{_xml_attr(row["tvg_logo"])}"')
+    if settings.include_group_title and row["group_title"]:
+        attrs.append(f'group-title="{_xml_attr(row["group_title"])}"')
+    attr_text = f" {' '.join(attrs)}" if attrs else ""
+    title = row["display_title"]
+    return LiveM3uPreviewEntry(
+        catalog_item_id=row["catalog_item_id"], title=title,
+        channel_number=row["channel_number"], group_title=row["group_title"],
+        extinf=f"#EXTINF:-1{attr_text},{title}",
+        runtime_url=f"{runtime_base_url}/r/live/{row['catalog_item_id']}",
     )
 
 
@@ -504,7 +589,7 @@ def _generated_from_row(row: sqlite3.Row) -> GeneratedOutputFile:
     )
 
 
-def _summary_from_counts(mode: str, counts: dict[str, int], output_paths: list[str], duration_seconds: float) -> StrmOutputSummary:
+def _summary_from_counts(mode: str, counts: dict[str, int], output_paths: list[str], duration_seconds: float, settings: StrmSettings, total_items: int = 0, excluded: int = 0) -> StrmOutputSummary:
     return StrmOutputSummary(
         mode=mode,
         created_count=counts.get("create", 0),
@@ -516,16 +601,22 @@ def _summary_from_counts(mode: str, counts: dict[str, int], output_paths: list[s
         episode_count=counts.get("episode", 0),
         output_paths=output_paths,
         duration_seconds=round(duration_seconds, 3),
+        total_items=total_items,
+        processed_items=counts.get("movie", 0) + counts.get("episode", 0),
+        excluded_by_limits=excluded,
+        capped=settings.generation_mode != "Unlimited",
+        generation_mode=settings.generation_mode,
+        batch_size=settings.batch_size,
     )
 
 
-def _record_generated_file(conn: sqlite3.Connection, item: CatalogItem, output_path: Path, content_hash: str, now: str) -> None:
+def _record_generated_file(conn: sqlite3.Connection, item: CatalogItem, output_path: Path, content_hash: str, now: str, run_id: str) -> None:
     conn.execute(
         """
         INSERT INTO output_generated_files (
             output_id, catalog_item_id, media_type, output_type, output_path,
-            last_content_hash, last_generated_at, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'generated')
+            last_content_hash, last_generated_at, status, generation_run_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'generated', ?)
         ON CONFLICT(output_path) DO UPDATE SET
             output_id=excluded.output_id,
             catalog_item_id=excluded.catalog_item_id,
@@ -533,9 +624,10 @@ def _record_generated_file(conn: sqlite3.Connection, item: CatalogItem, output_p
             output_type=excluded.output_type,
             last_content_hash=excluded.last_content_hash,
             last_generated_at=excluded.last_generated_at,
-            status='generated'
+            status='generated',
+            generation_run_id=excluded.generation_run_id
         """,
-        (OUTPUT_ID, item.internal_id, item.media_type, OUTPUT_TYPE, str(output_path), content_hash, now),
+        (OUTPUT_ID, item.internal_id, item.media_type, OUTPUT_TYPE, str(output_path), content_hash, now, run_id),
     )
 
 
@@ -573,7 +665,7 @@ def _operation(action: str, item: CatalogItem | None, output_path: Path, runtime
     )
 
 
-def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True) -> StrmOutputResult:
+def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True, job_id: str | None = None) -> StrmOutputResult:
     started = time.monotonic()
     started_at = datetime.utcnow().isoformat()
     settings = get_strm_settings()
@@ -581,86 +673,119 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
     effective_dry_run = dry_run or settings.dry_run_mode
     mode = "dry_run" if effective_dry_run else "generate"
     runtime_base_url = public_runtime_base_url(request_base_url)
-    add_log("info", "outputs", f"STRM {mode} started for movies={settings.movies_output_directory}, series={settings.series_output_directory}")
+    limits = {"movie": None if settings.generation_mode == "Unlimited" else settings.maximum_movies,
+              "episode": None if settings.generation_mode == "Unlimited" else settings.maximum_episodes}
+    catalog_summary = get_summary()
+    catalog_totals = {"movie": catalog_summary.movies, "episode": catalog_summary.episodes}
+    selected_totals = {kind: total if limits[kind] is None else min(total, limits[kind]) for kind, total in catalog_totals.items()}
+    total_items = sum(selected_totals.values())
+    excluded = sum(catalog_totals.values()) - total_items
+    add_log("info", "outputs", f"STRM {mode} started: generation_mode={settings.generation_mode}, maximum_movies={settings.maximum_movies}, maximum_episodes={settings.maximum_episodes}, batch_size={settings.batch_size}")
     if not effective_dry_run:
         validation = validate_strm_paths(create_missing=True)
         failed = [item for item in validation.paths if item.purpose in {"Movies STRM output directory", "Series STRM output directory", "Persistent data directory"} and item.status != "ok"]
         if failed:
             detail = "; ".join(f"{item.purpose} {item.path}: {item.message}" for item in failed)
             raise OutputPathError(f"STRM output path validation failed: {detail}")
-    movies = list_items("movie", limit=500, offset=0)
-    episodes = list_items("episode", limit=500, offset=0)
-    items = movies + episodes
-    counts = {"movie": len(movies), "episode": len(episodes)}
+    counts = {"movie": 0, "episode": 0}
     operations: list[StrmOutputOperation] = []
     output_paths: list[str] = [settings.movies_output_directory, settings.series_output_directory]
-    desired_paths: set[str] = set()
-    seen_paths: dict[str, int] = {}
+    run_id = uuid4().hex
+    cancelled = False
+    batch_number = 0
 
     with _connect() as conn:
-        for item in items:
-            try:
-                output_path = _movie_output_path(item, settings) if item.media_type == "movie" else _episode_output_path(item, settings)
-                root = settings.movies_output_directory if item.media_type == "movie" else settings.series_output_directory
-                _ensure_output_path_inside_root(output_path, root)
-                if str(output_path) in seen_paths:
-                    seen_paths[str(output_path)] += 1
-                    output_path = output_path.with_name(f"{output_path.stem} [{item.internal_id}]{output_path.suffix}")
-                    _ensure_output_path_inside_root(output_path, root)
-                else:
-                    seen_paths[str(output_path)] = 1
-                desired_paths.add(str(output_path))
-                runtime_url = _runtime_url(item, runtime_base_url)
-                content = f"{runtime_url}\n"
-                digest = _content_hash(content)
-                try:
-                    existing_content = output_path.read_text() if output_path.exists() else None
-                except OSError as exc:
-                    raise OutputPathError(f"Could not read existing STRM file at {output_path}: {exc}") from exc
-                if existing_content == content:
-                    action = "skip"
-                    reason = "Existing STRM content is unchanged."
-                elif output_path.exists() and not settings.overwrite_existing_files:
-                    action = "skip"
-                    reason = "File exists and overwrite is disabled."
-                elif output_path.exists():
-                    action = "update"
-                    reason = "Existing STRM content would be updated." if effective_dry_run else "Existing STRM content updated."
-                else:
-                    action = "create"
-                    reason = "STRM file would be created." if effective_dry_run else "STRM file created."
-
-                if not effective_dry_run and action in {"create", "update"}:
+        conn.execute("CREATE TEMP TABLE strm_desired_paths (output_path TEXT PRIMARY KEY, catalog_item_id TEXT NOT NULL)")
+        conn.execute("CREATE TEMP TABLE strm_selected_ids (catalog_item_id TEXT PRIMARY KEY)")
+        for media_type in ("movie", "episode"):
+            offset = 0
+            while offset < selected_totals[media_type]:
+                batch_limit = min(settings.batch_size, selected_totals[media_type] - offset)
+                items = list_items(media_type, limit=batch_limit, offset=offset)
+                if not items:
+                    break
+                batch_number += 1
+                for item in items:
                     try:
-                        output_path.parent.mkdir(parents=True, exist_ok=True)
-                        output_path.write_text(content)
-                    except OSError as exc:
-                        raise OutputPathError(f"Could not write STRM file at {output_path}: {exc}") from exc
-                    _record_generated_file(conn, item, output_path, digest, datetime.utcnow().isoformat())
-                elif not effective_dry_run and action == "skip" and output_path.exists() and existing_content == content:
-                    _record_generated_file(conn, item, output_path, digest, datetime.utcnow().isoformat())
+                        output_path = _movie_output_path(item, settings) if item.media_type == "movie" else _episode_output_path(item, settings)
+                        root = settings.movies_output_directory if item.media_type == "movie" else settings.series_output_directory
+                        _ensure_output_path_inside_root(output_path, root)
+                        try:
+                            conn.execute("INSERT INTO strm_desired_paths VALUES (?, ?)", (str(output_path), item.internal_id))
+                        except sqlite3.IntegrityError:
+                            output_path = output_path.with_name(f"{output_path.stem} [{item.internal_id}]{output_path.suffix}")
+                            _ensure_output_path_inside_root(output_path, root)
+                            conn.execute("INSERT INTO strm_desired_paths VALUES (?, ?)", (str(output_path), item.internal_id))
+                        conn.execute("INSERT OR IGNORE INTO strm_selected_ids VALUES (?)", (item.internal_id,))
+                        runtime_url = _runtime_url(item, runtime_base_url)
+                        content = f"{runtime_url}\n"
+                        digest = _content_hash(content)
+                        try:
+                            existing_content = output_path.read_text() if output_path.exists() else None
+                        except OSError as exc:
+                            raise OutputPathError(f"Could not read existing STRM file at {output_path}: {exc}") from exc
+                        if existing_content == content:
+                            action, reason = "skip", "Existing STRM content is unchanged."
+                        elif output_path.exists() and not settings.overwrite_existing_files:
+                            action, reason = "skip", "File exists and overwrite is disabled."
+                        elif output_path.exists():
+                            action, reason = "update", "Existing STRM content would be updated." if effective_dry_run else "Existing STRM content updated."
+                        else:
+                            action, reason = "create", "STRM file would be created." if effective_dry_run else "STRM file created."
+                        if not effective_dry_run and action in {"create", "update"}:
+                            try:
+                                output_path.parent.mkdir(parents=True, exist_ok=True)
+                                output_path.write_text(content)
+                            except OSError as exc:
+                                raise OutputPathError(f"Could not write STRM file at {output_path}: {exc}") from exc
+                            _record_generated_file(conn, item, output_path, digest, datetime.utcnow().isoformat(), run_id)
+                        elif not effective_dry_run and action == "skip" and output_path.exists() and existing_content == content:
+                            _record_generated_file(conn, item, output_path, digest, datetime.utcnow().isoformat(), run_id)
+                        counts[action] = counts.get(action, 0) + 1
+                        if len(operations) < MAX_OPERATION_PREVIEW:
+                            operations.append(_operation(action, item, output_path, runtime_url, reason))
+                    except Exception as exc:
+                        counts["fail"] = counts.get("fail", 0) + 1
+                        failed_path = output_path if "output_path" in locals() else Path("")
+                        if len(operations) < MAX_OPERATION_PREVIEW:
+                            operations.append(_operation("fail", item, failed_path, None, f"Failed to prepare STRM output: {exc}"))
+                        UVICORN_LOGGER.exception("STRM %s failed for catalog item %s at %s", mode, item.internal_id, failed_path)
+                counts[media_type] += len(items)
+                offset += len(items)
+                if not effective_dry_run:
+                    conn.commit()
+                processed = counts["movie"] + counts["episode"]
+                progress = 100 if total_items == 0 else min(99, int(processed * 100 / total_items))
+                progress_result = {**_summary_from_counts(mode, counts, output_paths, time.monotonic() - started, settings, total_items, excluded).model_dump(), "current_media_type": media_type, "current_batch": batch_number, "percentage_complete": progress}
+                if job_id:
+                    update_job(job_id, progress=progress, message=f"{media_type.title()} batch {batch_number}: {processed}/{total_items}", result=progress_result)
+                add_log("info", "outputs", f"STRM {mode} batch {batch_number}: media_type={media_type}, processed={processed}/{total_items}, created={counts.get('create', 0)}, updated={counts.get('update', 0)}, skipped={counts.get('skip', 0)}, failed={counts.get('fail', 0)}")
+                del items
+                if job_id and is_job_cancel_requested(job_id):
+                    cancelled = True
+                    break
+            if cancelled:
+                break
 
-                counts[action] = counts.get(action, 0) + 1
-                operations.append(_operation(action, item, output_path, runtime_url, reason))
-            except Exception as exc:
-                counts["fail"] = counts.get("fail", 0) + 1
-                failed_path = output_path if "output_path" in locals() else Path("")
-                operations.append(_operation("fail", item, failed_path, None, f"Failed to prepare STRM output: {exc}"))
-                UVICORN_LOGGER.exception("STRM %s failed for catalog item %s at %s", mode, item.internal_id, failed_path)
-
-        if settings.remove_orphaned_files:
-            current_ids = {item.internal_id for item in items}
-            for row in _tracked_files(conn):
+        if settings.remove_orphaned_files and not cancelled:
+            orphan_rows = conn.execute("""
+                SELECT f.* FROM output_generated_files f
+                LEFT JOIN catalog_items c ON c.internal_id=f.catalog_item_id
+                LEFT JOIN strm_selected_ids s ON s.catalog_item_id=f.catalog_item_id
+                LEFT JOIN strm_desired_paths d ON d.output_path=f.output_path
+                WHERE f.output_type=? AND f.status='generated'
+                  AND (c.internal_id IS NULL OR (s.catalog_item_id IS NOT NULL AND d.output_path IS NULL))
+                ORDER BY f.id LIMIT ?
+            """, (OUTPUT_TYPE, MAX_OUTPUT_ROWS)).fetchall()
+            for row in orphan_rows:
                 tracked_path = Path(row["output_path"])
-                if row["catalog_item_id"] in current_ids and row["output_path"] in desired_paths:
-                    continue
                 reason = "Tracked generated file is no longer produced by current catalog/settings."
                 if not effective_dry_run and tracked_path.exists():
                     try:
                         tracked_path.unlink()
                     except OSError as exc:
                         counts["fail"] = counts.get("fail", 0) + 1
-                        operations.append(
+                        if len(operations) < MAX_OPERATION_PREVIEW: operations.append(
                             StrmOutputOperation(
                                 action="fail",
                                 media_type=row["media_type"],
@@ -676,7 +801,7 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
                 if not effective_dry_run:
                     conn.execute("UPDATE output_generated_files SET status = 'removed' WHERE output_path = ?", (row["output_path"],))
                 counts["remove"] = counts.get("remove", 0) + 1
-                operations.append(
+                if len(operations) < MAX_OPERATION_PREVIEW: operations.append(
                     StrmOutputOperation(
                         action="remove",
                         media_type=row["media_type"],
@@ -688,8 +813,12 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
                     )
                 )
 
-        summary = _summary_from_counts(mode, counts, output_paths, time.monotonic() - started)
-        status = "complete" if summary.failed_count == 0 else "failed"
+        summary = _summary_from_counts(mode, counts, output_paths, time.monotonic() - started, settings, total_items, excluded).model_copy(update={
+            "percentage_complete": 100 if not cancelled else (100 if total_items == 0 else int((counts["movie"] + counts["episode"]) * 100 / total_items)),
+            "current_media_type": "cancelled" if cancelled else "complete",
+            "current_batch": batch_number,
+        })
+        status = "cancelled" if cancelled else ("complete" if summary.failed_count == 0 else "failed")
         finished_at = datetime.utcnow().isoformat()
         if not effective_dry_run:
             conn.commit()
@@ -700,7 +829,7 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
         "info" if summary.failed_count == 0 else "error",
         "outputs",
         (
-            f"STRM {mode} completed: {summary.created_count} created, {summary.updated_count} updated, "
+            f"STRM {mode} {'cancelled' if cancelled else 'completed'}: {summary.created_count} created, {summary.updated_count} updated, "
             f"{summary.skipped_count} skipped, {summary.removed_count} removed, {summary.failed_count} failed"
         ),
     )
@@ -715,7 +844,7 @@ def generate_strm_outputs(request_base_url: str | None = None) -> StrmOutputResu
     return build_strm_outputs(request_base_url=request_base_url, dry_run=False)
 
 
-def build_live_m3u_output(request_base_url: str | None = None, dry_run: bool = True) -> LiveM3uOutputResult:
+def build_live_m3u_output(request_base_url: str | None = None, dry_run: bool = True, job_id: str | None = None) -> LiveM3uOutputResult:
     started = time.monotonic()
     started_at = datetime.utcnow().isoformat()
     settings = get_live_m3u_settings()
@@ -724,7 +853,14 @@ def build_live_m3u_output(request_base_url: str | None = None, dry_run: bool = T
     mode = "dry_run" if effective_dry_run else "generate"
     runtime_base_url = _live_runtime_base(settings, request_base_url)
     output_path = Path(settings.output_file_path)
-    add_log("info", "outputs", f"Live M3U {mode} started for output={settings.output_file_path}")
+    estimate = get_live_m3u_estimate()
+    configured_limit = estimate.configured_limit
+    catalog_total = estimate.total_live_channels
+    eligible_total = estimate.eligible_live_channels
+    included_target = estimate.included_channels
+    excluded_by_limit = estimate.excluded_by_limit
+    unavailable_count = catalog_total - eligible_total
+    add_log("info", "outputs", f"Live M3U {mode} started: generation_mode={settings.generation_mode}, configured_channel_limit={configured_limit}, eligible_channels={eligible_total}")
     if not effective_dry_run:
         validation = validate_live_m3u_paths(create_missing=True)
         failed = [item for item in validation.paths if item.status in {"error", "invalid"}]
@@ -732,58 +868,145 @@ def build_live_m3u_output(request_base_url: str | None = None, dry_run: bool = T
             detail = "; ".join(f"{item.purpose} {item.path}: {item.message}" for item in failed)
             raise OutputPathError(f"Live M3U output path validation failed: {detail}")
 
-    channels = list_items("channel", limit=settings.channel_limit or 500, offset=0)
-    source_counts = _enabled_source_counts([item.internal_id for item in channels])
-    entries: list[LiveM3uPreviewEntry] = []
-    skipped: list[str] = []
-    for item in channels:
-        if not settings.include_disabled_channels and source_counts.get(item.internal_id, 0) < 1:
-            skipped.append(f"{item.title} ({item.internal_id}) skipped: no enabled source availability.")
-            continue
-        entries.append(_live_m3u_entry(item, settings, runtime_base_url))
-    entries.sort(key=_live_channel_sort_key)
-
-    content = _live_m3u_content(entries)
-    digest = _content_hash(content)
     created_count = updated_count = failed_count = 0
-    existing_content = None
-    try:
-        existing_content = output_path.read_text() if output_path.exists() else None
-        if not effective_dry_run:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            if existing_content != content:
-                output_path.write_text(content)
-                created_count = 1 if existing_content is None else 0
-                updated_count = 0 if existing_content is None else 1
-    except OSError as exc:
-        failed_count = 1
-        UVICORN_LOGGER.exception("Live M3U %s failed at %s", mode, output_path)
-        if not effective_dry_run:
-            raise OutputPathError(f"Could not write Live M3U file at {output_path}: {exc}") from exc
+    preview_entries: list[LiveM3uPreviewEntry] = []
+    skipped_channels: list[str] = []
+    first_catalog_item_id: str | None = None
+    digest = ""
+    output_existed = output_path.exists()
+    with _connect() as work_conn:
+        work_conn.execute("""CREATE TEMP TABLE live_m3u_entries (
+            placement_id INTEGER PRIMARY KEY, catalog_item_id TEXT, title TEXT, channel_number TEXT, group_title TEXT,
+            extinf TEXT NOT NULL, runtime_url TEXT NOT NULL, sort_missing INTEGER NOT NULL,
+            sort_number REAL NOT NULL, sort_channel TEXT NOT NULL, editorial_rank INTEGER NOT NULL,
+            source_name TEXT NOT NULL, placement_index INTEGER NOT NULL)""")
+        offset = included = 0
+        batch_size = 250
+        while included < included_target:
+            availability_filter = "" if settings.include_disabled_channels else """ AND EXISTS (
+                SELECT 1 FROM source_availability s WHERE s.catalog_internal_id=p.catalog_item_id
+                AND s.media_type='channel' AND s.enabled=1)"""
+            placements = work_conn.execute(f"""SELECT p.* FROM channel_placements p
+                WHERE p.active=1 AND (p.source_identity != 'legacy-canonical' OR NOT EXISTS (
+                    SELECT 1 FROM channel_placements real WHERE real.catalog_item_id=p.catalog_item_id
+                    AND real.active=1 AND real.source_identity != 'legacy-canonical'))
+                {availability_filter}
+                ORDER BY CASE WHEN p.source_identity='legacy-canonical' THEN 1 ELSE 0 END,
+                    LOWER(p.source_name), p.source_identity, p.placement_index
+                LIMIT ? OFFSET ?""", (min(batch_size, included_target-included), offset)).fetchall()
+            if not placements:
+                break
+            offset += len(placements)
+            for placement in placements:
+                entry = _live_m3u_placement_entry(placement, settings, runtime_base_url)
+                sort_missing, sort_number, sort_channel = _channel_number_sort_key(entry.channel_number)
+                work_conn.execute("INSERT INTO live_m3u_entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (
+                    placement["placement_id"], entry.catalog_item_id, entry.title, entry.channel_number, entry.group_title,
+                    entry.extinf, entry.runtime_url, sort_missing, sort_number, sort_channel,
+                    1 if placement["source_identity"] == "legacy-canonical" else 0,
+                    placement["source_name"], placement["placement_index"],
+                ))
+                included += 1
+                if included >= included_target:
+                    break
+            if job_id:
+                progress = 90 if included_target == 0 else min(90, int(included * 90 / included_target))
+                update_job(job_id, progress=progress, message=f"Live channels: {included}/{included_target}", result={
+                    "total_live_channels": catalog_total, "eligible_live_channels": eligible_total,
+                    "configured_limit": configured_limit, "included_channels": included,
+                    "excluded_by_limit": excluded_by_limit, "skipped_count": unavailable_count,
+                    "written_count": included, "generation_mode": settings.generation_mode,
+                    "capped": settings.generation_mode != "Unlimited", "percentage_complete": progress,
+                    "duration_seconds": round(time.monotonic() - started, 3), "created_count": 0,
+                    "updated_count": 0, "removed_count": 0, "failed_count": 0,
+                })
+            del placements
+
+        ordered = work_conn.execute("""SELECT * FROM live_m3u_entries ORDER BY
+            editorial_rank, CASE WHEN editorial_rank=0 THEN LOWER(source_name) ELSE '' END,
+            CASE WHEN editorial_rank=0 THEN placement_index ELSE 0 END,
+            sort_missing, sort_number, sort_channel, LOWER(COALESCE(group_title,'')),
+            LOWER(title), placement_id""")
+        hasher = hashlib.sha256()
+        header = "#EXTM3U\n"
+        hasher.update(header.encode("utf-8"))
+        temp_path = output_path.with_name(f".{output_path.name}.{uuid4().hex}.tmp")
+        handle = None
+        try:
+            if not effective_dry_run:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                handle = temp_path.open("w")
+                handle.write(header)
+            for row in ordered:
+                text = f"{row['extinf']}\n{row['runtime_url']}\n"
+                hasher.update(text.encode("utf-8"))
+                if handle:
+                    handle.write(text)
+                if first_catalog_item_id is None:
+                    first_catalog_item_id = row["catalog_item_id"]
+                if len(preview_entries) < 10:
+                    preview_entries.append(LiveM3uPreviewEntry(
+                        catalog_item_id=row["catalog_item_id"], title=row["title"],
+                        channel_number=row["channel_number"], group_title=row["group_title"],
+                        extinf=row["extinf"], runtime_url=row["runtime_url"],
+                    ))
+            if handle:
+                handle.close()
+                handle = None
+            digest = hasher.hexdigest()
+            existing_digest = None
+            if output_path.exists():
+                existing_hasher = hashlib.sha256()
+                with output_path.open("rb") as existing:
+                    for chunk in iter(lambda: existing.read(1024 * 1024), b""):
+                        existing_hasher.update(chunk)
+                existing_digest = existing_hasher.hexdigest()
+            if not effective_dry_run and existing_digest != digest:
+                temp_path.replace(output_path)
+                created_count = 1 if not output_existed else 0
+                updated_count = 0 if not output_existed else 1
+            elif temp_path.exists():
+                temp_path.unlink()
+        except OSError as exc:
+            failed_count = 1
+            if handle:
+                handle.close()
+            if temp_path.exists():
+                temp_path.unlink()
+            UVICORN_LOGGER.exception("Live M3U %s failed at %s", mode, output_path)
+            if not effective_dry_run:
+                raise OutputPathError(f"Could not write Live M3U file at {output_path}: {exc}") from exc
 
     summary = LiveM3uOutputSummary(
         mode=mode,
-        total_live_channels=len(channels),
-        written_count=len(entries),
-        skipped_count=len(skipped),
+        total_live_channels=catalog_total,
+        written_count=included_target,
+        skipped_count=unavailable_count,
         created_count=created_count,
         updated_count=updated_count,
         failed_count=failed_count,
         output_path=str(output_path),
         duration_seconds=round(time.monotonic() - started, 3),
+        eligible_live_channels=eligible_total,
+        configured_limit=configured_limit,
+        included_channels=included_target,
+        excluded_by_limit=excluded_by_limit,
+        capped=settings.generation_mode != "Unlimited",
+        generation_mode=settings.generation_mode,
+        percentage_complete=100,
     )
-    if effective_dry_run and existing_content == content:
+    if effective_dry_run and output_existed and existing_digest == digest:
         summary.created_count = 0
         summary.updated_count = 0
     elif effective_dry_run:
-        summary.created_count = 1 if not output_path.exists() else 0
-        summary.updated_count = 0 if not output_path.exists() else 1
+        summary.created_count = 1 if not output_existed else 0
+        summary.updated_count = 0 if not output_existed else 1
 
     status = "complete" if summary.failed_count == 0 else "failed"
     finished_at = datetime.utcnow().isoformat()
     with _connect() as conn:
         _record_live_m3u_run(conn, mode, status, summary, started_at, finished_at)
-        if not effective_dry_run and summary.failed_count == 0 and entries:
+        if not effective_dry_run and summary.failed_count == 0 and first_catalog_item_id:
             conn.execute(
                 """
                 INSERT INTO output_generated_files (
@@ -799,14 +1022,15 @@ def build_live_m3u_output(request_base_url: str | None = None, dry_run: bool = T
                     last_generated_at=excluded.last_generated_at,
                     status='generated'
                 """,
-                (LIVE_M3U_OUTPUT_ID, entries[0].catalog_item_id if entries else "live_m3u", LIVE_M3U_OUTPUT_TYPE, str(output_path), digest, datetime.utcnow().isoformat()),
+                (LIVE_M3U_OUTPUT_ID, first_catalog_item_id, LIVE_M3U_OUTPUT_TYPE, str(output_path), digest, datetime.utcnow().isoformat()),
             )
         conn.commit()
     add_log(
         "info" if summary.failed_count == 0 else "error",
         "outputs",
         (
-            f"Live M3U {mode} completed: {summary.written_count} channels written, "
+            f"Live M3U {mode} completed: generation_mode={settings.generation_mode}, eligible={eligible_total}, "
+            f"{summary.written_count} channels written, {excluded_by_limit} excluded_by_limit, "
             f"{summary.skipped_count} skipped, {summary.created_count} created, "
             f"{summary.updated_count} updated, {summary.failed_count} failed"
         ),
@@ -815,8 +1039,8 @@ def build_live_m3u_output(request_base_url: str | None = None, dry_run: bool = T
         settings=settings,
         runtime_base_url=runtime_base_url,
         summary=summary,
-        preview_entries=entries[:10],
-        skipped_channels=skipped[:50],
+        preview_entries=preview_entries,
+        skipped_channels=skipped_channels,
     )
 
 
@@ -832,12 +1056,13 @@ def run_strm_generate_job(job_id: str, request_base_url: str | None = None) -> N
     update_job(job_id, status="running", progress=10, message="Preparing STRM output generation")
     add_log("info", "outputs", f"STRM generate job {job_id} started")
     try:
-        result = generate_strm_outputs(request_base_url)
+        result = build_strm_outputs(request_base_url, dry_run=False, job_id=job_id)
         failed_operations = [operation for operation in result.operations if operation.action == "fail"]
         failure_reason = failed_operations[0].reason if failed_operations else ""
-        status = "complete" if result.summary.failed_count == 0 else "failed"
+        cancelled = is_job_cancel_requested(job_id)
+        status = "cancelled" if cancelled else ("complete" if result.summary.failed_count == 0 else "failed")
         message = (
-            f"STRM generation complete: {result.summary.created_count} created, "
+            f"STRM generation {'cancelled' if cancelled else 'complete'}: {result.summary.created_count} created, "
             f"{result.summary.updated_count} updated, {result.summary.skipped_count} skipped, "
             f"{result.summary.removed_count} removed, {result.summary.failed_count} failed"
         )
@@ -850,18 +1075,20 @@ def run_strm_generate_job(job_id: str, request_base_url: str | None = None) -> N
             message=message,
             result={**result.summary.model_dump(), "failure_reason": failure_reason or None},
         )
-        add_log("info" if status == "complete" else "error", "outputs", message)
+        add_log("info" if status in {"complete", "cancelled"} else "error", "outputs", message)
     except Exception as exc:
         UVICORN_LOGGER.exception("STRM generate job %s failed", job_id)
         update_job(job_id, status="failed", progress=100, message=f"STRM generation failed: {exc}", result={"failed_count": 1, "failure_reason": str(exc)})
         add_log("error", "outputs", f"STRM generation failed: {exc}")
+    finally:
+        clear_job_cancel_request(job_id)
 
 
 def run_live_m3u_generate_job(job_id: str, request_base_url: str | None = None) -> None:
     update_job(job_id, status="running", progress=10, message="Preparing Live M3U output generation")
     add_log("info", "outputs", f"Live M3U generate job {job_id} started")
     try:
-        result = generate_live_m3u_output(request_base_url)
+        result = build_live_m3u_output(request_base_url, dry_run=False, job_id=job_id)
         status = "complete" if result.summary.failed_count == 0 else "failed"
         message = (
             f"Live M3U generation complete: {result.summary.written_count} channels written, "
@@ -881,9 +1108,12 @@ def run_live_m3u_generate_job(job_id: str, request_base_url: str | None = None) 
         add_log("error", "outputs", f"Live M3U generation failed: {exc}")
 
 
-def list_generated_files() -> list[GeneratedOutputFile]:
+def list_generated_files(limit: int = 100, offset: int = 0) -> list[GeneratedOutputFile]:
+    limit = min(max(limit, 1), 200)
+    offset = max(offset, 0)
     with _connect() as conn:
-        rows = _tracked_files(conn)
+        rows = conn.execute("""SELECT * FROM output_generated_files WHERE output_type = ?
+            ORDER BY last_generated_at DESC, output_path LIMIT ? OFFSET ?""", (OUTPUT_TYPE, limit, offset)).fetchall()
     return [_generated_from_row(row) for row in rows]
 
 

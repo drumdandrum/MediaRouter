@@ -165,6 +165,21 @@ Important fields:
 
 Multiple source rows may point to the same catalog item. This is how account failover and source balancing should be modeled.
 
+### channel_placements
+
+Stores Live TV editorial membership separately from canonical `catalog_items` identity. One channel/CUID may have many active placements, each with:
+
+- `placement_id`
+- `catalog_item_id`
+- `source_identity`, `source_name`, and `source_playlist`
+- `import_job_id` and internal `import_run_id`
+- `group_title`, `channel_number`, and `display_title`
+- `placement_index` preserving source-playlist order
+- `tvg_id`, `tvg_name`, and `tvg_logo`
+- `active`, `created_at`, and `updated_at`
+
+`UNIQUE(source_identity, placement_index)` makes re-import deterministic while allowing the same `catalog_item_id` at multiple positions or in multiple groups. Successful re-import upserts current positions and marks absent positions inactive. The additive bootstrap migration backfills one `legacy-canonical` placement per existing channel; that fallback is ignored once real placements exist for the channel. No catalog, source, account, or reservation rows are removed.
+
 Sprint 2 stores source mappings separately from catalog identity records. Broker/account failover is not implemented. Source URLs are stored for future routing, but API/UI read models redact credential path segments.
 
 ### source_availability
@@ -207,6 +222,7 @@ Important fields:
 - `media_type`
 - `location_ref`
 - `status`
+- `generation_run_id` (nullable batch-run marker used for incremental STRM tracking and safe cleanup)
 - `created_at`
 - `expires_at`
 - `released_at`
@@ -218,7 +234,9 @@ Statuses are `active`, `released`, `expired`, and `failed`. Expired and released
 
 Runtime playback reservations currently release by TTL expiration. Manual Broker tests default to a short 60-second TTL; runtime live/movie/episode routes default to four hours unless a `ttl` query parameter is supplied. Client heartbeat and client-driven playback-end release are deferred.
 
-Runtime requests also store short-lived reuse identity when available. `client_session` stores explicit session IDs or label-derived session keys; `client_fingerprint` stores a temporary derived fingerprint for existing runtime URLs that do not pass parameters. These values are used only to reuse repeated playback startup/probe requests within the configured reuse window.
+Runtime requests store hashed reuse identity when available. `client_session` stores the hash of an explicit playback session; `client_fingerprint` stores a hash derived from stable fallback request attributes. These values correlate repeated playback requests without persisting raw session values or client headers.
+
+v0.8.1 hashes explicit sessions and derived fingerprints before persistence. `identity_type`, `last_seen_at`, `last_action`, and `reuse_count` support diagnostics. Matching active identities are reused for the reservation lifetime. SQLite `BEGIN IMMEDIATE` serializes lookup and creation so concurrent requests cannot create parallel reservations for one identity.
 
 ### imports
 
@@ -288,6 +306,10 @@ Important fields:
 - `created_at`
 
 Sprint 6 STRM and Sprint 7 Live TV M3U runs both write summaries here. The generated output files themselves are not authoritative state.
+
+v0.8.1 continues to persist STRM settings in `/data/outputs_strm_settings.json`. Missing generation fields deserialize to Test mode, 500 movies, 500 episodes, and batch size 250. Generated-file upserts and job persistence commit after each batch instead of using one catalog-sized transaction.
+
+Live M3U settings remain in `/data/outputs_live_m3u_settings.json`. v0.8.1 adds `generation_mode` and `maximum_live_channels`; saved files without these fields safely deserialize to Test/500. A positive legacy `channel_limit` is interpreted as a Custom limit, while a missing or zero legacy value becomes Test/500 rather than Unlimited. No SQLite schema change is required for Live limits.
 - `status`
 
 Only tracked generated files may be removed by orphan cleanup. The STRM file content is disposable and should contain Media Router runtime URLs, not provider URLs.

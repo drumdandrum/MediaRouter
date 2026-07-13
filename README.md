@@ -31,7 +31,7 @@ docker compose up --build
 The Docker build/runtime metadata uses:
 
 ```text
-MEDIA_ROUTER_APP_VERSION=v0.2.1
+MEDIA_ROUTER_APP_VERSION=v0.8.1
 MEDIA_ROUTER_GIT_BRANCH=main
 MEDIA_ROUTER_GIT_COMMIT=<short commit>
 ```
@@ -61,7 +61,7 @@ Settings, wizard state, and job history are written under this mounted path. The
 ## What Exists Now
 
 - Minimal FastAPI app.
-- App version `v0.2.1`.
+- App version `v0.8.1`.
 - Sprint 7 web console.
 - `/api/health` endpoint.
 - `/api/foundation` endpoint with module metadata.
@@ -123,7 +123,9 @@ Runtime playback reservations currently release by TTL expiration. Live, movie, 
 
 Runtime URLs support `GET` and `HEAD`. `HEAD` returns the same redirect `Location` as redirect-mode `GET` while reusing an active matching reservation or doing a non-reserving source lookup, so media-server checks do not consume extra account capacity. Redirect mode works for simple clients such as VLC and may work for Jellyfin/Emby, but some media servers may eventually require a future proxy mode.
 
-Repeated runtime `GET` requests from the same short-lived playback startup are idempotent within the reservation reuse window, currently 30 seconds by default. Media Router uses `client_session` when supplied, then `client_label`, then a temporary fingerprint derived from catalog item, remote address, User-Agent, and media type. Reused requests return the same redirect target and reservation ID without increasing account usage.
+Repeated runtime requests from the same playback identity are idempotent for the active reservation lifetime. Media Router uses explicit `client_session` when supplied, otherwise a hashed fingerprint derived from catalog item, media type, normalized client IP, and normalized User-Agent. Reused requests return the same redirect target and reservation ID without increasing account usage.
+
+Runtime session correlation now reuses a matching active reservation until release or expiry. Explicit `client_session` is the strongest identity. Otherwise Media Router hashes a privacy-safe fingerprint of canonical client IP (never the source port), normalized User-Agent, catalog item, and media type. GET, HEAD, Range seeks, and reconnects do not change that identity. Weak fingerprints can collide when multiple clients behind the same NAT use the same player for the same item; explicit `client_session` should be used when callers can supply one.
 
 Set Settings > Runtime > Runtime Public Base URL to the browser/client-visible address for runtime previews. For local testing, use:
 
@@ -147,7 +149,13 @@ volumes:
 
 The IPTVBoss import path can be read-only. STRM output paths must be read-write. Use Outputs > Validate Paths before Generate to confirm Movies and Series are writable and `/data` is writable.
 
+v0.8.1 processes STRM catalogs in configurable batches (250 by default). Existing settings safely default to Test mode at 500 movies and 500 episodes; Small is 2,000/2,000, Medium is 5,000/10,000, and Custom requires positive limits. Unlimited must be explicitly selected and confirmed before Generate. Dry runs use the same limits and batching without writing files.
+
 Sprint 7 generates disposable Live TV M3U playlists for live/channel catalog items only. Each channel URL points to a stable Media Router runtime URL such as `http://localhost:8088/r/live/channel_abc123`; direct provider URLs and credentials are never written to generated M3U files. Channel metadata preserves `tvg-chno`, `tvg-id`, `tvg-name`, `tvg-logo`, `group-title`, and display title when available. Configure the Live TV M3U output file on the Outputs page, for example `/outputs/live/live.m3u`, and use Validate Path before Dry Run or Generate.
+
+v0.8.1 gives Live M3U the same safe generation modes as STRM: Test (500 eligible channels), Small (2,000), Medium (5,000), Custom (a positive user limit), and explicitly confirmed Unlimited. Dry-run, preview, and generation use the same availability filtering and cap. Catalog reads are paginated and ordered M3U content is streamed without exposing provider URLs.
+
+Live editorial placement is separate from catalog identity. Repeated IPTV Boss entries with the same CUID remain one canonical channel and one `/r/live/{catalog_item_id}` runtime route, while each group/channel-number occurrence is stored as a placement and emitted separately in Live M3U output. Original playlist order is preferred, and re-import deactivates placements removed from that source playlist.
 
 Guide XML is currently external from Media Router and can continue to come from IPTV Boss or a separate webserver. Sprint 7 does not generate XMLTV.
 

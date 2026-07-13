@@ -17,6 +17,13 @@ All notable changes to Media Router will be documented in this file.
 
 ## Added
 
+- Editorial Live channel placements that preserve every source-playlist group, channel number, display title, metadata set, and original position while retaining one canonical channel identity and runtime URL.
+- Placement APIs and Catalog Live-channel placement detail views.
+
+- v0.8.1 configurable STRM generation modes (Test, Small, Medium, Unlimited, and Custom), persistent movie/episode limits, and bounded batch sizes.
+- Batch-level STRM progress, incremental tracking commits, cooperative cancellation, capped/unlimited dry-run reporting, catalog estimates, and paginated generated-file history.
+- Matching Live M3U Test, Small, Medium, Unlimited, and Custom channel limits; eligibility estimates; explicit Unlimited confirmation; bounded catalog reads; and streamed, ordered playlist generation.
+
 - STRM output settings for movie and series output directories.
 - STRM dry-run preview for create, update, skip, and orphan cleanup actions.
 - STRM generation job for movie and episode catalog items.
@@ -27,6 +34,15 @@ All notable changes to Media Router will be documented in this file.
 - Live TV M3U channel-number preservation with `tvg-chno` import, output, and channel-number sorting.
 
 ## Fixed
+
+- Runtime playback correlation now ignores ephemeral source ports, normalizes insignificant User-Agent version changes, and reuses matching active reservations for their full lifetime.
+- Serialized SQLite reuse-or-create prevents concurrent Emby/ffmpeg probes, seeks, and reconnects from consuming multiple Broker account slots.
+
+- Live M3U generation now emits one entry per active editorial placement, restoring intentional repeated CUID/channel memberships across IPTV Boss groups without duplicating catalog identities.
+- Re-import now upserts placement positions and marks removed source-playlist positions stale instead of multiplying placement rows.
+
+- Replaced the hard-coded 500 movie/500 episode materialization with paginated, memory-stable catalog processing while retaining 500/500 defaults for existing installations.
+- Replaced the implicit 500-channel Live M3U cap with persistent safe presets while retaining a 500-channel Test default for existing settings.
 
 - Hardened STRM Generate path handling so missing child directories are created under configured output roots.
 - Improved STRM Generate failures with path-specific job messages and Logs page diagnostics.
@@ -55,6 +71,8 @@ All notable changes to Media Router will be documented in this file.
 **Release Date:** July 2026
 
 ## Added
+
+- Broker duplicate-reservation diagnostics and an explicit maintenance action that releases redundant active reservations only when catalog, media type, and hashed playback identity match.
 
 - Runtime URL endpoints for:
   - `/r/live/{catalog_id}`

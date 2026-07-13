@@ -33,9 +33,10 @@ def _runtime_response(
     client_session: str | None,
     reserve: bool = True,
 ) -> RuntimeResolveDebug | RedirectResponse:
-    remote_addr = request.client.host if request.client else None
+    forwarded_for = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    remote_addr = forwarded_for or (request.client.host if request.client else None)
     user_agent = request.headers.get("user-agent")
-    identity_session = client_session or (f"label:{client_label}" if client_label else None)
+    identity_session = client_session
     identity_fingerprint = None if identity_session else runtime_client_fingerprint(catalog_item_id, route_media_type, remote_addr, user_agent)
     try:
         payload, raw_location_ref = resolve_runtime(
@@ -50,6 +51,7 @@ def _runtime_response(
     except RuntimeResolveUnavailable as exc:
         raise _runtime_error(exc) from exc
     selected_account = payload.selected_account.get("account_name") or payload.selected_account.get("account_id") or "unknown"
+    reservation = payload.broker_decision.reservation
     action = payload.reservation_action
     reuse_reason = payload.reuse_reason or ("new playback reservation" if action == "reservation_created" else "non-reserving probe")
     add_log(
@@ -57,7 +59,8 @@ def _runtime_response(
         "runtime",
         (
             f"{method} /r/{route_media_type}/{catalog_item_id} {action}; reservation={payload.reservation_id}; "
-            f"account={selected_account}; reason={reuse_reason}; redirect={mask_runtime_target(raw_location_ref)}"
+            f"account={selected_account}; identity_type={reservation.identity_type if reservation else None}; "
+            f"identity={reservation.masked_client_identity if reservation else None}; reason={reuse_reason}; redirect={mask_runtime_target(raw_location_ref)}"
         ),
     )
     if debug:

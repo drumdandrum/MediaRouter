@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 OutputAction = Literal["create", "update", "skip", "remove", "fail"]
 OutputMode = Literal["dry_run", "generate"]
+GenerationMode = Literal["Test", "Small", "Medium", "Unlimited", "Custom"]
 
 
 class StrmSettings(BaseModel):
@@ -15,6 +16,10 @@ class StrmSettings(BaseModel):
     overwrite_existing_files: bool = True
     remove_orphaned_files: bool = False
     dry_run_mode: bool = False
+    generation_mode: GenerationMode = "Test"
+    maximum_movies: int = Field(default=500, ge=0)
+    maximum_episodes: int = Field(default=500, ge=0)
+    batch_size: int = Field(default=250, ge=50, le=500)
 
 
 class StrmSettingsUpdate(BaseModel):
@@ -24,6 +29,14 @@ class StrmSettingsUpdate(BaseModel):
     overwrite_existing_files: bool | None = None
     remove_orphaned_files: bool | None = None
     dry_run_mode: bool | None = None
+    generation_mode: GenerationMode | None = None
+    maximum_movies: int | None = Field(default=None, ge=0)
+    maximum_episodes: int | None = Field(default=None, ge=0)
+    batch_size: int | None = Field(default=None, ge=50, le=500)
+
+
+class StrmGenerateRequest(BaseModel):
+    confirm_unlimited: bool = False
 
 
 class StrmOutputOperation(BaseModel):
@@ -47,6 +60,15 @@ class StrmOutputSummary(BaseModel):
     episode_count: int = 0
     output_paths: list[str] = []
     duration_seconds: float = 0
+    total_items: int = 0
+    processed_items: int = 0
+    excluded_by_limits: int = 0
+    capped: bool = True
+    generation_mode: GenerationMode = "Test"
+    batch_size: int = 250
+    percentage_complete: int = 0
+    current_media_type: str | None = None
+    current_batch: int = 0
 
 
 class StrmOutputResult(BaseModel):
@@ -101,7 +123,9 @@ class LiveM3uSettings(BaseModel):
     include_group_title: bool = True
     include_tvg_id: bool = True
     include_tvg_name: bool = True
-    channel_limit: int = Field(default=0, ge=0, le=5000)
+    generation_mode: GenerationMode = "Test"
+    maximum_live_channels: int = Field(default=500, ge=0)
+    channel_limit: int = Field(default=500, ge=0)  # Backward-compatible alias.
     dry_run_mode: bool = False
 
 
@@ -113,7 +137,9 @@ class LiveM3uSettingsUpdate(BaseModel):
     include_group_title: bool | None = None
     include_tvg_id: bool | None = None
     include_tvg_name: bool | None = None
-    channel_limit: int | None = Field(default=None, ge=0, le=5000)
+    generation_mode: GenerationMode | None = None
+    maximum_live_channels: int | None = Field(default=None, ge=0)
+    channel_limit: int | None = Field(default=None, ge=0)
     dry_run_mode: bool | None = None
 
 
@@ -127,6 +153,26 @@ class LiveM3uOutputSummary(BaseModel):
     failed_count: int = 0
     output_path: str
     duration_seconds: float = 0
+    eligible_live_channels: int = 0
+    configured_limit: int | None = 500
+    included_channels: int = 0
+    excluded_by_limit: int = 0
+    capped: bool = True
+    generation_mode: GenerationMode = "Test"
+    percentage_complete: int = 0
+
+
+class LiveM3uGenerateRequest(BaseModel):
+    confirm_unlimited: bool = False
+
+
+class LiveM3uEstimate(BaseModel):
+    total_live_channels: int
+    eligible_live_channels: int
+    configured_limit: int | None
+    included_channels: int
+    excluded_by_limit: int
+    capped: bool
 
 
 class LiveM3uPreviewEntry(BaseModel):

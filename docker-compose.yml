@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        MEDIA_ROUTER_APP_VERSION: "v0.2.1"
+        MEDIA_ROUTER_APP_VERSION: "v0.8.1"
         MEDIA_ROUTER_GIT_BRANCH: "${MEDIA_ROUTER_GIT_BRANCH:-main}"
         MEDIA_ROUTER_GIT_COMMIT: "${MEDIA_ROUTER_GIT_COMMIT:-fdc842f}"
     container_name: media-router
@@ -14,7 +14,7 @@ services:
       MEDIA_ROUTER_APP_PORT: "8088"
       MEDIA_ROUTER_PUBLIC_BASE_URL: "http://media-router:8088"
       MEDIA_ROUTER_DATA_DIR: "/data"
-      MEDIA_ROUTER_APP_VERSION: "v0.2.1"
+      MEDIA_ROUTER_APP_VERSION: "v0.8.1"
       MEDIA_ROUTER_GIT_BRANCH: "${MEDIA_ROUTER_GIT_BRANCH:-main}"
       MEDIA_ROUTER_GIT_COMMIT: "${MEDIA_ROUTER_GIT_COMMIT:-fdc842f}"
     volumes:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import re
 from urllib.parse import urlsplit, urlunsplit
 
@@ -94,8 +95,26 @@ def mask_runtime_target(value: str) -> str:
     return urlunsplit((parts.scheme, netloc, path, query, ""))
 
 
+def normalize_client_ip(remote_addr: str | None) -> str:
+    value = (remote_addr or "unknown").strip().lower()
+    if value.startswith("[") and "]" in value:
+        value = value[1:value.index("]")]
+    elif value.count(":") == 1 and value.rsplit(":", 1)[1].isdigit():
+        value = value.rsplit(":", 1)[0]
+    value = value.split("%", 1)[0]
+    try:
+        return ipaddress.ip_address(value).compressed
+    except ValueError:
+        return "unknown"
+
+
+def normalize_user_agent(user_agent: str | None) -> str:
+    value = re.sub(r"\s+", " ", (user_agent or "unknown").strip().lower())
+    return re.sub(r"(?<=/)[0-9]+(?:\.[0-9]+)+", "*", value)[:256]
+
+
 def runtime_client_fingerprint(catalog_item_id: str, media_type: str, remote_addr: str | None, user_agent: str | None) -> str:
-    raw = "|".join([catalog_item_id, media_type, remote_addr or "unknown", user_agent or "unknown"])
+    raw = "|".join([catalog_item_id, media_type, normalize_client_ip(remote_addr), normalize_user_agent(user_agent)])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 

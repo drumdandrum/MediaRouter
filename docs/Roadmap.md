@@ -172,6 +172,9 @@ Deliverables:
 - Live TV M3U settings, path validation, dry-run, generation job, history, and preview.
 - Live TV M3U channel number and group preservation.
 - Runtime playback reservation TTL defaults for generated/runtime URLs.
+- v0.8.1 memory-safe paginated STRM generation with configurable presets, batch progress, incremental commits, and batch-boundary cancellation.
+- v0.8.1 configurable Live M3U channel presets, eligibility estimates, explicit Unlimited confirmation, paginated selection, and streamed ordered output.
+- v0.8.1 additive editorial channel-placement persistence and placement-based Live M3U generation without duplicating catalog identity.
 
 Exit criteria:
 
@@ -180,7 +183,7 @@ Exit criteria:
 - Dry-run previews create, update, skip, and tracked orphan cleanup actions without writing files.
 - Generate fails gracefully with a clear path-specific reason when output directories are missing, invalid, or not writable.
 - Generated Live TV M3U playlists contain `/r/live/{catalog_item_id}` runtime URLs, not provider URLs.
-- Generated Live TV M3U playlists preserve channel numbers and groups and sort by channel number, group, then title.
+- Generated Live TV M3U playlists preserve placement channel numbers/groups and source order, with channel number/group/title fallback ordering for legacy records.
 - Broker remains responsible for choosing the actual account/source when a client opens a runtime URL.
 - Runtime reservations release by TTL expiration until heartbeat/client release is implemented later.
 - Generated outputs can be deleted and rebuilt from catalog/settings.

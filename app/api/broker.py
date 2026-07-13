@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
-from app.schemas.broker import BrokerDecision, BrokerReleaseRequest, BrokerReservation, BrokerResolveRequest, BrokerStatus
-from app.services.broker import BrokerUnavailable, expire_now, get_status, list_reservations, release_all_active, release_reservation, resolve_source
+from app.schemas.broker import BrokerDecision, BrokerReleaseRequest, BrokerReservation, BrokerResolveRequest, BrokerStatus, DuplicateRepairResult
+from app.services.broker import BrokerUnavailable, expire_now, get_status, list_reservations, release_all_active, release_reservation, repair_duplicate_reservations, resolve_source
 
 router = APIRouter(prefix="/api/broker", tags=["broker"])
 
@@ -46,3 +46,8 @@ def broker_release_all() -> BrokerStatus:
 @router.post("/expire-now", response_model=BrokerStatus)
 def broker_expire_now() -> BrokerStatus:
     return expire_now()
+
+
+@router.post("/repair-duplicates", response_model=DuplicateRepairResult)
+def broker_repair_duplicates() -> DuplicateRepairResult:
+    return repair_duplicate_reservations()

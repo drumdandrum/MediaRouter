@@ -44,6 +44,25 @@ class CatalogSource(BaseModel):
     last_seen_at: datetime
 
 
+class ChannelPlacement(BaseModel):
+    placement_id: int
+    catalog_item_id: str
+    source_identity: str
+    source_name: str
+    source_playlist: str
+    import_job_id: str | None = None
+    group_title: str | None = None
+    channel_number: str | None = None
+    display_title: str
+    placement_index: int
+    tvg_id: str | None = None
+    tvg_name: str | None = None
+    tvg_logo: str | None = None
+    active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
 class SourceAvailability(BaseModel):
     id: int
     catalog_internal_id: str

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from contextlib import closing
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -11,6 +13,7 @@ from app.core.config import get_settings
 from app.schemas.broker import (
     BrokerAccountUsage,
     BrokerDecision,
+    DuplicateRepairResult,
     BrokerErrorDetail,
     BrokerEvaluatedCandidate,
     BrokerReservation,
@@ -51,6 +54,7 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
     ensure_schema(conn)
     ensure_broker_schema(conn)
     return conn
@@ -83,6 +87,9 @@ def ensure_broker_schema(conn: sqlite3.Connection | None = None) -> None:
             reused_from_reservation_id TEXT,
             last_reused_at TEXT,
             reuse_count INTEGER NOT NULL DEFAULT 0,
+            identity_type TEXT,
+            last_seen_at TEXT,
+            last_action TEXT NOT NULL DEFAULT 'reservation_created',
             FOREIGN KEY(catalog_item_id) REFERENCES catalog_items(internal_id) ON DELETE CASCADE,
             FOREIGN KEY(source_availability_id) REFERENCES source_availability(id) ON DELETE CASCADE,
             FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE CASCADE,
@@ -97,12 +104,29 @@ def ensure_broker_schema(conn: sqlite3.Connection | None = None) -> None:
         "reused_from_reservation_id": "ALTER TABLE broker_reservations ADD COLUMN reused_from_reservation_id TEXT",
         "last_reused_at": "ALTER TABLE broker_reservations ADD COLUMN last_reused_at TEXT",
         "reuse_count": "ALTER TABLE broker_reservations ADD COLUMN reuse_count INTEGER NOT NULL DEFAULT 0",
+        "identity_type": "ALTER TABLE broker_reservations ADD COLUMN identity_type TEXT",
+        "last_seen_at": "ALTER TABLE broker_reservations ADD COLUMN last_seen_at TEXT",
+        "last_action": "ALTER TABLE broker_reservations ADD COLUMN last_action TEXT NOT NULL DEFAULT 'reservation_created'",
     }
     applied: list[str] = []
     for column, statement in migrations.items():
         if column not in columns:
             conn.execute(statement)
             applied.append(column)
+    conn.execute("""UPDATE broker_reservations SET
+        identity_type=CASE WHEN client_session IS NOT NULL THEN 'explicit_session'
+                           WHEN client_fingerprint IS NOT NULL THEN 'derived_fingerprint' END,
+        last_seen_at=COALESCE(last_seen_at, last_reused_at, created_at),
+        last_action=CASE WHEN COALESCE(reuse_count, 0) > 0 THEN 'reservation_reused' ELSE 'reservation_created' END
+        WHERE identity_type IS NULL OR last_seen_at IS NULL""")
+    for row in conn.execute("SELECT reservation_id, client_session, client_fingerprint FROM broker_reservations WHERE client_session IS NOT NULL OR client_fingerprint IS NOT NULL").fetchall():
+        session = row["client_session"] if hasattr(row, "keys") else row[1]
+        fingerprint = row["client_fingerprint"] if hasattr(row, "keys") else row[2]
+        hashed_session = session if _is_hashed_identity(session) else _identity_hash(session, "explicit_session")
+        hashed_fingerprint = fingerprint if _is_hashed_identity(fingerprint) else _identity_hash(fingerprint, "derived_fingerprint")
+        if hashed_session != session or hashed_fingerprint != fingerprint:
+            reservation_id = row["reservation_id"] if hasattr(row, "keys") else row[0]
+            conn.execute("UPDATE broker_reservations SET client_session=?, client_fingerprint=? WHERE reservation_id=?", (hashed_session, hashed_fingerprint, reservation_id))
     conn.executescript(
         """
         CREATE INDEX IF NOT EXISTS idx_broker_reservations_status ON broker_reservations(status);
@@ -128,6 +152,20 @@ def _normalize_media_type(media_type: str | None) -> str | None:
         return None
     aliases = {"live": "channel", "series": "episode"}
     return aliases.get(media_type, media_type)
+
+
+def _identity_hash(value: str | None, identity_type: str) -> str | None:
+    if not value:
+        return None
+    return hashlib.sha256(f"{identity_type}:{value}".encode("utf-8")).hexdigest()[:32]
+
+
+def _is_hashed_identity(value: str | None) -> bool:
+    return bool(value and re.fullmatch(r"[0-9a-f]{32}", value))
+
+
+def _masked_identity(value: str | None) -> str | None:
+    return f"{value[:8]}…" if value else None
 
 
 def _redact_ref(value: str) -> str:
@@ -168,6 +206,10 @@ def _active_counts(conn: sqlite3.Connection) -> dict[str, int]:
 
 
 def _reservation_from_row(row: sqlite3.Row) -> BrokerReservation:
+    client_session = row["client_session"] if "client_session" in row.keys() else None
+    client_fingerprint = row["client_fingerprint"] if "client_fingerprint" in row.keys() else None
+    identity_type = row["identity_type"] if "identity_type" in row.keys() and row["identity_type"] else ("explicit_session" if client_session else "derived_fingerprint" if client_fingerprint else None)
+    identity_value = client_session if identity_type == "explicit_session" else client_fingerprint if identity_type == "derived_fingerprint" else None
     return BrokerReservation(
         reservation_id=row["reservation_id"],
         catalog_item_id=row["catalog_item_id"],
@@ -184,14 +226,19 @@ def _reservation_from_row(row: sqlite3.Row) -> BrokerReservation:
         expires_at=datetime.fromisoformat(row["expires_at"]),
         released_at=datetime.fromisoformat(row["released_at"]) if row["released_at"] else None,
         client_label=row["client_label"],
-        client_session=row["client_session"] if "client_session" in row.keys() else None,
+        client_session=client_session,
         last_reused_at=datetime.fromisoformat(row["last_reused_at"]) if "last_reused_at" in row.keys() and row["last_reused_at"] else None,
         reuse_count=int(row["reuse_count"] or 0) if "reuse_count" in row.keys() else 0,
+        identity_type=identity_type,
+        masked_client_identity=_masked_identity(identity_value),
+        last_seen_at=datetime.fromisoformat(row["last_seen_at"]) if "last_seen_at" in row.keys() and row["last_seen_at"] else (datetime.fromisoformat(row["last_reused_at"]) if "last_reused_at" in row.keys() and row["last_reused_at"] else datetime.fromisoformat(row["created_at"])),
+        last_action=row["last_action"] if "last_action" in row.keys() and row["last_action"] else "reservation_created",
+        duplicate_warning=bool(row["duplicate_warning"]) if "duplicate_warning" in row.keys() else False,
     )
 
 
 def _reservation_query(where: str = "", params: tuple = ()) -> list[BrokerReservation]:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         expire_reservations(conn)
         rows = conn.execute(
             f"""
@@ -200,6 +247,14 @@ def _reservation_query(where: str = "", params: tuple = ()) -> list[BrokerReserv
                 catalog_items.title AS catalog_title,
                 providers.friendly_name AS provider_name,
                 accounts.friendly_name AS account_name
+                , EXISTS (
+                    SELECT 1 FROM broker_reservations duplicate
+                    WHERE duplicate.status='active' AND duplicate.reservation_id != broker_reservations.reservation_id
+                    AND duplicate.catalog_item_id=broker_reservations.catalog_item_id
+                    AND duplicate.media_type=broker_reservations.media_type
+                    AND ((broker_reservations.client_session IS NOT NULL AND duplicate.client_session=broker_reservations.client_session)
+                      OR (broker_reservations.client_fingerprint IS NOT NULL AND duplicate.client_fingerprint=broker_reservations.client_fingerprint))
+                ) AS duplicate_warning
             FROM broker_reservations
             LEFT JOIN catalog_items ON catalog_items.internal_id = broker_reservations.catalog_item_id
             LEFT JOIN providers ON providers.id = broker_reservations.provider_id
@@ -225,7 +280,7 @@ def list_reservations() -> list[BrokerReservation]:
 
 
 def get_raw_reservation_location_ref(reservation_id: str) -> str | None:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         row = conn.execute(
             "SELECT location_ref FROM broker_reservations WHERE reservation_id = ?",
             (reservation_id,),
@@ -241,6 +296,14 @@ def _reservation_detail_row(conn: sqlite3.Connection, reservation_id: str) -> sq
             catalog_items.title AS catalog_title,
             providers.friendly_name AS provider_name,
             accounts.friendly_name AS account_name
+            , EXISTS (
+                SELECT 1 FROM broker_reservations duplicate
+                WHERE duplicate.status='active' AND duplicate.reservation_id != broker_reservations.reservation_id
+                AND duplicate.catalog_item_id=broker_reservations.catalog_item_id
+                AND duplicate.media_type=broker_reservations.media_type
+                AND ((broker_reservations.client_session IS NOT NULL AND duplicate.client_session=broker_reservations.client_session)
+                  OR (broker_reservations.client_fingerprint IS NOT NULL AND duplicate.client_fingerprint=broker_reservations.client_fingerprint))
+            ) AS duplicate_warning
         FROM broker_reservations
         LEFT JOIN catalog_items ON catalog_items.internal_id = broker_reservations.catalog_item_id
         LEFT JOIN providers ON providers.id = broker_reservations.provider_id
@@ -261,7 +324,6 @@ def _find_reusable_reservation(
     reuse_window_seconds: int,
 ) -> sqlite3.Row | None:
     normalized_media_type = _normalize_media_type(media_type)
-    cutoff = (_now() - timedelta(seconds=max(reuse_window_seconds, 1))).isoformat()
     if client_session:
         return conn.execute(
             """
@@ -271,11 +333,10 @@ def _find_reusable_reservation(
               AND catalog_item_id = ?
               AND (? IS NULL OR media_type = ?)
               AND client_session = ?
-              AND created_at >= ?
-            ORDER BY created_at DESC
+            ORDER BY COALESCE(last_seen_at, last_reused_at, created_at) DESC
             LIMIT 1
             """,
-            (catalog_item_id, normalized_media_type, normalized_media_type, client_session, cutoff),
+            (catalog_item_id, normalized_media_type, normalized_media_type, client_session),
         ).fetchone()
     if client_fingerprint:
         return conn.execute(
@@ -286,11 +347,10 @@ def _find_reusable_reservation(
               AND catalog_item_id = ?
               AND (? IS NULL OR media_type = ?)
               AND client_fingerprint = ?
-              AND created_at >= ?
-            ORDER BY created_at DESC
+            ORDER BY COALESCE(last_seen_at, last_reused_at, created_at) DESC
             LIMIT 1
             """,
-            (catalog_item_id, normalized_media_type, normalized_media_type, client_fingerprint, cutoff),
+            (catalog_item_id, normalized_media_type, normalized_media_type, client_fingerprint),
         ).fetchone()
     return None
 
@@ -411,22 +471,24 @@ def _reused_decision(
         selected=True,
     )
     evaluated_candidates.append(selected_candidate)
-    reservation_row = _reservation_detail_row(conn, reusable["reservation_id"])
-    if reservation_row is None:
-        raise BrokerUnavailable("no_sources", "Reusable reservation was not available.", decision_reasons, evaluated_candidates)
+    seen_at = _now().isoformat()
     conn.execute(
         """
         UPDATE broker_reservations
-        SET last_reused_at = ?, reuse_count = COALESCE(reuse_count, 0) + 1
+        SET last_reused_at = ?, last_seen_at = ?, last_action = 'reservation_reused',
+            reuse_count = COALESCE(reuse_count, 0) + 1
         WHERE reservation_id = ?
         """,
-        (_now().isoformat(), reusable["reservation_id"]),
+        (seen_at, seen_at, reusable["reservation_id"]),
     )
+    reservation_row = _reservation_detail_row(conn, reusable["reservation_id"])
+    if reservation_row is None:
+        raise BrokerUnavailable("no_sources", "Reusable reservation was not available.", decision_reasons, evaluated_candidates)
     conn.commit()
     selection = _source_selection_from_row(selected_row, active_count)
     reservation = _reservation_from_row(reservation_row)
     decision_reasons.append(reuse_reason)
-    add_log("info", "broker", f"Reused reservation {reservation.reservation_id} for {selection.catalog_item_id} on account {selection.account_name}")
+    add_log("info", "broker", f"reservation_reused identity_type={reservation.identity_type} identity={reservation.masked_client_identity} catalog_item={selection.catalog_item_id} account={selection.account_name}")
     return BrokerDecision(
         selected_source=selection,
         reservation=reservation,
@@ -453,10 +515,16 @@ def resolve_source(
     reserve: bool = True,
     reservation_ttl_seconds: int | None = None,
 ) -> BrokerDecision:
+    if client_session:
+        client_session = _identity_hash(client_session, "explicit_session")
+        client_fingerprint = None
+    elif client_fingerprint:
+        client_fingerprint = _identity_hash(client_fingerprint, "derived_fingerprint")
     ttl = reservation_ttl_seconds or DEFAULT_RESERVATION_TTL_SECONDS
     decision_reasons = [f"TTL set to {ttl} seconds.", "Expired reservations were ignored before selection."]
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         expire_reservations(conn)
+        conn.execute("BEGIN IMMEDIATE")
         rows = _source_rows(conn, catalog_item_id, media_type)
         if media_type:
             decision_reasons.append(f"Filtered sources by media type {_normalize_media_type(media_type)}.")
@@ -474,14 +542,14 @@ def resolve_source(
                 reuse_window_seconds=reuse_window_seconds,
             )
             if reusable is not None:
-                identity_reason = "client_session" if client_session else "short-lived client fingerprint"
+                identity_reason = "explicit_session" if client_session else "derived_fingerprint"
                 return _reused_decision(
                     conn,
                     reusable=reusable,
                     ttl=ttl,
                     decision_reasons=decision_reasons,
                     evaluated_candidates=evaluated_candidates,
-                    reuse_reason=f"Reused active reservation within {reuse_window_seconds}s by {identity_reason}.",
+                    reuse_reason=f"Reused active reservation for its full lifetime by {identity_reason}.",
                 )
         active_counts = _active_counts(conn)
         eligible: list[tuple[tuple, sqlite3.Row, int]] = []
@@ -557,7 +625,8 @@ def resolve_source(
                     reservation_id, catalog_item_id, source_availability_id, provider_id, account_id,
                     media_type, location_ref, status, created_at, expires_at, released_at, client_label,
                     client_session, client_fingerprint
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, ?, ?, ?)
+                    , identity_type, last_seen_at, last_action
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, ?, ?, ?, ?, ?, 'reservation_created')
                 """,
                 (
                     reservation_id,
@@ -572,6 +641,8 @@ def resolve_source(
                     client_label or None,
                     client_session or None,
                     client_fingerprint or None,
+                    "explicit_session" if client_session else "derived_fingerprint" if client_fingerprint else None,
+                    now.isoformat(),
                 ),
             )
             conn.commit()
@@ -594,11 +665,18 @@ def resolve_source(
                 "released_at": now.isoformat(),
                 "client_label": client_label or None,
                 "client_session": client_session or None,
+                "client_fingerprint": client_fingerprint or None,
+                "identity_type": "explicit_session" if client_session else "derived_fingerprint" if client_fingerprint else None,
+                "last_seen_at": now.isoformat(),
+                "last_action": "reservation_probe",
+                "duplicate_warning": 0,
             }
     selection = _source_selection_from_row(selected, selected_active_count)
     reservation = _reservation_from_row(reservation_row)
     if reserve:
-        add_log("info", "broker", f"Reserved {selection.catalog_item_id} on account {selection.account_name}")
+        identity = client_session or client_fingerprint
+        identity_type = "explicit_session" if client_session else "derived_fingerprint" if client_fingerprint else None
+        add_log("info", "broker", f"reservation_created identity_type={identity_type} identity={_masked_identity(identity)} catalog_item={selection.catalog_item_id} account={selection.account_name}")
     return BrokerDecision(
         selected_source=selection,
         reservation=reservation,
@@ -615,7 +693,7 @@ def resolve_source(
 
 
 def release_reservation(reservation_id: str) -> BrokerReservation | None:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         expire_reservations(conn)
         now = _now().isoformat()
         existing = conn.execute("SELECT * FROM broker_reservations WHERE reservation_id = ?", (reservation_id,)).fetchone()
@@ -633,7 +711,7 @@ def release_reservation(reservation_id: str) -> BrokerReservation | None:
 
 
 def release_all_active() -> BrokerStatus:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         expire_reservations(conn)
         now = _now().isoformat()
         result = conn.execute(
@@ -645,14 +723,44 @@ def release_all_active() -> BrokerStatus:
     return get_status()
 
 
+def repair_duplicate_reservations() -> DuplicateRepairResult:
+    result = DuplicateRepairResult()
+    with closing(_connect()) as conn:
+        expire_reservations(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute("""SELECT * FROM broker_reservations WHERE status='active'
+            AND (client_session IS NOT NULL OR client_fingerprint IS NOT NULL)
+            ORDER BY created_at""").fetchall()
+        groups: dict[tuple, list[sqlite3.Row]] = {}
+        for row in rows:
+            identity_type = "explicit_session" if row["client_session"] else "derived_fingerprint"
+            identity = row["client_session"] or row["client_fingerprint"]
+            groups.setdefault((row["catalog_item_id"], row["media_type"], identity_type, identity), []).append(row)
+        now = _now().isoformat()
+        for duplicates in groups.values():
+            if len(duplicates) < 2:
+                continue
+            reused = [row for row in duplicates if int(row["reuse_count"] or 0) > 0 or row["last_reused_at"]]
+            keep = max(reused, key=lambda row: row["last_seen_at"] or row["last_reused_at"] or row["created_at"]) if reused else min(duplicates, key=lambda row: row["created_at"])
+            redundant_ids = [row["reservation_id"] for row in duplicates if row["reservation_id"] != keep["reservation_id"]]
+            placeholders = ",".join("?" for _ in redundant_ids)
+            conn.execute(f"UPDATE broker_reservations SET status='released', released_at=?, last_action='duplicate_released' WHERE reservation_id IN ({placeholders})", (now, *redundant_ids))
+            result.duplicate_groups += 1
+            result.released_reservations += len(redundant_ids)
+            result.kept_reservation_ids.append(keep["reservation_id"])
+        conn.commit()
+    add_log("info", "broker", f"Duplicate reservation repair completed: groups={result.duplicate_groups}, released={result.released_reservations}")
+    return result
+
+
 def expire_now() -> BrokerStatus:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         expire_reservations(conn)
     return get_status()
 
 
 def get_status() -> BrokerStatus:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         expire_reservations(conn)
         counts = {
             row["status"]: row["count"]

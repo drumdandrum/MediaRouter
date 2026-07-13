@@ -1,7 +1,7 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from app.schemas.jobs import JobCreate, JobRead
-from app.services.jobs import create_job, get_job, list_jobs, run_job
+from app.services.jobs import create_job, get_job, list_jobs, request_job_cancel, run_job
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -23,4 +23,12 @@ def read_job(job_id: str) -> JobRead:
     job = get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@router.post("/{job_id}/cancel", response_model=JobRead)
+def cancel_job(job_id: str) -> JobRead:
+    job = request_job_cancel(job_id)
+    if job is None:
+        raise HTTPException(status_code=409, detail="Job is not active or does not exist")
     return job

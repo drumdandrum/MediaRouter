@@ -100,6 +100,10 @@ Source Resolution Runtime
 ☑ Runtime JSON/debug mode
 ☑ Runtime HEAD redirect probes
 ☑ Runtime repeated GET reservation reuse
+☑ Stable port-independent runtime fingerprints
+☑ Full active-lifetime GET/HEAD/Range reservation reuse
+☑ Atomic SQLite reservation reuse-or-create
+☑ Duplicate reservation diagnostics and repair action
 ☑ Reservation TTL query parameter
 ☑ Runtime client_session query parameter
 ☑ Client label query parameter
@@ -125,6 +129,10 @@ Outputs
 ☑ STRM Outputs UI
 ☑ STRM output path validation
 ☑ STRM generation diagnostics
+☑ Configurable STRM generation presets and custom limits
+☑ Batched STRM catalog processing and incremental tracking commits
+☑ STRM batch progress and cooperative cancellation
+☑ Paginated recent generated files
 ☐ XMLTV Output
 ☐ HDHomeRun Output
 ☐ Output plugin registry
@@ -145,6 +153,15 @@ Outputs
 ☑ Runtime URL-only generated playlists
 ☑ Live M3U `tvg-chno` preservation
 ☑ Live M3U channel sorting
+☑ Configurable Live M3U Test/Small/Medium/Unlimited/Custom limits
+☑ Live M3U eligibility estimates and excluded-by-limit reporting
+☑ Paginated Live channel selection and streamed playlist output
+☑ Explicit Unlimited Live M3U confirmation
+☑ Separate Live channel editorial placement model
+☑ Preserve repeated CUID memberships, group numbers, metadata, and source order
+☑ Idempotent placement re-import with stale-position deactivation
+☑ Placement-based Live M3U generation with shared runtime identity
+☑ Live channel placement detail API/UI
 ☑ Runtime playback TTL defaults
 ☐ Client heartbeat / playback-end release
 ☐ Runtime proxy mode for media-server compatibility

@@ -46,10 +46,10 @@ Build and run:
 docker compose up --build
 ```
 
-The app version is `v0.2.1`. Docker receives version and Git metadata through build/runtime environment values:
+The app version is `v0.8.1`. Docker receives version and Git metadata through build/runtime environment values:
 
 ```text
-MEDIA_ROUTER_APP_VERSION=v0.2.1
+MEDIA_ROUTER_APP_VERSION=v0.8.1
 MEDIA_ROUTER_GIT_BRANCH=main
 MEDIA_ROUTER_GIT_COMMIT=<short commit>
 ```
@@ -116,6 +116,16 @@ volumes:
 ```
 
 Generated Live TV M3U playlists are disposable. They contain Media Router runtime URLs such as `http://localhost:8088/r/live/channel_abc123`, not direct provider URLs or credentials.
+
+## STRM Generation Sizing
+
+For an 8 GB Mac mini development system, use Test mode (500 movies/500 episodes) and batch size 250. Small mode is reasonable for controlled validation when other memory-heavy services are quiet.
+
+For a larger Linux server, start with Medium mode (5,000 movies/10,000 episodes) and batch size 500. Use Custom to raise one media limit deliberately. Select Unlimited only after a dry run, checking estimated counts and free output-disk capacity; the UI requires a separate confirmation before generation.
+
+Settings and job history remain under the `/data` mount, so Docker restarts preserve the selected mode, limits, batch size, progress history, and run summaries. Cancelling an active STRM job stops after its current batch and preserves completed files/tracking records.
+
+For Live M3U on an 8 GB Mac mini development system, use Test mode at 500 channels. For the Linux `embyserver`, deploy in stages: first validate Test mode and playback, then try Small or Medium, then choose a measured Custom limit. Use Unlimited only after a successful dry run confirms eligible counts and output-disk capacity; Generate requires a separate confirmation. Live settings persist in `/data/outputs_live_m3u_settings.json` across Docker restarts.
 
 ## Verification
 

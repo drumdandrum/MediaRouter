@@ -30,10 +30,12 @@ const state = {
   strmGeneratedFiles: [],
   strmResult: null,
   strmPathValidation: null,
+  strmCatalogSummary: null,
   liveM3uSettings: null,
   liveM3uHistory: [],
   liveM3uResult: null,
   liveM3uPathValidation: null,
+  liveM3uEstimate: null,
   jobs: [],
   logs: [],
   system: null,
@@ -88,6 +90,7 @@ const userStatus = {
   running: "Running",
   complete: "Completed",
   failed: "Failed",
+  cancelled: "Cancelled",
   interrupted: "Interrupted",
   Unknown: "Unknown",
   Healthy: "Healthy",
@@ -326,10 +329,19 @@ function renderCatalog() {
       <td>${item.episode_number || ""}</td>
       <td>${item.confidence}</td>
       <td>${runtimeCell(item)}</td>
+      ${state.catalogTab === "live" ? `<td><button data-show-placements="${item.internal_id}">Placements</button></td>` : ""}
     </tr>
   `);
-  target.innerHTML = `${table(["Title", "Group", "TVG ID", "CUID", "Show", "Season", "Episode", "Confidence", "Runtime"], rows)}<p class="muted helper-text">Showing up to 100 records. Use the API limit and offset parameters for deeper pages.</p>`;
+  const headers = ["Title", "Group", "TVG ID", "CUID", "Show", "Season", "Episode", "Confidence", "Runtime"];
+  if (state.catalogTab === "live") headers.push("Editorial");
+  target.innerHTML = `${table(headers, rows)}<p class="muted helper-text">Showing up to 100 records. Use the API limit and offset parameters for deeper pages.</p>`;
   bindRuntimeButtons(target);
+  target.querySelectorAll("[data-show-placements]").forEach((button) => button.addEventListener("click", async () => {
+    const item = state.catalogRows.find((row) => row.internal_id === button.dataset.showPlacements);
+    const placements = await api(`/api/catalog/${button.dataset.showPlacements}/placements?limit=500&offset=0`);
+    const placementRows = placements.map((placement) => `<tr><td>${placement.group_title || ""}</td><td>${placement.channel_number || ""}</td><td>${placement.display_title}</td><td>${placement.source_name}</td><td class="url-cell">${placement.source_playlist || ""}</td><td>${placement.placement_index}</td></tr>`);
+    document.getElementById("catalog-placement-detail").innerHTML = `<h3>${item.title}</h3><p><strong>Canonical identity:</strong> <code>${item.internal_id}</code></p>${table(["Group", "Channel", "Display Title", "Source", "Playlist", "Order"], placementRows)}`;
+  }));
 }
 
 function optionList(items, emptyLabel = "None", selectedValue = "") {
@@ -698,12 +710,15 @@ function renderBrokerReservations() {
       <td><span data-ttl-expires="${reservation.expires_at}" data-ttl-status="${reservation.status}">${remainingTtl(reservation.expires_at, reservation.status)}</span></td>
       <td>${formatDate(reservation.expires_at)}</td>
       <td>${reservation.client_label || ""}</td>
+      <td>${reservation.identity_type || ""}<br><code>${reservation.masked_client_identity || ""}</code></td>
+      <td>${reservation.last_action === "reservation_reused" ? "Reused" : "Created"}<br><span class="muted">${formatDate(reservation.last_seen_at)}</span></td>
       <td>${reservation.reuse_count ? `${reservation.reuse_count} reuse(s)<br><span class="muted">${formatDate(reservation.last_reused_at)}</span>` : ""}</td>
+      <td>${reservation.duplicate_warning ? badge("Possible duplicate", "warning") : ""}</td>
       <td>${reservation.status === "active" ? `<button data-release-reservation="${reservation.reservation_id}">Release</button>` : ""}</td>
     </tr>
   `);
   const target = document.getElementById("broker-reservations-list");
-  target.innerHTML = table(["Reservation", "Status", "Catalog Item", "Type", "Account", "Remaining", "Expires", "Client", "Reuse", "Actions"], rows);
+  target.innerHTML = table(["Reservation", "Status", "Catalog Item", "Type", "Account", "Remaining", "Expires", "Client", "Identity", "Last Action", "Reuse", "Duplicate", "Actions"], rows);
   bindBrokerReleaseButtons(target);
 }
 
@@ -742,6 +757,10 @@ function setStrmSettingsForm() {
   Object.entries(state.strmSettings).forEach(([key, value]) => {
     if (form.elements[key]) form.elements[key].value = String(value);
   });
+  const custom = form.elements.generation_mode.value === "Custom";
+  form.elements.maximum_movies.disabled = !custom;
+  form.elements.maximum_episodes.disabled = !custom;
+  document.getElementById("strm-unlimited-warning").hidden = form.elements.generation_mode.value !== "Unlimited";
 }
 
 function strmSettingsValues() {
@@ -749,10 +768,13 @@ function strmSettingsValues() {
   values.overwrite_existing_files = values.overwrite_existing_files === "true";
   values.remove_orphaned_files = values.remove_orphaned_files === "true";
   values.dry_run_mode = values.dry_run_mode === "true";
+  values.maximum_movies = Number(values.maximum_movies || 0);
+  values.maximum_episodes = Number(values.maximum_episodes || 0);
+  values.batch_size = Number(values.batch_size || 250);
   return values;
 }
 
-function renderStrmSummary(result = state.strmResult) {
+function renderStrmSummary(result = state.strmResult || (state.strmHistory[0] ? { summary: state.strmHistory[0].summary, operations: [] } : null)) {
   const target = document.getElementById("strm-summary");
   const operationsTarget = document.getElementById("strm-operations");
   if (!result) {
@@ -764,6 +786,9 @@ function renderStrmSummary(result = state.strmResult) {
   target.innerHTML = `
     <div class="detail-grid">
       <div><span>Mode</span><strong>${summary.mode}</strong></div>
+      <div><span>Limit</span><strong>${summary.capped ? "Capped" : "Unlimited"}</strong></div>
+      <div><span>Processed</span><strong>${summary.processed_items}/${summary.total_items}</strong></div>
+      <div><span>Excluded by Limits</span><strong>${summary.excluded_by_limits}</strong></div>
       <div><span>Movies</span><strong>${summary.movie_count}</strong></div>
       <div><span>Episodes</span><strong>${summary.episode_count}</strong></div>
       <div><span>Created</span><strong>${summary.created_count}</strong></div>
@@ -817,6 +842,9 @@ function setLiveM3uSettingsForm() {
   Object.entries(state.liveM3uSettings).forEach(([key, value]) => {
     if (form.elements[key]) form.elements[key].value = String(value);
   });
+  const custom = form.elements.generation_mode.value === "Custom";
+  form.elements.maximum_live_channels.disabled = !custom;
+  document.getElementById("live-m3u-unlimited-warning").hidden = form.elements.generation_mode.value !== "Unlimited";
 }
 
 function liveM3uSettingsValues() {
@@ -824,7 +852,7 @@ function liveM3uSettingsValues() {
   ["include_disabled_channels", "include_logos", "include_group_title", "include_tvg_id", "include_tvg_name", "dry_run_mode"].forEach((key) => {
     values[key] = values[key] === "true";
   });
-  values.channel_limit = Number(values.channel_limit || 0);
+  values.maximum_live_channels = Number(values.maximum_live_channels || 0);
   return values;
 }
 
@@ -865,6 +893,10 @@ function renderLiveM3uSummary() {
   target.innerHTML = `
     <div class="detail-grid">
       <div><span>Total Channels</span><strong>${summary.total_live_channels}</strong></div>
+      <div><span>Eligible Channels</span><strong>${summary.eligible_live_channels}</strong></div>
+      <div><span>Configured Limit</span><strong>${summary.configured_limit ?? "Unlimited"}</strong></div>
+      <div><span>Limit Status</span><strong>${summary.capped ? "Capped" : "Unlimited"}</strong></div>
+      <div><span>Excluded by Limit</span><strong>${summary.excluded_by_limit}</strong></div>
       <div><span>Written</span><strong>${summary.written_count}</strong></div>
       <div><span>Skipped</span><strong>${summary.skipped_count}</strong></div>
       <div><span>Created</span><strong>${summary.created_count}</strong></div>
@@ -890,6 +922,12 @@ function renderOutputs() {
   setLiveM3uSettingsForm();
   document.getElementById("strm-runtime-base").textContent = publicBaseUrl();
   document.getElementById("strm-generated-count").textContent = state.strmGeneratedFiles.length;
+  const catalog = state.strmCatalogSummary;
+  const s = state.strmSettings;
+  const estimated = !catalog || !s ? "-" : s.generation_mode === "Unlimited" ? catalog.movies + catalog.episodes : Math.min(catalog.movies, s.maximum_movies) + Math.min(catalog.episodes, s.maximum_episodes);
+  document.getElementById("strm-estimated-count").textContent = String(estimated);
+  const active = state.jobs.find((job) => job.kind === "strm_generate" && ["queued", "running"].includes(job.status));
+  document.getElementById("strm-current-progress").textContent = active ? `${active.progress}% — ${active.message}` : "Idle";
   const lastRun = state.strmHistory[0];
   document.getElementById("strm-last-run").textContent = lastRun ? `${lastRun.status} ${formatDate(lastRun.finished_at || lastRun.started_at)}` : "Never";
   renderStrmSummary();
@@ -904,6 +942,10 @@ function renderOutputs() {
   document.getElementById("live-m3u-last-generated").textContent = liveLastGenerate ? formatDate(liveLastGenerate.finished_at || liveLastGenerate.started_at) : "Never";
   document.getElementById("live-m3u-channel-count").textContent = liveSummary ? String(liveSummary.written_count) : "0";
   document.getElementById("live-m3u-skipped-count").textContent = liveSummary ? String(liveSummary.skipped_count) : "0";
+  document.getElementById("live-m3u-eligible-count").textContent = String(liveSummary?.eligible_live_channels ?? state.liveM3uEstimate?.eligible_live_channels ?? "-");
+  document.getElementById("live-m3u-limit-status").textContent = state.liveM3uSettings?.generation_mode === "Unlimited" ? "Unlimited" : `Capped at ${state.liveM3uSettings?.maximum_live_channels ?? 500}`;
+  const activeLive = state.jobs.find((job) => job.kind === "live_m3u_generate" && ["queued", "running"].includes(job.status));
+  document.getElementById("live-m3u-current-progress").textContent = activeLive ? `${activeLive.progress}% — ${activeLive.message}` : "Idle";
   renderLiveM3uPathValidation();
   renderLiveM3uSummary();
   const rows = state.strmGeneratedFiles.map((file) => `
@@ -1004,8 +1046,10 @@ function renderJobs() {
   list.innerHTML = state.jobs
     .map((job) => {
       const result = job.result || {};
-      const resultText = result.created_count !== undefined
-        ? `<p>${result.created_count} created, ${result.updated_count} updated, ${result.skipped_count} skipped, ${result.removed_count} removed, ${result.failed_count} failed${result.failure_reason ? ` — ${result.failure_reason}` : ""}</p>`
+      const resultText = result.eligible_live_channels !== undefined
+        ? `<p>${result.included_channels ?? result.written_count ?? 0}/${result.eligible_live_channels} eligible channels included (${result.percentage_complete ?? job.progress}%), ${result.excluded_by_limit ?? 0} excluded by limit, ${result.skipped_count ?? 0} unavailable; ${Number(result.duration_seconds || 0).toFixed(1)}s</p>`
+        : result.created_count !== undefined
+        ? `<p>${result.processed_items ?? 0}/${result.total_items ?? 0} processed (${result.percentage_complete ?? job.progress}%), ${result.created_count} created, ${result.updated_count} updated, ${result.skipped_count} skipped, ${result.removed_count} removed, ${result.failed_count} failed; ${result.current_media_type || "-"} batch ${result.current_batch || 0}; ${Number(result.duration_seconds || 0).toFixed(1)}s${result.failure_reason ? ` — ${result.failure_reason}` : ""}</p>`
         : "";
       return `
       <article class="job ${job.status}">
@@ -1016,10 +1060,15 @@ function renderJobs() {
         </div>
         <div class="progress"><span style="width:${job.progress}%"></span></div>
         ${badge(userStatus[job.status], job.status)}
+        ${job.kind === "strm_generate" && ["queued", "running"].includes(job.status) ? `<button data-cancel-job="${job.id}">Cancel</button>` : ""}
       </article>
     `;
     })
     .join("");
+  list.querySelectorAll("[data-cancel-job]").forEach((button) => button.addEventListener("click", async () => {
+    await api(`/api/jobs/${button.dataset.cancelJob}/cancel`, { method: "POST" });
+    await loadJobs(); renderJobs();
+  }));
 }
 
 function renderLogs() {
@@ -1091,15 +1140,18 @@ async function loadBrokerLive() {
   state.brokerPollFailures = 0;
 }
 async function loadOutputs() {
-  [state.strmSettings, state.strmHistory, state.strmGeneratedFiles, state.settings, state.strmPathValidation, state.liveM3uSettings, state.liveM3uHistory, state.liveM3uPathValidation] = await Promise.all([
+  [state.strmSettings, state.strmHistory, state.strmGeneratedFiles, state.settings, state.strmPathValidation, state.liveM3uSettings, state.liveM3uHistory, state.liveM3uPathValidation, state.strmCatalogSummary, state.jobs, state.liveM3uEstimate] = await Promise.all([
     api("/api/outputs/strm/settings"),
     api("/api/outputs/strm/history"),
-    api("/api/outputs/strm/generated-files"),
+    api("/api/outputs/strm/generated-files?limit=100&offset=0"),
     api("/api/settings"),
     api("/api/outputs/strm/validate-paths").catch(() => null),
     api("/api/outputs/live-m3u/settings"),
     api("/api/outputs/live-m3u/history"),
     api("/api/outputs/live-m3u/validate-paths").catch(() => null),
+    api("/api/catalog/summary"),
+    api("/api/jobs"),
+    api("/api/outputs/live-m3u/estimate"),
   ]);
 }
 async function loadCatalog() {
@@ -1290,6 +1342,11 @@ function bind() {
     await loadDashboard();
     renderDashboard();
   });
+  document.getElementById("repair-broker-duplicates").addEventListener("click", async () => {
+    const result = await api("/api/broker/repair-duplicates", { method: "POST" });
+    toast(`Released ${result.released_reservations} duplicate reservation(s)`);
+    await refreshBrokerLive({ force: true });
+  });
   document.getElementById("release-all-broker-reservations").addEventListener("click", async () => {
     await api("/api/broker/release-all", { method: "POST" });
     toast("Active reservations released");
@@ -1309,6 +1366,13 @@ function bind() {
       setFormError("strm-settings-error", error.message);
       toast(error.message);
     }
+  });
+  document.querySelector('#strm-settings-form [name="generation_mode"]').addEventListener("change", (event) => {
+    const form = document.getElementById("strm-settings-form");
+    const custom = event.target.value === "Custom";
+    form.elements.maximum_movies.disabled = !custom;
+    form.elements.maximum_episodes.disabled = !custom;
+    document.getElementById("strm-unlimited-warning").hidden = event.target.value !== "Unlimited";
   });
   document.getElementById("validate-strm-paths").addEventListener("click", async () => {
     try {
@@ -1348,7 +1412,9 @@ function bind() {
         toast("Output paths are not ready");
         return;
       }
-      const job = await api("/api/outputs/strm/generate", { method: "POST" });
+      const unlimited = state.strmSettings.generation_mode === "Unlimited";
+      if (unlimited && !window.confirm("Unlimited STRM generation will process the entire movie and episode catalog. Continue?")) return;
+      const job = await api("/api/outputs/strm/generate", { method: "POST", body: JSON.stringify({ confirm_unlimited: unlimited }) });
       toast(`STRM generation queued: ${job.id}`);
       setView("jobs");
       const timer = setInterval(async () => {
@@ -1378,6 +1444,11 @@ function bind() {
       setFormError("live-m3u-settings-error", error.message);
       toast(error.message);
     }
+  });
+  document.querySelector('#live-m3u-settings-form [name="generation_mode"]').addEventListener("change", (event) => {
+    const form = document.getElementById("live-m3u-settings-form");
+    form.elements.maximum_live_channels.disabled = event.target.value !== "Custom";
+    document.getElementById("live-m3u-unlimited-warning").hidden = event.target.value !== "Unlimited";
   });
   document.getElementById("validate-live-m3u-path").addEventListener("click", async () => {
     try {
@@ -1417,7 +1488,9 @@ function bind() {
         toast("Live M3U output path is not ready");
         return;
       }
-      const job = await api("/api/outputs/live-m3u/generate", { method: "POST" });
+      const unlimited = state.liveM3uSettings.generation_mode === "Unlimited";
+      if (unlimited && !window.confirm("Unlimited Live M3U generation will include every eligible channel. Continue?")) return;
+      const job = await api("/api/outputs/live-m3u/generate", { method: "POST", body: JSON.stringify({ confirm_unlimited: unlimited }) });
       toast(`Live M3U generation queued: ${job.id}`);
       setView("jobs");
       const timer = setInterval(async () => {

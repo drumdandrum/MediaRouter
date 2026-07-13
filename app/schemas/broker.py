@@ -77,6 +77,17 @@ class BrokerReservation(BaseModel):
     client_session: str | None = None
     last_reused_at: datetime | None = None
     reuse_count: int = 0
+    identity_type: str | None = None
+    masked_client_identity: str | None = None
+    last_seen_at: datetime | None = None
+    last_action: str = "reservation_created"
+    duplicate_warning: bool = False
+
+
+class DuplicateRepairResult(BaseModel):
+    duplicate_groups: int = 0
+    released_reservations: int = 0
+    kept_reservation_ids: list[str] = []
 
 
 class BrokerDecision(BaseModel):

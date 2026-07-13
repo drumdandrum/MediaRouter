@@ -1,12 +1,13 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
-from app.schemas.catalog import CatalogImportAccepted, CatalogImportRequest, CatalogItem, CatalogSummary, SourceAvailability, SourceAvailabilityUpdate
+from app.schemas.catalog import CatalogImportAccepted, CatalogImportRequest, CatalogItem, CatalogSummary, ChannelPlacement, SourceAvailability, SourceAvailabilityUpdate
 from app.services.catalog import (
     clear_test_data,
     delete_source_availability,
     get_summary,
     list_all_items,
     list_items,
+    list_channel_placements,
     list_source_availability,
     normalize_playlist_sources,
     run_catalog_import_job,
@@ -58,6 +59,11 @@ def sources(limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0))
 @router.get("/{catalog_internal_id}/sources", response_model=list[SourceAvailability])
 def item_sources(catalog_internal_id: str, limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)) -> list[SourceAvailability]:
     return list_source_availability(catalog_internal_id, limit, offset)
+
+
+@router.get("/{catalog_internal_id}/placements", response_model=list[ChannelPlacement])
+def item_placements(catalog_internal_id: str, limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)) -> list[ChannelPlacement]:
+    return list_channel_placements(catalog_internal_id, limit, offset)
 
 
 @router.post("/import", response_model=CatalogImportAccepted, status_code=202)

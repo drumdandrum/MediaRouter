@@ -144,6 +144,7 @@
               <button data-catalog-tab="sources">Sources</button>
             </div>
             <div id="catalog-table" class="table-wrap"></div>
+            <div id="catalog-placement-detail" class="subsection"></div>
           </section>
         </section>
 
@@ -185,6 +186,7 @@
             <div class="panel-head">
               <h2>Source Decision Tester</h2>
               <button id="expire-broker-reservations">Expire Now</button>
+              <button id="repair-broker-duplicates">Repair Duplicates</button>
             </div>
             <form id="broker-resolve-form" class="form-grid">
               <label>Catalog Item *<select name="catalog_item_id" id="broker-catalog-item" required></select></label>
@@ -233,17 +235,24 @@
             <form id="strm-settings-form" class="form-grid">
               <label>Movies STRM Output Directory<input name="movies_output_directory" value="/outputs/movies" /></label>
               <label>Series STRM Output Directory<input name="series_output_directory" value="/outputs/series" /></label>
+              <label>Generation Mode<select name="generation_mode"><option>Test</option><option>Small</option><option>Medium</option><option>Unlimited</option><option>Custom</option></select></label>
+              <label>Maximum Movies<input name="maximum_movies" type="number" min="1" value="500" /></label>
+              <label>Maximum Episodes<input name="maximum_episodes" type="number" min="1" value="500" /></label>
+              <label>Batch Size<input name="batch_size" type="number" min="50" max="500" value="250" /></label>
               <label>Filename Format<input name="filename_format" value="default" /></label>
               <label>Overwrite Existing Files<select name="overwrite_existing_files"><option value="true">true</option><option value="false">false</option></select></label>
               <label>Remove Orphaned Generated Files<select name="remove_orphaned_files"><option value="false">false</option><option value="true">true</option></select></label>
               <label>Dry Run Mode<select name="dry_run_mode"><option value="false">false</option><option value="true">true</option></select></label>
             </form>
             <p id="strm-settings-error" class="form-error" role="alert"></p>
+            <p id="strm-unlimited-warning" class="form-error" hidden>Unlimited generation processes the entire movie and episode catalog. Confirm available disk space and use a production-sized batch before continuing.</p>
             <p class="muted helper-text">STRM files contain Media Router runtime URLs only. The Broker selects the actual source when a media server opens the file.</p>
             <div class="detail-grid">
               <div><span>Runtime Base URL</span><strong id="strm-runtime-base">-</strong></div>
               <div><span>Last Run</span><strong id="strm-last-run">Never</strong></div>
               <div><span>Tracked Files</span><strong id="strm-generated-count">0</strong></div>
+              <div><span>Estimated Items</span><strong id="strm-estimated-count">-</strong></div>
+              <div><span>Current Progress</span><strong id="strm-current-progress">Idle</strong></div>
             </div>
           </section>
           <section class="panel">
@@ -268,15 +277,17 @@
             <form id="live-m3u-settings-form" class="form-grid">
               <label>Output File Path<input name="output_file_path" value="/outputs/live/live.m3u" /></label>
               <label>Runtime Client Access URL<input name="runtime_client_access_url" placeholder="Blank uses Runtime Public Base URL" /></label>
+              <label>Generation Mode<select name="generation_mode"><option>Test</option><option>Small</option><option>Medium</option><option>Unlimited</option><option>Custom</option></select></label>
+              <label>Maximum Live Channels<input name="maximum_live_channels" type="number" value="500" min="1" /></label>
               <label>Include Disabled / Unavailable Channels<select name="include_disabled_channels"><option value="false">false</option><option value="true">true</option></select></label>
               <label>Include Logos<select name="include_logos"><option value="true">true</option><option value="false">false</option></select></label>
               <label>Include Group Title<select name="include_group_title"><option value="true">true</option><option value="false">false</option></select></label>
               <label>Include TVG ID<select name="include_tvg_id"><option value="true">true</option><option value="false">false</option></select></label>
               <label>Include TVG Name<select name="include_tvg_name"><option value="true">true</option><option value="false">false</option></select></label>
-              <label>Channel Limit<input name="channel_limit" type="number" value="0" min="0" /></label>
               <label>Dry Run Mode<select name="dry_run_mode"><option value="false">false</option><option value="true">true</option></select></label>
             </form>
             <p id="live-m3u-settings-error" class="form-error" role="alert"></p>
+            <p id="live-m3u-unlimited-warning" class="form-error" hidden>Unlimited Live M3U generation includes every eligible channel. Confirm catalog size and available output-disk space before continuing.</p>
             <p class="muted helper-text">Live M3U entries point to Media Router runtime URLs. The Broker still chooses the actual account/source at playback time.</p>
             <div class="detail-grid">
               <div><span>Output File</span><strong id="live-m3u-output-file">-</strong></div>
@@ -286,6 +297,9 @@
               <div><span>Last Generated</span><strong id="live-m3u-last-generated">Never</strong></div>
               <div><span>Channels</span><strong id="live-m3u-channel-count">0</strong></div>
               <div><span>Skipped</span><strong id="live-m3u-skipped-count">0</strong></div>
+              <div><span>Estimated Eligible</span><strong id="live-m3u-eligible-count">-</strong></div>
+              <div><span>Limit Status</span><strong id="live-m3u-limit-status">Capped</strong></div>
+              <div><span>Current Progress</span><strong id="live-m3u-current-progress">Idle</strong></div>
             </div>
           </section>
           <section class="panel">

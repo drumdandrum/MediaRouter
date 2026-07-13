@@ -29,6 +29,7 @@ The current project exposes Sprint 7 Live TV M3U output endpoints and Sprint 6 S
 | `GET` | `/api/catalog/episodes?limit=100&offset=0` | Lists paginated episode catalog records. |
 | `GET` | `/api/catalog/sources?limit=100&offset=0` | Lists paginated source mappings with provider credentials redacted from URLs. |
 | `GET` | `/api/catalog/{id}/sources?limit=100&offset=0` | Lists paginated availability records for one catalog item. |
+| `GET` | `/api/catalog/{id}/placements?limit=100&offset=0` | Lists active editorial placements for one canonical live channel. |
 | `POST` | `/api/catalog/import` | Queues a streaming M3U import for a playlist path/URL, optionally tied to provider/account. |
 | `POST` | `/api/catalog/clear-test-data` | Clears catalog test/import data for development. |
 | `GET` | `/api/providers` | Lists providers. |
@@ -51,6 +52,7 @@ The current project exposes Sprint 7 Live TV M3U output endpoints and Sprint 6 S
 | `POST` | `/api/broker/release` | Releases one active reservation. |
 | `POST` | `/api/broker/release-all` | Releases every active reservation. |
 | `POST` | `/api/broker/expire-now` | Expires stale reservations immediately for testing. |
+| `POST` | `/api/broker/repair-duplicates` | Releases redundant active reservations sharing the same catalog/media/hashed identity. |
 | `GET` | `/api/runtime/preview/{catalog_item_id}` | Returns the stable runtime URL, debug URL, catalog item, media type, and enabled source count. |
 | `GET` | `/r/live/{catalog_item_id}` | Resolves a live channel through the Broker and returns HTTP `302` to the selected source URL. |
 | `GET` | `/r/movie/{catalog_item_id}` | Resolves a movie through the Broker and returns HTTP `302` to the selected source URL. |
@@ -62,14 +64,15 @@ The current project exposes Sprint 7 Live TV M3U output endpoints and Sprint 6 S
 | `PUT` | `/api/outputs/strm/settings` | Updates STRM output settings. |
 | `GET` | `/api/outputs/strm/validate-paths` | Validates output/data/import paths for readability and writability. |
 | `POST` | `/api/outputs/strm/dry-run` | Previews movie/episode STRM output changes without writing files. |
-| `POST` | `/api/outputs/strm/generate` | Starts a STRM generation job for movies and episodes. |
+| `POST` | `/api/outputs/strm/generate` | Starts a STRM generation job; Unlimited mode requires `{"confirm_unlimited": true}`. |
 | `GET` | `/api/outputs/strm/history` | Lists recent STRM output runs. |
-| `GET` | `/api/outputs/strm/generated-files` | Lists tracked generated STRM files. |
+| `GET` | `/api/outputs/strm/generated-files?limit=100&offset=0` | Lists a bounded page of tracked generated STRM files. |
 | `GET` | `/api/outputs/live-m3u/settings` | Reads Live TV M3U output settings. |
 | `PUT` | `/api/outputs/live-m3u/settings` | Updates Live TV M3U output settings. |
+| `GET` | `/api/outputs/live-m3u/estimate` | Returns total, eligible, included, and excluded-by-limit channel counts. |
 | `GET` | `/api/outputs/live-m3u/validate-paths` | Validates the Live TV M3U output file path and `/data`. |
 | `POST` | `/api/outputs/live-m3u/dry-run` | Previews generated live/channel M3U entries without writing a file. |
-| `POST` | `/api/outputs/live-m3u/generate` | Starts a Live TV M3U generation job. |
+| `POST` | `/api/outputs/live-m3u/generate` | Starts a Live TV M3U generation job; Unlimited requires `{"confirm_unlimited": true}`. |
 | `GET` | `/api/outputs/live-m3u/history` | Lists recent Live TV M3U output runs. |
 | `GET` | `/api/outputs/live-m3u/preview` | Returns the current Live TV M3U preview. |
 
@@ -146,6 +149,7 @@ Deferred:
 - `GET /api/catalog/episodes`
 - `GET /api/catalog/sources`
 - `GET /api/catalog/{id}/sources`
+- `GET /api/catalog/{id}/placements`
 - `POST /api/catalog/import`
 - `POST /api/catalog/clear-test-data`
 
@@ -163,6 +167,7 @@ Deferred:
 - `POST /api/broker/release`
 - `POST /api/broker/release-all`
 - `POST /api/broker/expire-now`
+- `POST /api/broker/repair-duplicates`
 
 ### Runtime Resolution
 
@@ -185,6 +190,7 @@ Deferred:
 - `GET /api/outputs/strm/generated-files`
 - `GET /api/outputs/live-m3u/settings`
 - `PUT /api/outputs/live-m3u/settings`
+- `GET /api/outputs/live-m3u/estimate`
 - `GET /api/outputs/live-m3u/validate-paths`
 - `POST /api/outputs/live-m3u/dry-run`
 - `POST /api/outputs/live-m3u/generate`
@@ -295,13 +301,18 @@ Runtime routes accept optional query parameters:
 
 When `ttl` is omitted, runtime playback URLs default to a four-hour reservation TTL for live, movie, and episode requests. Manual Broker decision tests that call `/api/broker/resolve` directly keep the short 60-second default. Reservations currently release by TTL expiration unless they are manually released through Broker APIs; client heartbeat and client-driven playback-end release are future work.
 
-Repeated runtime `GET` requests are idempotent within a short reservation reuse window, currently 30 seconds by default. Reuse identity is chosen in this order:
+Repeated runtime GET, HEAD, probe, seek, and reconnect requests are idempotent for the active reservation lifetime. Reuse identity is chosen in this order:
 
 1. `client_session`, when supplied.
-2. `client_label`, when supplied.
-3. A temporary fingerprint from catalog item, remote address, User-Agent, and media type.
+2. A derived fingerprint from catalog item, media type, normalized client IP, and normalized User-Agent. `client_label` remains diagnostic metadata and is not treated as a strong session identifier.
 
-When a matching active reservation exists in that window, Media Router returns the same selected source and redirect URL without incrementing account usage. If no reusable reservation exists, normal Broker capacity rules apply and genuinely distinct clients/sessions consume separate capacity.
+When a matching active reservation exists, Media Router returns the same selected source and redirect URL without incrementing account usage. If no reusable reservation exists, normal Broker capacity rules apply and genuinely distinct clients/sessions consume separate capacity.
+
+Runtime reuse now lasts for the full active reservation lifetime, not a 30-second creation window. The derived fingerprint uses normalized client IP without TCP source port, normalized User-Agent, catalog item, and media type; request method, HTTP version, and Range headers are intentionally excluded. Explicit `client_session` and fallback fingerprints are hashed before persistence.
+
+`POST /api/broker/repair-duplicates` is an explicit maintenance action. It groups active reservations only when catalog item, media type, identity type, and hashed identity match, keeps the most recently reused reservation (or oldest when none was reused), and releases redundant rows. It does not merge different identities.
+
+Weak derived identities trade correlation for ambiguity: two clients behind the same NAT using effectively the same User-Agent for the same item can collide. Clients that can provide a playback identifier should use `client_session`.
 
 Redirect responses include diagnostic headers:
 
@@ -329,6 +340,8 @@ STRM settings include:
 
 - Movies STRM output directory.
 - Series STRM output directory.
+- Generation mode: Test (500/500), Small (2,000/2,000), Medium (5,000/10,000), Unlimited, or Custom.
+- Maximum movies, maximum episodes, and a batch size from 50 through 500 (default 250).
 - Filename format.
 - Whether existing files may be overwritten.
 - Whether tracked orphaned generated files may be removed.
@@ -362,6 +375,8 @@ Validation covers the movies output directory, series output directory, `/data`,
 
 `POST /api/outputs/strm/generate` starts a background job. The job result contains created, updated, skipped, removed, failed, movie, episode, output path, and duration counts.
 
+Progress results also contain total/processed items, percentage, current media type and batch, elapsed time, excluded-by-limit count, and capped/unlimited state. `POST /api/jobs/{job_id}/cancel` requests cancellation after the active batch; completed batch files and tracking rows remain committed and the job finishes as `cancelled`.
+
 If generation fails, the job message and result include a friendly failure reason with the exact path that failed. STRM dry-run and generate start/completion, validation summaries, counts, and exceptions are logged to Docker logs and the Media Router Logs page.
 
 Orphan cleanup only applies to files already tracked as generated STRM outputs. Media Router does not delete arbitrary files in output folders.
@@ -383,19 +398,22 @@ Live M3U settings include:
 - Output file path, for example `/outputs/live/live.m3u`.
 - Runtime Client Access URL override.
 - Toggles for disabled/no-source channels, logos, group titles, `tvg-id`, and `tvg-name`.
-- Development channel limit.
+- Generation mode: Test (500), Small (2,000), Medium (5,000), Unlimited, or Custom.
+- Maximum Live Channels; Custom requires a positive value, while zero is accepted only for explicitly selected Unlimited mode. The legacy `channel_limit` field remains a compatible alias.
 - Dry-run mode.
 
 `GET /api/outputs/live-m3u/validate-paths` validates the output file parent directory and `/data`. The output parent directory must exist or be creatable and writable before Generate can run.
 
 Path validation also warns when the Movies STRM directory, Series STRM directory, and Live M3U output parent directory are identical or nested inside one another. STRM writes only to the configured movie/series directories, and Live M3U writes only to the configured output file path.
 
-`POST /api/outputs/live-m3u/dry-run` returns total live channels found, channels that would be written, skipped channels, output path, and a preview of the first generated entries. Dry-run does not write a file.
+`POST /api/outputs/live-m3u/dry-run` and `GET /api/outputs/live-m3u/preview` apply the configured mode after availability filtering. Results include total catalog channels, eligible channels, configured limit, included channels, unavailable/skipped channels, excluded-by-limit count, and capped/unlimited status. Dry-run does not write a file.
 
-`POST /api/outputs/live-m3u/generate` starts a background job that creates the parent directory when possible, writes or updates the M3U file, and reports created, updated, skipped, failed, output path, and duration counts.
+`POST /api/outputs/live-m3u/generate` starts a background job that reports selection progress and streams the numerically ordered playlist through a temporary file before replacement. Unlimited mode must be explicitly selected in saved settings and confirmed in the request body.
 
 Generated M3U files never contain direct provider stream URLs or credentials. Broker capacity decisions still happen later, when a client opens one of the generated `/r/live/{catalog_item_id}` URLs.
 
-Generated channels are sorted by numeric channel number when available, then group title, then display title. Guide XML is currently external to Media Router and can continue to come from IPTV Boss or a separate webserver.
+Generated placements prefer original source-playlist order. Legacy records without placement order fall back to numeric channel number, group title, then display title. Guide XML is currently external to Media Router and can continue to come from IPTV Boss or a separate webserver.
+
+When placement records are available, Live M3U emits one entry per active placement and prefers original source-playlist order. Multiple entries may intentionally share the same `/r/live/{catalog_item_id}` URL. Canonical fields remain available for search/summary; placement group, number, display title, and TVG metadata control output. Legacy channels without imported placements fall back to their canonical metadata and numeric/group/title ordering.
 
 Sprint 7 does not generate XMLTV, emulate HDHomeRun, sync with media servers, proxy streams, transcode, or play streams.
