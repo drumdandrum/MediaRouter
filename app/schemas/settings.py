@@ -5,6 +5,10 @@ class AppSettings(BaseModel):
     app_name: str = "Media Router"
     public_base_url: str = "http://media-router:8088"
     runtime_public_base_url: str = ""
+    trust_proxy_headers: bool = False
+    trusted_proxy_client_header: str = "x-forwarded-for"
+    trusted_proxy_networks: str = ""
+    startup_coalescing_window_seconds: int = Field(default=90, ge=0, le=600)
     timezone: str = "America/Los_Angeles"
     log_level: str = "info"
     data_directory: str = "./data"
@@ -30,6 +34,10 @@ class SettingsUpdate(BaseModel):
     app_name: str | None = Field(default=None, min_length=1)
     public_base_url: str | None = None
     runtime_public_base_url: str | None = None
+    trust_proxy_headers: bool | None = None
+    trusted_proxy_client_header: str | None = None
+    trusted_proxy_networks: str | None = None
+    startup_coalescing_window_seconds: int | None = Field(default=None, ge=0, le=600)
     timezone: str | None = None
     log_level: str | None = None
     data_directory: str | None = None

@@ -4,6 +4,12 @@
 
 Sprint 4 extends the SQLite catalog schema with broker reservations while preserving the Sprint 1.5 JSON-backed foundation state and Sprint 2/3 catalog, provider, account, and source availability records. Sprint 5 adds runtime resolve routes on top of the existing broker reservations table. Sprint 6 adds STRM output metadata tables while generated `.strm` files remain disposable artifacts. Sprint 7 adds JSON-backed Live TV M3U output settings and uses the existing output history/tracking metadata; generated `.m3u` files remain disposable artifacts.
 
+v0.8.1 adds `playback_identity_key` to `broker_reservations`. The value is a privacy-safe hash scoped to catalog item, normalized media type, and hashed explicit session or derived fingerprint. A partial unique index, `uq_broker_active_playback_identity`, permits only one active row per playback key. Upgrade reconciliation releases pre-existing duplicates before creating the index and preserves all historical rows.
+
+`broker_reservation_identity_aliases` stores scoped hashed identities observed for a reservation: `alias_id`, `reservation_id`, `catalog_item_id`, `media_type`, `identity_type`, `identity_hash`, hashed origin, request-profile classification, active state, and first/last-seen timestamps. Active aliases are unique per catalog item, media type, identity type, and hash. Releasing or expiring a reservation deactivates its aliases; historical rows remain available for diagnostics.
+
+Reservations also retain the primary stable-client hash when present, hashed origin, request profile, and `coalesced_reuse_count`. Provider locations and credentials are not stored in alias records.
+
 Docker Compose mounts:
 
 ```text
@@ -307,7 +313,7 @@ Important fields:
 
 Sprint 6 STRM and Sprint 7 Live TV M3U runs both write summaries here. The generated output files themselves are not authoritative state.
 
-v0.8.1 continues to persist STRM settings in `/data/outputs_strm_settings.json`. Missing generation fields deserialize to Test mode, 500 movies, 500 episodes, and batch size 250. Generated-file upserts and job persistence commit after each batch instead of using one catalog-sized transaction.
+v0.8.1 continues to persist STRM settings in `/data/outputs_strm_settings.json`. Missing generation fields deserialize to Test mode, 500 movies, 500 episodes, batch size 250, and 4 file workers. Each batch prefetches its tracking hashes, bulk-upserts generated-file records with `executemany`, and commits once instead of using per-file commits or one catalog-sized transaction.
 
 Live M3U settings remain in `/data/outputs_live_m3u_settings.json`. v0.8.1 adds `generation_mode` and `maximum_live_channels`; saved files without these fields safely deserialize to Test/500. A positive legacy `channel_limit` is interpreted as a Custom limit, while a missing or zero legacy value becomes Test/500 rather than Unlimited. No SQLite schema change is required for Live limits.
 - `status`

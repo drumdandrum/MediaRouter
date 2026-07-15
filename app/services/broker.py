@@ -90,6 +90,11 @@ def ensure_broker_schema(conn: sqlite3.Connection | None = None) -> None:
             identity_type TEXT,
             last_seen_at TEXT,
             last_action TEXT NOT NULL DEFAULT 'reservation_created',
+            playback_identity_key TEXT,
+            stable_client_id TEXT,
+            origin_identity_hash TEXT,
+            request_profile TEXT,
+            coalesced_reuse_count INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY(catalog_item_id) REFERENCES catalog_items(internal_id) ON DELETE CASCADE,
             FOREIGN KEY(source_availability_id) REFERENCES source_availability(id) ON DELETE CASCADE,
             FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE CASCADE,
@@ -107,6 +112,11 @@ def ensure_broker_schema(conn: sqlite3.Connection | None = None) -> None:
         "identity_type": "ALTER TABLE broker_reservations ADD COLUMN identity_type TEXT",
         "last_seen_at": "ALTER TABLE broker_reservations ADD COLUMN last_seen_at TEXT",
         "last_action": "ALTER TABLE broker_reservations ADD COLUMN last_action TEXT NOT NULL DEFAULT 'reservation_created'",
+        "playback_identity_key": "ALTER TABLE broker_reservations ADD COLUMN playback_identity_key TEXT",
+        "stable_client_id": "ALTER TABLE broker_reservations ADD COLUMN stable_client_id TEXT",
+        "origin_identity_hash": "ALTER TABLE broker_reservations ADD COLUMN origin_identity_hash TEXT",
+        "request_profile": "ALTER TABLE broker_reservations ADD COLUMN request_profile TEXT",
+        "coalesced_reuse_count": "ALTER TABLE broker_reservations ADD COLUMN coalesced_reuse_count INTEGER NOT NULL DEFAULT 0",
     }
     applied: list[str] = []
     for column, statement in migrations.items():
@@ -127,15 +137,85 @@ def ensure_broker_schema(conn: sqlite3.Connection | None = None) -> None:
         if hashed_session != session or hashed_fingerprint != fingerprint:
             reservation_id = row["reservation_id"] if hasattr(row, "keys") else row[0]
             conn.execute("UPDATE broker_reservations SET client_session=?, client_fingerprint=? WHERE reservation_id=?", (hashed_session, hashed_fingerprint, reservation_id))
+    identity_rows = conn.execute("""SELECT reservation_id, catalog_item_id, media_type, client_session,
+        client_fingerprint, status, COALESCE(last_seen_at, last_reused_at, created_at) AS identity_seen
+        FROM broker_reservations WHERE playback_identity_key IS NULL
+        AND (client_session IS NOT NULL OR client_fingerprint IS NOT NULL)
+        ORDER BY identity_seen DESC, id DESC""").fetchall()
+    active_keys: set[str] = set()
+    migration_now = _now().isoformat()
+    for row in identity_rows:
+        identity_type = "explicit_session" if row["client_session"] else "derived_fingerprint"
+        identity = row["client_session"] or row["client_fingerprint"]
+        key = _playback_identity_key(row["catalog_item_id"], row["media_type"], identity_type, identity)
+        existing_key_owner = conn.execute("""SELECT reservation_id FROM broker_reservations
+            WHERE status='active' AND playback_identity_key=? AND reservation_id != ? LIMIT 1""",
+            (key, row["reservation_id"])).fetchone() if row["status"] == "active" else None
+        if row["status"] == "active" and (key in active_keys or existing_key_owner is not None):
+            conn.execute("""UPDATE broker_reservations SET status='released', released_at=?,
+                last_action='duplicate_released' WHERE reservation_id=?""", (migration_now, row["reservation_id"]))
+        else:
+            conn.execute("UPDATE broker_reservations SET playback_identity_key=? WHERE reservation_id=?",
+                         (key, row["reservation_id"]))
+            if row["status"] == "active":
+                active_keys.add(key)
     conn.executescript(
         """
+        CREATE TABLE IF NOT EXISTS broker_reservation_identity_aliases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alias_id TEXT NOT NULL UNIQUE,
+            reservation_id TEXT NOT NULL,
+            catalog_item_id TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            identity_type TEXT NOT NULL,
+            identity_hash TEXT NOT NULL,
+            origin_identity_hash TEXT,
+            request_profile TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            FOREIGN KEY(reservation_id) REFERENCES broker_reservations(reservation_id) ON DELETE CASCADE
+        );
         CREATE INDEX IF NOT EXISTS idx_broker_reservations_status ON broker_reservations(status);
         CREATE INDEX IF NOT EXISTS idx_broker_reservations_account ON broker_reservations(account_id, status);
         CREATE INDEX IF NOT EXISTS idx_broker_reservations_expires ON broker_reservations(expires_at);
         CREATE INDEX IF NOT EXISTS idx_broker_reservations_reuse_session ON broker_reservations(catalog_item_id, media_type, status, client_session, created_at);
         CREATE INDEX IF NOT EXISTS idx_broker_reservations_reuse_fingerprint ON broker_reservations(catalog_item_id, media_type, status, client_fingerprint, created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_broker_active_playback_identity
+            ON broker_reservations(playback_identity_key)
+            WHERE status = 'active' AND playback_identity_key IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_broker_alias_reservation
+            ON broker_reservation_identity_aliases(reservation_id, active);
         """
     )
+    alias_columns = {row[1] for row in conn.execute("PRAGMA table_info(broker_reservation_identity_aliases)").fetchall()}
+    if "catalog_item_id" not in alias_columns:
+        conn.execute("ALTER TABLE broker_reservation_identity_aliases ADD COLUMN catalog_item_id TEXT")
+    if "media_type" not in alias_columns:
+        conn.execute("ALTER TABLE broker_reservation_identity_aliases ADD COLUMN media_type TEXT")
+    conn.execute("""UPDATE broker_reservation_identity_aliases SET
+        catalog_item_id=(SELECT catalog_item_id FROM broker_reservations r WHERE r.reservation_id=broker_reservation_identity_aliases.reservation_id),
+        media_type=(SELECT media_type FROM broker_reservations r WHERE r.reservation_id=broker_reservation_identity_aliases.reservation_id)
+        WHERE catalog_item_id IS NULL OR media_type IS NULL""")
+    conn.execute("DROP INDEX IF EXISTS uq_broker_active_identity_alias")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS uq_broker_active_identity_alias_scoped
+        ON broker_reservation_identity_aliases(catalog_item_id, media_type, identity_type, identity_hash)
+        WHERE active=1""")
+    alias_now = _now().isoformat()
+    for row in conn.execute("""SELECT reservation_id, identity_type, client_session, client_fingerprint,
+        stable_client_id, origin_identity_hash, request_profile, created_at, COALESCE(last_seen_at, created_at) AS seen
+        FROM broker_reservations WHERE status='active' AND NOT EXISTS (
+            SELECT 1 FROM broker_reservation_identity_aliases aliases
+            WHERE aliases.reservation_id=broker_reservations.reservation_id)""").fetchall():
+        identity = row["stable_client_id"] or row["client_session"] or row["client_fingerprint"]
+        identity_type = "stable_client_id" if row["stable_client_id"] else row["identity_type"]
+        if identity and identity_type:
+            conn.execute("""INSERT OR IGNORE INTO broker_reservation_identity_aliases
+                (alias_id,reservation_id,catalog_item_id,media_type,identity_type,identity_hash,origin_identity_hash,request_profile,active,first_seen_at,last_seen_at)
+                VALUES (?, ?, (SELECT catalog_item_id FROM broker_reservations WHERE reservation_id=?),
+                    (SELECT media_type FROM broker_reservations WHERE reservation_id=?), ?,?,?,?,1,?,?)""",
+                (uuid4().hex, row["reservation_id"], row["reservation_id"], row["reservation_id"], identity_type, identity,
+                row["origin_identity_hash"], row["request_profile"], row["created_at"] or alias_now, row["seen"] or alias_now))
     conn.commit()
     if applied:
         add_log("info", "broker", f"Applied broker reservation schema migration: {', '.join(applied)}")
@@ -160,6 +240,14 @@ def _identity_hash(value: str | None, identity_type: str) -> str | None:
     return hashlib.sha256(f"{identity_type}:{value}".encode("utf-8")).hexdigest()[:32]
 
 
+def _playback_identity_key(catalog_item_id: str, media_type: str, identity_type: str, identity: str | None) -> str | None:
+    if not identity:
+        return None
+    normalized_media_type = _normalize_media_type(media_type) or media_type
+    raw = f"{catalog_item_id}|{normalized_media_type}|{identity_type}|{identity}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
+
+
 def _is_hashed_identity(value: str | None) -> bool:
     return bool(value and re.fullmatch(r"[0-9a-f]{32}", value))
 
@@ -172,7 +260,7 @@ def _redact_ref(value: str) -> str:
     return re.sub(r"(/(?:live|movie|series)/)[^/]+/[^/]+/", r"\1[redacted]/[redacted]/", value, flags=re.IGNORECASE)
 
 
-def expire_reservations(conn: sqlite3.Connection | None = None) -> int:
+def expire_reservations(conn: sqlite3.Connection | None = None, *, commit: bool = True) -> int:
     owns_conn = conn is None
     if conn is None:
         conn = _connect()
@@ -186,7 +274,11 @@ def expire_reservations(conn: sqlite3.Connection | None = None) -> int:
         """,
         (now,),
     )
-    conn.commit()
+    conn.execute("""UPDATE broker_reservation_identity_aliases SET active=0
+        WHERE active=1 AND reservation_id IN (
+            SELECT reservation_id FROM broker_reservations WHERE status != 'active')""")
+    if commit:
+        conn.commit()
     expired = result.rowcount
     if owns_conn:
         conn.close()
@@ -208,8 +300,11 @@ def _active_counts(conn: sqlite3.Connection) -> dict[str, int]:
 def _reservation_from_row(row: sqlite3.Row) -> BrokerReservation:
     client_session = row["client_session"] if "client_session" in row.keys() else None
     client_fingerprint = row["client_fingerprint"] if "client_fingerprint" in row.keys() else None
+    stable_client_id = row["stable_client_id"] if "stable_client_id" in row.keys() else None
     identity_type = row["identity_type"] if "identity_type" in row.keys() and row["identity_type"] else ("explicit_session" if client_session else "derived_fingerprint" if client_fingerprint else None)
-    identity_value = client_session if identity_type == "explicit_session" else client_fingerprint if identity_type == "derived_fingerprint" else None
+    identity_value = (client_session if identity_type == "explicit_session" else stable_client_id
+                      if identity_type == "stable_client_id" else client_fingerprint
+                      if identity_type == "derived_fingerprint" else None)
     return BrokerReservation(
         reservation_id=row["reservation_id"],
         catalog_item_id=row["catalog_item_id"],
@@ -234,6 +329,9 @@ def _reservation_from_row(row: sqlite3.Row) -> BrokerReservation:
         last_seen_at=datetime.fromisoformat(row["last_seen_at"]) if "last_seen_at" in row.keys() and row["last_seen_at"] else (datetime.fromisoformat(row["last_reused_at"]) if "last_reused_at" in row.keys() and row["last_reused_at"] else datetime.fromisoformat(row["created_at"])),
         last_action=row["last_action"] if "last_action" in row.keys() and row["last_action"] else "reservation_created",
         duplicate_warning=bool(row["duplicate_warning"]) if "duplicate_warning" in row.keys() else False,
+        alias_count=int(row["alias_count"] or 0) if "alias_count" in row.keys() else 0,
+        coalesced_reuse_count=int(row["coalesced_reuse_count"] or 0) if "coalesced_reuse_count" in row.keys() else 0,
+        startup_coalesced=bool(row["coalesced_reuse_count"]) if "coalesced_reuse_count" in row.keys() else False,
     )
 
 
@@ -255,6 +353,8 @@ def _reservation_query(where: str = "", params: tuple = ()) -> list[BrokerReserv
                     AND ((broker_reservations.client_session IS NOT NULL AND duplicate.client_session=broker_reservations.client_session)
                       OR (broker_reservations.client_fingerprint IS NOT NULL AND duplicate.client_fingerprint=broker_reservations.client_fingerprint))
                 ) AS duplicate_warning
+                , (SELECT COUNT(*) FROM broker_reservation_identity_aliases aliases
+                   WHERE aliases.reservation_id=broker_reservations.reservation_id AND aliases.active=1) AS alias_count
             FROM broker_reservations
             LEFT JOIN catalog_items ON catalog_items.internal_id = broker_reservations.catalog_item_id
             LEFT JOIN providers ON providers.id = broker_reservations.provider_id
@@ -304,6 +404,8 @@ def _reservation_detail_row(conn: sqlite3.Connection, reservation_id: str) -> sq
                 AND ((broker_reservations.client_session IS NOT NULL AND duplicate.client_session=broker_reservations.client_session)
                   OR (broker_reservations.client_fingerprint IS NOT NULL AND duplicate.client_fingerprint=broker_reservations.client_fingerprint))
             ) AS duplicate_warning
+            , (SELECT COUNT(*) FROM broker_reservation_identity_aliases aliases
+               WHERE aliases.reservation_id=broker_reservations.reservation_id AND aliases.active=1) AS alias_count
         FROM broker_reservations
         LEFT JOIN catalog_items ON catalog_items.internal_id = broker_reservations.catalog_item_id
         LEFT JOIN providers ON providers.id = broker_reservations.provider_id
@@ -312,6 +414,58 @@ def _reservation_detail_row(conn: sqlite3.Connection, reservation_id: str) -> sq
         """,
         (reservation_id,),
     ).fetchone()
+
+
+def _register_identity_alias(
+    conn: sqlite3.Connection, *, reservation_id: str, identity_type: str, identity_hash: str,
+    origin_identity_hash: str | None, request_profile: str | None, seen_at: str,
+) -> None:
+    reservation = conn.execute("SELECT catalog_item_id, media_type FROM broker_reservations WHERE reservation_id=?",
+                               (reservation_id,)).fetchone()
+    conn.execute("""INSERT INTO broker_reservation_identity_aliases
+        (alias_id,reservation_id,catalog_item_id,media_type,identity_type,identity_hash,origin_identity_hash,request_profile,active,first_seen_at,last_seen_at)
+        VALUES (?,?,?,?,?,?,?,?,1,?,?)
+        ON CONFLICT(catalog_item_id, media_type, identity_type, identity_hash) WHERE active=1 DO UPDATE SET
+            last_seen_at=excluded.last_seen_at""",
+        (uuid4().hex, reservation_id, reservation["catalog_item_id"], reservation["media_type"],
+         identity_type, identity_hash, origin_identity_hash,
+         request_profile, seen_at, seen_at))
+
+
+def _find_alias_reservation(conn: sqlite3.Connection, *, catalog_item_id: str, media_type: str | None,
+                            identity_type: str | None, identity_hash: str | None) -> sqlite3.Row | None:
+    if not identity_type or not identity_hash:
+        return None
+    return conn.execute("""SELECT reservations.* FROM broker_reservation_identity_aliases aliases
+        JOIN broker_reservations reservations ON reservations.reservation_id=aliases.reservation_id
+        WHERE aliases.active=1 AND reservations.status='active'
+          AND aliases.catalog_item_id=? AND aliases.media_type=?
+          AND aliases.identity_type=? AND aliases.identity_hash=? LIMIT 1""",
+        (catalog_item_id, _normalize_media_type(media_type), identity_type, identity_hash)).fetchone()
+
+
+def _find_startup_coalescing_candidates(
+    conn: sqlite3.Connection, *, catalog_item_id: str, media_type: str | None,
+    origin_identity_hash: str | None, request_profile: str | None, window_seconds: int,
+) -> tuple[list[sqlite3.Row], str]:
+    if not origin_identity_hash:
+        return [], "no_origin"
+    if window_seconds <= 0:
+        return [], "window_disabled"
+    cutoff = (_now() - timedelta(seconds=window_seconds)).isoformat()
+    active = conn.execute("""SELECT * FROM broker_reservations
+        WHERE status='active' AND catalog_item_id=? AND media_type=? AND origin_identity_hash=?
+        ORDER BY COALESCE(last_seen_at, created_at) DESC""",
+        (catalog_item_id, _normalize_media_type(media_type), origin_identity_hash)).fetchall()
+    recent = [row for row in active if (row["last_seen_at"] or row["created_at"]) >= cutoff]
+    candidates = [row for row in recent if row["client_session"] is None]
+    if candidates:
+        return candidates, "candidate"
+    if recent:
+        return [], "explicit_session_conflict"
+    if active:
+        return [], "outside_window"
+    return [], "no_match"
 
 
 def _find_reusable_reservation(
@@ -456,6 +610,11 @@ def _reused_decision(
     decision_reasons: list[str],
     evaluated_candidates: list[BrokerEvaluatedCandidate],
     reuse_reason: str,
+    reuse_action: str = "reservation_reused",
+    alias_identity_type: str | None = None,
+    alias_identity_hash: str | None = None,
+    alias_origin_identity_hash: str | None = None,
+    alias_request_profile: str | None = None,
 ) -> BrokerDecision:
     rows = _source_rows(conn, reusable["catalog_item_id"], reusable["media_type"])
     selected_row = next((row for row in rows if int(row["id"]) == int(reusable["source_availability_id"])), None)
@@ -475,12 +634,19 @@ def _reused_decision(
     conn.execute(
         """
         UPDATE broker_reservations
-        SET last_reused_at = ?, last_seen_at = ?, last_action = 'reservation_reused',
-            reuse_count = COALESCE(reuse_count, 0) + 1
+        SET last_reused_at = ?, last_seen_at = ?, last_action = ?,
+            reuse_count = COALESCE(reuse_count, 0) + 1,
+            coalesced_reuse_count = COALESCE(coalesced_reuse_count, 0) + ?
         WHERE reservation_id = ?
         """,
-        (seen_at, seen_at, reusable["reservation_id"]),
+        (seen_at, seen_at, reuse_action, 1 if reuse_action == "reservation_coalesced" else 0,
+         reusable["reservation_id"]),
     )
+    if alias_identity_type and alias_identity_hash:
+        _register_identity_alias(conn, reservation_id=reusable["reservation_id"],
+            identity_type=alias_identity_type, identity_hash=alias_identity_hash,
+            origin_identity_hash=alias_origin_identity_hash, request_profile=alias_request_profile,
+            seen_at=seen_at)
     reservation_row = _reservation_detail_row(conn, reusable["reservation_id"])
     if reservation_row is None:
         raise BrokerUnavailable("no_sources", "Reusable reservation was not available.", decision_reasons, evaluated_candidates)
@@ -488,7 +654,7 @@ def _reused_decision(
     selection = _source_selection_from_row(selected_row, active_count)
     reservation = _reservation_from_row(reservation_row)
     decision_reasons.append(reuse_reason)
-    add_log("info", "broker", f"reservation_reused identity_type={reservation.identity_type} identity={reservation.masked_client_identity} catalog_item={selection.catalog_item_id} account={selection.account_name}")
+    add_log("info", "broker", f"{reuse_action} identity_type={reservation.identity_type} identity={reservation.masked_client_identity} catalog_item={selection.catalog_item_id} account={selection.account_name}")
     return BrokerDecision(
         selected_source=selection,
         reservation=reservation,
@@ -510,6 +676,10 @@ def resolve_source(
     client_label: str | None = None,
     client_session: str | None = None,
     client_fingerprint: str | None = None,
+    origin_identity: str | None = None,
+    stable_client_id: str | None = None,
+    request_profile: str | None = None,
+    startup_coalescing_window_seconds: int = 90,
     allow_reservation_reuse: bool = False,
     reuse_window_seconds: int = DEFAULT_REUSE_WINDOW_SECONDS,
     reserve: bool = True,
@@ -518,13 +688,24 @@ def resolve_source(
     if client_session:
         client_session = _identity_hash(client_session, "explicit_session")
         client_fingerprint = None
+        stable_client_id = None
+    elif stable_client_id:
+        stable_client_id = _identity_hash(stable_client_id, "stable_client_id")
+        client_fingerprint = None
     elif client_fingerprint:
         client_fingerprint = _identity_hash(client_fingerprint, "derived_fingerprint")
+    origin_identity_hash = _identity_hash(origin_identity, "origin_identity") if origin_identity else None
+    identity_type = ("explicit_session" if client_session else "stable_client_id" if stable_client_id
+                     else "derived_fingerprint" if client_fingerprint else None)
+    identity = client_session or stable_client_id or client_fingerprint
+    playback_identity_key = _playback_identity_key(
+        catalog_item_id, media_type or "", identity_type, identity
+    ) if identity_type else None
     ttl = reservation_ttl_seconds or DEFAULT_RESERVATION_TTL_SECONDS
     decision_reasons = [f"TTL set to {ttl} seconds.", "Expired reservations were ignored before selection."]
     with closing(_connect()) as conn:
-        expire_reservations(conn)
         conn.execute("BEGIN IMMEDIATE")
+        expire_reservations(conn, commit=False)
         rows = _source_rows(conn, catalog_item_id, media_type)
         if media_type:
             decision_reasons.append(f"Filtered sources by media type {_normalize_media_type(media_type)}.")
@@ -533,6 +714,20 @@ def resolve_source(
             raise _classify_no_source(rows, decision_reasons, evaluated_candidates)
         decision_reasons.append(f"Found {len(rows)} source record(s) for the catalog item.")
         if allow_reservation_reuse:
+            reusable = _find_alias_reservation(conn, catalog_item_id=catalog_item_id, media_type=media_type,
+                                                identity_type=identity_type, identity_hash=identity)
+            if reusable is not None:
+                primary_identity = (reusable["client_session"] if identity_type == "explicit_session"
+                                    else reusable["stable_client_id"] if identity_type == "stable_client_id"
+                                    else reusable["client_fingerprint"])
+                via_alias = primary_identity != identity
+                return _reused_decision(
+                    conn, reusable=reusable, ttl=ttl, decision_reasons=decision_reasons,
+                    evaluated_candidates=evaluated_candidates,
+                    reuse_reason=(f"Reused active reservation by registered {identity_type} alias."
+                                  if via_alias else f"Reused active reservation by exact {identity_type}."),
+                    reuse_action="reservation_reused_via_alias" if via_alias else "reservation_reused",
+                )
             reusable = _find_reusable_reservation(
                 conn,
                 catalog_item_id=catalog_item_id,
@@ -551,6 +746,40 @@ def resolve_source(
                     evaluated_candidates=evaluated_candidates,
                     reuse_reason=f"Reused active reservation for its full lifetime by {identity_reason}.",
                 )
+            if identity_type == "derived_fingerprint":
+                coalescing_candidates, coalescing_reason = _find_startup_coalescing_candidates(
+                    conn, catalog_item_id=catalog_item_id, media_type=media_type,
+                    origin_identity_hash=origin_identity_hash, request_profile=request_profile,
+                    window_seconds=startup_coalescing_window_seconds,
+                )
+                if len(coalescing_candidates) == 1:
+                    add_log("info", "broker", (
+                        f"startup_coalescing origin={_masked_identity(origin_identity_hash)} "
+                        f"window_seconds={startup_coalescing_window_seconds} coalescing_candidate_count=1 "
+                        f"result=reused candidate={coalescing_candidates[0]['reservation_id']}"
+                    ))
+                    return _reused_decision(
+                        conn, reusable=coalescing_candidates[0], ttl=ttl,
+                        decision_reasons=decision_reasons, evaluated_candidates=evaluated_candidates,
+                        reuse_reason="Coalesced one unambiguous recent Emby startup identity.",
+                        reuse_action="reservation_coalesced", alias_identity_type=identity_type,
+                        alias_identity_hash=identity, alias_origin_identity_hash=origin_identity_hash,
+                        alias_request_profile=request_profile,
+                    )
+                if len(coalescing_candidates) > 1:
+                    decision_reasons.append("Startup coalescing was skipped because multiple candidates were plausible.")
+                    coalescing_reason = "ambiguous"
+                add_log("info", "broker", (
+                    f"startup_coalescing origin={_masked_identity(origin_identity_hash)} "
+                    f"window_seconds={startup_coalescing_window_seconds} "
+                    f"coalescing_candidate_count={len(coalescing_candidates)} result={coalescing_reason}"
+                ))
+            elif identity_type in {"explicit_session", "stable_client_id"}:
+                add_log("info", "broker", (
+                    f"startup_coalescing origin={_masked_identity(origin_identity_hash)} "
+                    f"window_seconds={startup_coalescing_window_seconds} coalescing_candidate_count=0 "
+                    f"result={'explicit_session_conflict' if identity_type == 'explicit_session' else 'stable_identity_no_match'}"
+                ))
         active_counts = _active_counts(conn)
         eligible: list[tuple[tuple, sqlite3.Row, int]] = []
         disabled_count = unhealthy_count = capacity_count = 0
@@ -619,32 +848,40 @@ def resolve_source(
         expires_at = now + timedelta(seconds=ttl)
         reservation_id = uuid4().hex
         if reserve:
-            conn.execute(
-                """
-                INSERT INTO broker_reservations (
-                    reservation_id, catalog_item_id, source_availability_id, provider_id, account_id,
-                    media_type, location_ref, status, created_at, expires_at, released_at, client_label,
-                    client_session, client_fingerprint
-                    , identity_type, last_seen_at, last_action
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, ?, ?, ?, ?, ?, 'reservation_created')
-                """,
-                (
-                    reservation_id,
-                    selected["catalog_internal_id"],
-                    selected["id"],
-                    selected["provider_id"],
-                    selected["account_id"],
-                    selected["media_type"],
-                    selected["location_ref"],
-                    now.isoformat(),
-                    expires_at.isoformat(),
-                    client_label or None,
-                    client_session or None,
-                    client_fingerprint or None,
-                    "explicit_session" if client_session else "derived_fingerprint" if client_fingerprint else None,
-                    now.isoformat(),
-                ),
-            )
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO broker_reservations (
+                        reservation_id, catalog_item_id, source_availability_id, provider_id, account_id,
+                        media_type, location_ref, status, created_at, expires_at, released_at, client_label,
+                        client_session, client_fingerprint, identity_type, last_seen_at, last_action,
+                        playback_identity_key, stable_client_id, origin_identity_hash, request_profile
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, ?, ?, ?, ?, ?, 'reservation_created', ?, ?, ?, ?)
+                    """,
+                    (
+                        reservation_id, selected["catalog_internal_id"], selected["id"], selected["provider_id"],
+                        selected["account_id"], selected["media_type"], selected["location_ref"], now.isoformat(),
+                        expires_at.isoformat(), client_label or None, client_session or None,
+                        client_fingerprint or None, identity_type, now.isoformat(), playback_identity_key,
+                        stable_client_id, origin_identity_hash, request_profile,
+                    ),
+                )
+                if identity_type and identity:
+                    _register_identity_alias(conn, reservation_id=reservation_id, identity_type=identity_type,
+                        identity_hash=identity, origin_identity_hash=origin_identity_hash,
+                        request_profile=request_profile, seen_at=now.isoformat())
+            except sqlite3.IntegrityError:
+                winner = conn.execute("""SELECT * FROM broker_reservations
+                    WHERE status='active' AND playback_identity_key=? LIMIT 1""",
+                    (playback_identity_key,)).fetchone()
+                if winner is None:
+                    raise
+                return _reused_decision(
+                    conn, reusable=winner, ttl=ttl, decision_reasons=decision_reasons,
+                    evaluated_candidates=evaluated_candidates,
+                    reuse_reason="Reused the reservation that won a concurrent playback acquisition.",
+                    reuse_action="reservation_reused_after_race",
+                )
             conn.commit()
             reservation_row = _reservation_detail_row(conn, reservation_id)
         else:
@@ -666,7 +903,8 @@ def resolve_source(
                 "client_label": client_label or None,
                 "client_session": client_session or None,
                 "client_fingerprint": client_fingerprint or None,
-                "identity_type": "explicit_session" if client_session else "derived_fingerprint" if client_fingerprint else None,
+                "stable_client_id": stable_client_id,
+                "identity_type": identity_type,
                 "last_seen_at": now.isoformat(),
                 "last_action": "reservation_probe",
                 "duplicate_warning": 0,
@@ -674,8 +912,6 @@ def resolve_source(
     selection = _source_selection_from_row(selected, selected_active_count)
     reservation = _reservation_from_row(reservation_row)
     if reserve:
-        identity = client_session or client_fingerprint
-        identity_type = "explicit_session" if client_session else "derived_fingerprint" if client_fingerprint else None
         add_log("info", "broker", f"reservation_created identity_type={identity_type} identity={_masked_identity(identity)} catalog_item={selection.catalog_item_id} account={selection.account_name}")
     return BrokerDecision(
         selected_source=selection,
@@ -704,6 +940,8 @@ def release_reservation(reservation_id: str) -> BrokerReservation | None:
                 "UPDATE broker_reservations SET status = 'released', released_at = ? WHERE reservation_id = ?",
                 (now, reservation_id),
             )
+            conn.execute("UPDATE broker_reservation_identity_aliases SET active=0 WHERE reservation_id=?",
+                         (reservation_id,))
             conn.commit()
     add_log("info", "broker", f"Released reservation {reservation_id}")
     rows = _reservation_query("WHERE broker_reservations.reservation_id = ?", (reservation_id,))
@@ -718,6 +956,7 @@ def release_all_active() -> BrokerStatus:
             "UPDATE broker_reservations SET status = 'released', released_at = ? WHERE status = 'active'",
             (now,),
         )
+        conn.execute("UPDATE broker_reservation_identity_aliases SET active=0 WHERE active=1")
         conn.commit()
     add_log("info", "broker", f"Released {result.rowcount} active broker reservation(s)")
     return get_status()
@@ -745,6 +984,8 @@ def repair_duplicate_reservations() -> DuplicateRepairResult:
             redundant_ids = [row["reservation_id"] for row in duplicates if row["reservation_id"] != keep["reservation_id"]]
             placeholders = ",".join("?" for _ in redundant_ids)
             conn.execute(f"UPDATE broker_reservations SET status='released', released_at=?, last_action='duplicate_released' WHERE reservation_id IN ({placeholders})", (now, *redundant_ids))
+            conn.execute(f"UPDATE broker_reservation_identity_aliases SET active=0 WHERE reservation_id IN ({placeholders})",
+                         tuple(redundant_ids))
             result.duplicate_groups += 1
             result.released_reservations += len(redundant_ids)
             result.kept_reservation_ids.append(keep["reservation_id"])

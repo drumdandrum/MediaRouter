@@ -20,6 +20,7 @@ class StrmSettings(BaseModel):
     maximum_movies: int = Field(default=500, ge=0)
     maximum_episodes: int = Field(default=500, ge=0)
     batch_size: int = Field(default=250, ge=50, le=500)
+    worker_count: int = Field(default=4, ge=1, le=16)
 
 
 class StrmSettingsUpdate(BaseModel):
@@ -33,6 +34,7 @@ class StrmSettingsUpdate(BaseModel):
     maximum_movies: int | None = Field(default=None, ge=0)
     maximum_episodes: int | None = Field(default=None, ge=0)
     batch_size: int | None = Field(default=None, ge=50, le=500)
+    worker_count: int | None = Field(default=None, ge=1, le=16)
 
 
 class StrmGenerateRequest(BaseModel):
@@ -69,6 +71,9 @@ class StrmOutputSummary(BaseModel):
     percentage_complete: int = 0
     current_media_type: str | None = None
     current_batch: int = 0
+    worker_count: int = 4
+    items_per_second: float = 0
+    average_ms_per_item: float = 0
 
 
 class StrmOutputResult(BaseModel):

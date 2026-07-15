@@ -239,6 +239,7 @@
               <label>Maximum Movies<input name="maximum_movies" type="number" min="1" value="500" /></label>
               <label>Maximum Episodes<input name="maximum_episodes" type="number" min="1" value="500" /></label>
               <label>Batch Size<input name="batch_size" type="number" min="50" max="500" value="250" /></label>
+              <label>File Workers<input name="worker_count" type="number" min="1" max="16" value="4" /></label>
               <label>Filename Format<input name="filename_format" value="default" /></label>
               <label>Overwrite Existing Files<select name="overwrite_existing_files"><option value="true">true</option><option value="false">false</option></select></label>
               <label>Remove Orphaned Generated Files<select name="remove_orphaned_files"><option value="false">false</option><option value="true">true</option></select></label>
@@ -246,7 +247,7 @@
             </form>
             <p id="strm-settings-error" class="form-error" role="alert"></p>
             <p id="strm-unlimited-warning" class="form-error" hidden>Unlimited generation processes the entire movie and episode catalog. Confirm available disk space and use a production-sized batch before continuing.</p>
-            <p class="muted helper-text">STRM files contain Media Router runtime URLs only. The Broker selects the actual source when a media server opens the file.</p>
+            <p class="muted helper-text">STRM files contain Media Router runtime URLs only. File workers default to 4 (range 1–16); higher values are not always faster.</p>
             <div class="detail-grid">
               <div><span>Runtime Base URL</span><strong id="strm-runtime-base">-</strong></div>
               <div><span>Last Run</span><strong id="strm-last-run">Never</strong></div>

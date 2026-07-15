@@ -2,14 +2,16 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
+import time
 import unittest
 import json
 from datetime import datetime
+from unittest.mock import patch
 
 from app.core.config import get_settings
 from app.schemas.outputs import StrmSettingsUpdate
 from app.services.catalog import ensure_schema, import_paths, list_channel_placements
-from app.services.outputs import (_db_path, dry_run_strm_outputs, generate_live_m3u_output,
+from app.services.outputs import (_atomic_write_strm, _db_path, dry_run_strm_outputs, generate_strm_outputs, generate_live_m3u_output,
     dry_run_live_m3u_output, get_live_m3u_settings, update_live_m3u_settings, update_strm_settings)
 from app.schemas.outputs import LiveM3uSettingsUpdate
 
@@ -63,6 +65,49 @@ class StrmGenerationLimitTests(unittest.TestCase):
             self.assertEqual((settings.maximum_movies, settings.maximum_episodes), expected)
         with self.assertRaises(ValueError):
             update_strm_settings(StrmSettingsUpdate(generation_mode="Custom", maximum_movies=0, maximum_episodes=1))
+
+    def test_generate_is_atomic_idempotent_and_reports_benchmark_metrics(self):
+        update_strm_settings(StrmSettingsUpdate(
+            movies_output_directory=str(self.output / "movies"), series_output_directory=str(self.output / "series"),
+            generation_mode="Custom", maximum_movies=7, maximum_episodes=7, batch_size=50, worker_count=4,
+        ))
+        generated = generate_strm_outputs("http://localhost:8088")
+        files = list(self.output.rglob("*.strm"))
+        self.assertEqual(len(files), 14)
+        self.assertTrue(all(path.read_text().startswith("http://localhost:8088/r/") for path in files))
+        self.assertEqual(list(self.output.rglob("*.tmp")), [])
+        self.assertGreater(generated.summary.items_per_second, 0)
+        self.assertGreater(generated.summary.average_ms_per_item, 0)
+        rerun = generate_strm_outputs("http://localhost:8088")
+        self.assertEqual((rerun.summary.created_count, rerun.summary.updated_count, rerun.summary.skipped_count), (0, 0, 14))
+        files[0].write_text("externally changed\n")
+        repaired = generate_strm_outputs("http://localhost:8088")
+        self.assertEqual((repaired.summary.updated_count, repaired.summary.skipped_count), (1, 13))
+
+    def test_bounded_workers_improve_delayed_file_work(self):
+        original = _atomic_write_strm
+
+        def delayed_write(path, content):
+            time.sleep(0.02)
+            original(path, content)
+
+        durations = []
+        with patch("app.services.outputs._atomic_write_strm", side_effect=delayed_write):
+            for workers, suffix in ((1, "serial"), (4, "parallel")):
+                movies = self.output / suffix / "movies"
+                series = self.output / suffix / "series"
+                movies.mkdir(parents=True)
+                series.mkdir()
+                update_strm_settings(StrmSettingsUpdate(
+                    movies_output_directory=str(movies), series_output_directory=str(series),
+                    generation_mode="Custom", maximum_movies=7, maximum_episodes=7,
+                    batch_size=50, worker_count=workers,
+                ))
+                started = time.monotonic()
+                result = generate_strm_outputs("http://localhost:8088")
+                durations.append(time.monotonic() - started)
+                self.assertEqual(result.summary.failed_count, 0)
+        self.assertLess(durations[1], durations[0] * 0.7)
 
 
 class LiveM3uGenerationLimitTests(unittest.TestCase):

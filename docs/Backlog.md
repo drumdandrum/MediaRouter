@@ -132,6 +132,10 @@ Outputs
 ☑ Configurable STRM generation presets and custom limits
 ☑ Batched STRM catalog processing and incremental tracking commits
 ☑ STRM batch progress and cooperative cancellation
+☑ STRM batch timing instrumentation and throughput benchmark metrics
+☑ Bounded concurrent atomic STRM writes and bulk tracking upserts
+☑ Runtime fingerprint input diagnostics and trusted proxy peer allowlist
+☑ Short-window Emby startup identity coalescing and reservation aliases
 ☑ Paginated recent generated files
 ☐ XMLTV Output
 ☐ HDHomeRun Output

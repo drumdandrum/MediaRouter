@@ -82,6 +82,9 @@ class BrokerReservation(BaseModel):
     last_seen_at: datetime | None = None
     last_action: str = "reservation_created"
     duplicate_warning: bool = False
+    alias_count: int = 0
+    coalesced_reuse_count: int = 0
+    startup_coalesced: bool = False
 
 
 class DuplicateRepairResult(BaseModel):

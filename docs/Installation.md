@@ -119,11 +119,11 @@ Generated Live TV M3U playlists are disposable. They contain Media Router runtim
 
 ## STRM Generation Sizing
 
-For an 8 GB Mac mini development system, use Test mode (500 movies/500 episodes) and batch size 250. Small mode is reasonable for controlled validation when other memory-heavy services are quiet.
+For an 8 GB Mac mini development system, use Test mode (500 movies/500 episodes), batch size 250, and 4 file workers. Small mode is reasonable for controlled validation when other memory-heavy services are quiet.
 
-For a larger Linux server, start with Medium mode (5,000 movies/10,000 episodes) and batch size 500. Use Custom to raise one media limit deliberately. Select Unlimited only after a dry run, checking estimated counts and free output-disk capacity; the UI requires a separate confirmation before generation.
+For a larger Linux server, start with Medium mode (5,000 movies/10,000 episodes), batch size 500, and 4 file workers. Compare batch `items_per_second` at 4 and 8 workers before raising concurrency; higher values are not always faster and the safe range is 1–16. Use Custom to raise one media limit deliberately. Select Unlimited only after a dry run, checking estimated counts and free output-disk capacity; the UI requires a separate confirmation before generation.
 
-Settings and job history remain under the `/data` mount, so Docker restarts preserve the selected mode, limits, batch size, progress history, and run summaries. Cancelling an active STRM job stops after its current batch and preserves completed files/tracking records.
+Settings and job history remain under the `/data` mount, so Docker restarts preserve the selected mode, limits, batch size, worker count, progress history, and run summaries. Cancelling an active STRM job stops after its current batch and preserves completed files/tracking records.
 
 For Live M3U on an 8 GB Mac mini development system, use Test mode at 500 channels. For the Linux `embyserver`, deploy in stages: first validate Test mode and playback, then try Small or Medium, then choose a measured Custom limit. Use Unlimited only after a successful dry run confirms eligible counts and output-disk capacity; Generate requires a separate confirmation. Live settings persist in `/data/outputs_live_m3u_settings.json` across Docker restarts.
 
@@ -134,6 +134,10 @@ Health check:
 ```bash
 curl http://localhost:8088/api/health
 ```
+
+When a trusted reverse proxy such as Cloudflare sits directly in front of Media Router, enable **Trust Proxy Client Headers**, choose the header that the proxy overwrites (`cf-connecting-ip` for Cloudflare, otherwise commonly `x-forwarded-for`), and enter the direct proxy peer CIDRs in **Trusted Proxy Networks**. Forwarded headers are rejected when the connecting peer is outside that allowlist. Leave proxy trust disabled for direct access. TCP source ports and proxy edge addresses are not part of the playback fingerprint.
+
+The default startup coalescing window is 90 seconds. Keep this short: it is intended only to bridge Emby probe/playback agent changes. Set it to 0 to disable coalescing. Media Router does not coalesce explicit sessions or ambiguous recent playbacks.
 
 Expected response:
 

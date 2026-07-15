@@ -113,9 +113,79 @@ def normalize_user_agent(user_agent: str | None) -> str:
     return re.sub(r"(?<=/)[0-9]+(?:\.[0-9]+)+", "*", value)[:256]
 
 
+def user_agent_family(user_agent: str | None) -> str:
+    normalized = normalize_user_agent(user_agent)
+    if "emby" in normalized:
+        if any(token in normalized for token in ("ffmpeg", "lavf", "probe")):
+            return "emby_ffmpeg_probe"
+        if any(token in normalized for token in ("playback", "transcode", "worker")):
+            return "emby_playback_worker"
+        return "emby_server"
+    if "jellyfin" in normalized:
+        return "jellyfin"
+    if "vlc" in normalized:
+        return "vlc"
+    if "ffmpeg" in normalized or "lavf" in normalized:
+        return "generic_ffmpeg"
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+
+
 def runtime_client_fingerprint(catalog_item_id: str, media_type: str, remote_addr: str | None, user_agent: str | None) -> str:
-    raw = "|".join([catalog_item_id, media_type, normalize_client_ip(remote_addr), normalize_user_agent(user_agent)])
+    family = user_agent_family(user_agent)
+    agent_component = family if family.startswith(("emby_", "jellyfin", "vlc")) else normalize_user_agent(user_agent)
+    raw = "|".join([catalog_item_id, media_type, normalize_client_ip(remote_addr), agent_component])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def _trusted_proxy_peer(peer_addr: str | None, networks: str) -> bool:
+    peer = normalize_client_ip(peer_addr)
+    if peer == "unknown":
+        return False
+    try:
+        address = ipaddress.ip_address(peer)
+        return any(address in ipaddress.ip_network(value.strip(), strict=False)
+                   for value in networks.split(",") if value.strip())
+    except ValueError:
+        return False
+
+
+def runtime_client_context(peer_addr: str | None, headers) -> dict[str, str | list[str] | None]:
+    settings = get_app_settings()
+    address = peer_addr
+    source = "direct_peer_address"
+    header_name = settings.trusted_proxy_client_header.strip().lower()
+    if (settings.trust_proxy_headers and _trusted_proxy_peer(peer_addr, settings.trusted_proxy_networks)
+            and header_name in {"x-forwarded-for", "cf-connecting-ip", "x-real-ip"}):
+        forwarded = (headers.get(header_name) or "").strip()
+        if header_name == "x-forwarded-for":
+            forwarded = forwarded.split(",", 1)[0].strip()
+        if forwarded:
+            address = forwarded
+            source = {"x-forwarded-for": "trusted_x_forwarded_for",
+                      "cf-connecting-ip": "cf_connecting_ip",
+                      "x-real-ip": "trusted_x_real_ip"}[header_name]
+    normalized_address = normalize_client_ip(address)
+    stable_header_names = [name for name in ("x-emby-device-id", "x-emby-session-id", "x-emby-client")
+                           if headers.get(name)]
+    stable_client_value = headers.get("x-emby-device-id") or headers.get("x-emby-session-id")
+    normalized_agent = normalize_user_agent(headers.get("user-agent"))
+    agent_family = user_agent_family(headers.get("user-agent"))
+    if stable_header_names and agent_family == "generic_ffmpeg":
+        agent_family = "emby_ffmpeg_probe"
+    return {
+        "address": normalized_address,
+        "address_source": source,
+        "origin_identity": hashlib.sha256(f"origin:{normalized_address}".encode("utf-8")).hexdigest()[:32],
+        "address_signature": hashlib.sha256(normalized_address.encode("utf-8")).hexdigest()[:8],
+        "user_agent_family": agent_family,
+        "user_agent_signature": hashlib.sha256(normalized_agent.encode("utf-8")).hexdigest()[:8],
+        "stable_client_id": stable_client_value,
+        "stable_header_names": stable_header_names,
+    }
+
+
+def runtime_client_address(peer_addr: str | None, headers) -> str | None:
+    return str(runtime_client_context(peer_addr, headers)["address"])
 
 
 def runtime_url_for(catalog_item: CatalogItem, debug: bool = False, request_base_url: str | None = None) -> str:
@@ -165,6 +235,9 @@ def resolve_runtime(
     client_label: str | None = None,
     client_session: str | None = None,
     client_fingerprint: str | None = None,
+    origin_identity: str | None = None,
+    stable_client_id: str | None = None,
+    request_profile: str | None = None,
     reserve: bool = True,
 ) -> tuple[RuntimeResolveDebug, str]:
     catalog_item = _validate_route(get_item(catalog_item_id), route_media_type)
@@ -176,6 +249,10 @@ def resolve_runtime(
             client_label=client_label,
             client_session=client_session,
             client_fingerprint=client_fingerprint,
+            origin_identity=origin_identity,
+            stable_client_id=stable_client_id,
+            request_profile=request_profile,
+            startup_coalescing_window_seconds=get_app_settings().startup_coalescing_window_seconds,
             allow_reservation_reuse=True,
             reuse_window_seconds=DEFAULT_REUSE_WINDOW_SECONDS,
             reserve=reserve,

@@ -1,9 +1,11 @@
+import hashlib
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 
 from app.schemas.runtime import RuntimePreview, RuntimeResolveDebug
 from app.services.logs import add_log
-from app.services.runtime import RuntimeResolveUnavailable, mask_runtime_target, preview_runtime, resolve_runtime, runtime_client_fingerprint
+from app.services.runtime import RuntimeResolveUnavailable, mask_runtime_target, preview_runtime, resolve_runtime, runtime_client_context, runtime_client_fingerprint
 
 router = APIRouter(tags=["runtime"])
 
@@ -33,11 +35,23 @@ def _runtime_response(
     client_session: str | None,
     reserve: bool = True,
 ) -> RuntimeResolveDebug | RedirectResponse:
-    forwarded_for = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
-    remote_addr = forwarded_for or (request.client.host if request.client else None)
+    peer_addr = request.client.host if request.client else None
+    context = runtime_client_context(peer_addr, request.headers)
+    remote_addr = str(context["address"])
     user_agent = request.headers.get("user-agent")
     identity_session = client_session
     identity_fingerprint = None if identity_session else runtime_client_fingerprint(catalog_item_id, route_media_type, remote_addr, user_agent)
+    fingerprint_signature = hashlib.sha256(
+        f"{context['address_signature']}|{context['user_agent_signature']}|{route_media_type}|{catalog_item_id}".encode("utf-8")
+    ).hexdigest()[:12]
+    add_log("info", "runtime", (
+        f"fingerprint_inputs catalog_item={catalog_item_id} media_type={route_media_type} method={method} "
+        f"address_source={'explicit_client_session' if identity_session else context['address_source']} "
+        f"address_signature={context['address_signature']} ua_family={context['user_agent_family']} "
+        f"ua_signature={context['user_agent_signature']} "
+        f"range_present={bool(request.headers.get('range'))} stable_emby_headers={','.join(context['stable_header_names']) or 'none'} "
+        f"input_signature={fingerprint_signature}"
+    ))
     try:
         payload, raw_location_ref = resolve_runtime(
             route_media_type,
@@ -46,6 +60,9 @@ def _runtime_response(
             client_label,
             client_session=identity_session,
             client_fingerprint=identity_fingerprint,
+            origin_identity=str(context["origin_identity"]),
+            stable_client_id=str(context["stable_client_id"]) if context["stable_client_id"] else None,
+            request_profile=str(context["user_agent_family"]),
             reserve=reserve,
         )
     except RuntimeResolveUnavailable as exc:

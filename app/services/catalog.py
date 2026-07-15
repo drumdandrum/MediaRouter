@@ -637,8 +637,11 @@ def run_catalog_import_job(job_id: str, paths: list[str], source_name: str, prov
 
 
 def _rows(query: str, params: tuple = ()) -> list[sqlite3.Row]:
-    with _connect() as conn:
+    conn = _connect()
+    try:
         return conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
 
 
 def _item_from_row(row: sqlite3.Row) -> CatalogItem:

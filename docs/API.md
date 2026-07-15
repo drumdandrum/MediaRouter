@@ -4,6 +4,16 @@
 
 The current project exposes Sprint 7 Live TV M3U output endpoints and Sprint 6 STRM output endpoints on top of Sprint 5 source resolution runtime endpoints and Sprint 4 broker decisions. Runtime URLs redirect to selected provider/source URLs; generated STRM and M3U outputs contain only Media Router runtime URLs. Playback, proxy streaming, transcoding, XMLTV output, HDHomeRun output, and media integrations are deliberately deferred.
 
+Runtime acquisition uses an immediate SQLite transaction and an active-playback unique key. Matching retries reuse the committed reservation before redirect construction and update `last_seen_at` and `reuse_count`. A uniqueness conflict is resolved by loading the winning reservation rather than returning an error.
+
+Persistent Runtime settings include `trust_proxy_headers` (default `false`) and `trusted_proxy_client_header` (default `x-forwarded-for`). Supported client headers are `x-forwarded-for`, `cf-connecting-ip`, and `x-real-ip`. Enable this only when Media Router is reached through a trusted proxy that overwrites the selected header.
+
+`trusted_proxy_networks` is a comma-separated CIDR allowlist for direct proxy peers. Forwarded headers are accepted only when both proxy trust is enabled and the direct peer belongs to this allowlist. `startup_coalescing_window_seconds` defaults to 90 and accepts 0–600; zero disables fallback coalescing.
+
+After exact session, stable-client, primary-fingerprint, and alias lookup fail, startup coalescing searches active reservations by catalog item, normalized media type, persisted trusted-origin hash, and recent `created_at`/`last_seen_at`. User-Agent is not compared in this bounded fallback. Exactly one candidate is reused and receives the new fingerprint alias; zero or multiple candidates are rejected conservatively before account capacity selection.
+
+Reservation responses include `alias_count`, `coalesced_reuse_count`, and `startup_coalesced`. Runtime logs emit categorical `fingerprint_inputs` diagnostics: address source, masked address signature, normalized agent family, hashed normalized-agent signature, method, Range presence, names (not values) of recognized stable Emby headers, and a hashed combined input signature. Comparing the address and agent signatures identifies which fingerprint category changed without exposing its raw value. Cookies, authorization, provider URLs, credentials, raw forwarded values, and full sensitive header values are never logged.
+
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/health` | Confirms the app process is ready. |
@@ -341,7 +351,7 @@ STRM settings include:
 - Movies STRM output directory.
 - Series STRM output directory.
 - Generation mode: Test (500/500), Small (2,000/2,000), Medium (5,000/10,000), Unlimited, or Custom.
-- Maximum movies, maximum episodes, and a batch size from 50 through 500 (default 250).
+- Maximum movies, maximum episodes, a batch size from 50 through 500 (default 250), and file workers from 1 through 16 (default 4).
 - Filename format.
 - Whether existing files may be overwritten.
 - Whether tracked orphaned generated files may be removed.
@@ -375,7 +385,9 @@ Validation covers the movies output directory, series output directory, `/data`,
 
 `POST /api/outputs/strm/generate` starts a background job. The job result contains created, updated, skipped, removed, failed, movie, episode, output path, and duration counts.
 
-Progress results also contain total/processed items, percentage, current media type and batch, elapsed time, excluded-by-limit count, and capped/unlimited state. `POST /api/jobs/{job_id}/cancel` requests cancellation after the active batch; completed batch files and tracking rows remain committed and the job finishes as `cancelled`.
+Progress results also contain total/processed items, percentage, current media type and batch, elapsed time, excluded-by-limit count, capped/unlimited state, worker count, items per second, and average milliseconds per item. They never contain an unbounded generated-file list. `POST /api/jobs/{job_id}/cancel` requests cancellation after the active batch; completed batch files and tracking rows remain committed and the job finishes as `cancelled`.
+
+Each batch log includes catalog-query, path-building, directory-creation, filesystem-check, file-write, tracking-query, SQLite-update/commit, progress-update, and total-batch timings. Filesystem timings include worker totals plus wall-clock file-stage time because worker time overlaps under concurrency.
 
 If generation fails, the job message and result include a friendly failure reason with the exact path that failed. STRM dry-run and generate start/completion, validation summaries, counts, and exceptions are logged to Docker logs and the Media Router Logs page.
 

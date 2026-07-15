@@ -119,6 +119,10 @@ Sprint 4.1 polishes Broker diagnostics. Resolve results now show the selected ac
 
 Sprint 5 adds stable Media Router runtime URLs. Clients call Media Router URLs, Media Router asks the Broker for the current best source, creates a reservation, and returns an HTTP `302` redirect to the selected source. Debug mode (`?debug=true`) returns structured JSON with the catalog item, selected source/account/provider, reservation, and Broker explanation. Sprint 5 does not generate STRM files, emulate HDHomeRun, integrate with media servers, proxy streams, transcode, or play streams.
 
+Runtime reservation acquisition is atomic. A committed active reservation is immediately reused for matching GET, HEAD, Range, reconnect, and slow-start retry requests. Deployments behind a trusted reverse proxy can enable proxy client headers in Runtime settings and select `x-forwarded-for`, `cf-connecting-ip`, or `x-real-ip`; headers remain untrusted by default.
+
+When Emby changes request agents between probing and playback, v0.8.1 can attach the second derived fingerprint as an alias during a short startup window (90 seconds by default). The bounded fallback ignores User-Agent and requires exactly one recent active reservation for the same catalog item, media type, and persisted trusted-origin hash. Explicit sessions, different origins, expired windows, and ambiguous candidates are never coalesced.
+
 Runtime playback reservations currently release by TTL expiration. Live, movie, and episode runtime URLs default to a four-hour reservation TTL; the `ttl=` query parameter can override this per request. Manual Broker/API decision tests keep the short 60-second default for diagnostics. Client heartbeat and explicit playback-end release are future work.
 
 Runtime URLs support `GET` and `HEAD`. `HEAD` returns the same redirect `Location` as redirect-mode `GET` while reusing an active matching reservation or doing a non-reserving source lookup, so media-server checks do not consume extra account capacity. Redirect mode works for simple clients such as VLC and may work for Jellyfin/Emby, but some media servers may eventually require a future proxy mode.
@@ -149,7 +153,7 @@ volumes:
 
 The IPTVBoss import path can be read-only. STRM output paths must be read-write. Use Outputs > Validate Paths before Generate to confirm Movies and Series are writable and `/data` is writable.
 
-v0.8.1 processes STRM catalogs in configurable batches (250 by default). Existing settings safely default to Test mode at 500 movies and 500 episodes; Small is 2,000/2,000, Medium is 5,000/10,000, and Custom requires positive limits. Unlimited must be explicitly selected and confirmed before Generate. Dry runs use the same limits and batching without writing files.
+v0.8.1 processes STRM catalogs in configurable batches (250 by default). Existing settings safely default to Test mode at 500 movies and 500 episodes; Small is 2,000/2,000, Medium is 5,000/10,000, and Custom requires positive limits. Unlimited must be explicitly selected and confirmed before Generate. Dry runs use the same limits and batching without writing files. Generation uses a bounded file worker pool (4 by default, configurable from 1–16), one tracking transaction per batch, cached directory creation, atomic replacement, and batch timing/throughput logs.
 
 Sprint 7 generates disposable Live TV M3U playlists for live/channel catalog items only. Each channel URL points to a stable Media Router runtime URL such as `http://localhost:8088/r/live/channel_abc123`; direct provider URLs and credentials are never written to generated M3U files. Channel metadata preserves `tvg-chno`, `tvg-id`, `tvg-name`, `tvg-logo`, `group-title`, and display title when available. Configure the Live TV M3U output file on the Outputs page, for example `/outputs/live/live.m3u`, and use Validate Path before Dry Run or Generate.
 

@@ -21,6 +21,9 @@ All notable changes to Media Router will be documented in this file.
 - Placement APIs and Catalog Live-channel placement detail views.
 
 - v0.8.1 configurable STRM generation modes (Test, Small, Medium, Unlimited, and Custom), persistent movie/episode limits, and bounded batch sizes.
+- Profiled and optimized STRM generation with batch timing diagnostics, tracking prefetch/bulk upserts, cached directory creation, atomic concurrent file writes, configurable bounded workers, and throughput metrics.
+- Hardened runtime reservation acquisition for slow provider startup with an immediate SQLite transaction, an active-playback uniqueness key, race-winner reuse, and explicitly configured trusted proxy client headers.
+- Added privacy-safe runtime fingerprint diagnostics, stable Emby client identifiers, reservation identity aliases, and a configurable 90-second origin-only startup fallback that safely coalesces generic ffmpeg-to-playback User-Agent transitions when exactly one candidate exists.
 - Batch-level STRM progress, incremental tracking commits, cooperative cancellation, capped/unlimited dry-run reporting, catalog estimates, and paginated generated-file history.
 - Matching Live M3U Test, Small, Medium, Unlimited, and Custom channel limits; eligibility estimates; explicit Unlimited confirmation; bounded catalog reads; and streamed, ordered playlist generation.
 

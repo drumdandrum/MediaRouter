@@ -35,7 +35,8 @@ def settings_categories() -> dict[str, list[str]]:
             "container_exports_path",
         ],
         "Network": ["public_base_url", "api_host", "api_port"],
-        "Runtime": ["runtime_public_base_url"],
+        "Runtime": ["runtime_public_base_url", "trust_proxy_headers", "trusted_proxy_client_header",
+                    "trusted_proxy_networks", "startup_coalescing_window_seconds"],
         "Services": ["emby_url", "jellyfin_url", "nextpvr_url", "iptv_boss_export_path"],
         "Advanced": ["environment_mode", "debug_enabled", "job_history_limit", "setup_complete"],
     }

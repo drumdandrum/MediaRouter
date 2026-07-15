@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import json
 import logging
@@ -48,6 +50,29 @@ MAX_OPERATION_PREVIEW = 500
 STRM_GENERATION_PRESETS = {"Test": (500, 500), "Small": (2000, 2000), "Medium": (5000, 10000)}
 LIVE_GENERATION_PRESETS = {"Test": 500, "Small": 2000, "Medium": 5000}
 UVICORN_LOGGER = logging.getLogger("uvicorn.error")
+
+
+@dataclass(frozen=True)
+class _StrmFilePlan:
+    item: CatalogItem
+    output_path: Path
+    runtime_url: str
+    content: str
+    content_bytes: bytes
+    content_hash: str
+    tracking_current: bool
+    tracked_at_timestamp: float | None
+
+
+@dataclass(frozen=True)
+class _StrmFileResult:
+    plan: _StrmFilePlan
+    action: str
+    reason: str
+    track: bool
+    check_seconds: float
+    write_seconds: float
+    error: Exception | None = None
 
 
 class OutputPathError(Exception):
@@ -607,11 +632,44 @@ def _summary_from_counts(mode: str, counts: dict[str, int], output_paths: list[s
         capped=settings.generation_mode != "Unlimited",
         generation_mode=settings.generation_mode,
         batch_size=settings.batch_size,
+        worker_count=settings.worker_count,
+        items_per_second=round((counts.get("movie", 0) + counts.get("episode", 0)) / duration_seconds, 2) if duration_seconds > 0 else 0,
+        average_ms_per_item=round(duration_seconds * 1000 / (counts.get("movie", 0) + counts.get("episode", 0)), 3) if counts.get("movie", 0) + counts.get("episode", 0) else 0,
     )
 
 
-def _record_generated_file(conn: sqlite3.Connection, item: CatalogItem, output_path: Path, content_hash: str, now: str, run_id: str) -> None:
-    conn.execute(
+def _tracked_hashes_for_batch(conn: sqlite3.Connection, item_ids: list[str]) -> dict[tuple[str, str], tuple[str, float | None]]:
+    if not item_ids:
+        return {}
+    placeholders = ",".join("?" for _ in item_ids)
+    rows = conn.execute(
+        f"""SELECT catalog_item_id, output_path, last_content_hash, last_generated_at
+        FROM output_generated_files
+        WHERE output_type=? AND status='generated' AND catalog_item_id IN ({placeholders})""",
+        (OUTPUT_TYPE, *item_ids),
+    ).fetchall()
+    tracked = {}
+    for row in rows:
+        try:
+            generated_at = datetime.fromisoformat(row["last_generated_at"])
+            if generated_at.tzinfo is None:
+                generated_at = generated_at.replace(tzinfo=timezone.utc)
+            generated_timestamp = generated_at.timestamp()
+        except (TypeError, ValueError):
+            generated_timestamp = None
+        tracked[(row["catalog_item_id"], row["output_path"])] = (row["last_content_hash"], generated_timestamp)
+    return tracked
+
+
+def _record_generated_files(conn: sqlite3.Connection, results: list[_StrmFileResult], now: str, run_id: str) -> None:
+    rows = [
+        (OUTPUT_ID, result.plan.item.internal_id, result.plan.item.media_type, OUTPUT_TYPE,
+         str(result.plan.output_path), result.plan.content_hash, now, run_id)
+        for result in results if result.track and result.error is None
+    ]
+    if not rows:
+        return
+    conn.executemany(
         """
         INSERT INTO output_generated_files (
             output_id, catalog_item_id, media_type, output_type, output_path,
@@ -627,8 +685,54 @@ def _record_generated_file(conn: sqlite3.Connection, item: CatalogItem, output_p
             status='generated',
             generation_run_id=excluded.generation_run_id
         """,
-        (OUTPUT_ID, item.internal_id, item.media_type, OUTPUT_TYPE, str(output_path), content_hash, now, run_id),
+        rows,
     )
+
+
+def _atomic_write_strm(path: Path, content: bytes) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(content)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _process_strm_file(plan: _StrmFilePlan, *, dry_run: bool, overwrite: bool) -> _StrmFileResult:
+    check_started = time.monotonic()
+    write_seconds = 0.0
+    try:
+        try:
+            file_stat = plan.output_path.stat()
+            exists = True
+        except FileNotFoundError:
+            file_stat = None
+            exists = False
+        unchanged = bool(exists and plan.tracking_current and plan.tracked_at_timestamp is not None
+                         and file_stat and file_stat.st_mtime <= plan.tracked_at_timestamp)
+        if exists and not unchanged:
+            try:
+                unchanged = plan.output_path.stat().st_size == len(plan.content_bytes) and plan.output_path.read_bytes() == plan.content_bytes
+            except OSError as exc:
+                raise OutputPathError(f"Could not inspect existing STRM file at {plan.output_path}: {exc}") from exc
+        check_seconds = time.monotonic() - check_started
+        if unchanged:
+            return _StrmFileResult(plan, "skip", "Existing STRM content is unchanged.", not dry_run,
+                                   check_seconds, write_seconds)
+        if exists and not overwrite:
+            return _StrmFileResult(plan, "skip", "File exists and overwrite is disabled.", False,
+                                   check_seconds, write_seconds)
+        action = "update" if exists else "create"
+        reason = ("Existing STRM content would be updated." if exists else "STRM file would be created.") if dry_run else ("Existing STRM content updated." if exists else "STRM file created.")
+        if not dry_run:
+            write_started = time.monotonic()
+            _atomic_write_strm(plan.output_path, plan.content_bytes)
+            write_seconds = time.monotonic() - write_started
+        return _StrmFileResult(plan, action, reason, not dry_run, check_seconds, write_seconds)
+    except Exception as exc:
+        return _StrmFileResult(plan, "fail", f"Failed to prepare STRM output: {exc}", False,
+                               time.monotonic() - check_started, write_seconds, exc)
 
 
 def _record_run(conn: sqlite3.Connection, mode: str, status: str, summary: StrmOutputSummary, started_at: str, finished_at: str) -> None:
@@ -680,7 +784,7 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
     selected_totals = {kind: total if limits[kind] is None else min(total, limits[kind]) for kind, total in catalog_totals.items()}
     total_items = sum(selected_totals.values())
     excluded = sum(catalog_totals.values()) - total_items
-    add_log("info", "outputs", f"STRM {mode} started: generation_mode={settings.generation_mode}, maximum_movies={settings.maximum_movies}, maximum_episodes={settings.maximum_episodes}, batch_size={settings.batch_size}")
+    add_log("info", "outputs", f"STRM {mode} started: generation_mode={settings.generation_mode}, maximum_movies={settings.maximum_movies}, maximum_episodes={settings.maximum_episodes}, batch_size={settings.batch_size}, worker_count={settings.worker_count}")
     if not effective_dry_run:
         validation = validate_strm_paths(create_missing=True)
         failed = [item for item in validation.paths if item.purpose in {"Movies STRM output directory", "Series STRM output directory", "Persistent data directory"} and item.status != "ok"]
@@ -694,17 +798,25 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
     cancelled = False
     batch_number = 0
 
-    with _connect() as conn:
+    with _connect() as conn, ThreadPoolExecutor(max_workers=settings.worker_count, thread_name_prefix="strm-write") as executor:
         conn.execute("CREATE TEMP TABLE strm_desired_paths (output_path TEXT PRIMARY KEY, catalog_item_id TEXT NOT NULL)")
         conn.execute("CREATE TEMP TABLE strm_selected_ids (catalog_item_id TEXT PRIMARY KEY)")
         for media_type in ("movie", "episode"):
             offset = 0
             while offset < selected_totals[media_type]:
+                batch_started = time.monotonic()
                 batch_limit = min(settings.batch_size, selected_totals[media_type] - offset)
+                query_started = time.monotonic()
                 items = list_items(media_type, limit=batch_limit, offset=offset)
+                catalog_query_seconds = time.monotonic() - query_started
                 if not items:
                     break
                 batch_number += 1
+                tracking_started = time.monotonic()
+                tracked_hashes = _tracked_hashes_for_batch(conn, [item.internal_id for item in items])
+                tracking_query_seconds = time.monotonic() - tracking_started
+                path_started = time.monotonic()
+                plans: list[_StrmFilePlan] = []
                 for item in items:
                     try:
                         output_path = _movie_output_path(item, settings) if item.media_type == "movie" else _episode_output_path(item, settings)
@@ -720,47 +832,76 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
                         runtime_url = _runtime_url(item, runtime_base_url)
                         content = f"{runtime_url}\n"
                         digest = _content_hash(content)
-                        try:
-                            existing_content = output_path.read_text() if output_path.exists() else None
-                        except OSError as exc:
-                            raise OutputPathError(f"Could not read existing STRM file at {output_path}: {exc}") from exc
-                        if existing_content == content:
-                            action, reason = "skip", "Existing STRM content is unchanged."
-                        elif output_path.exists() and not settings.overwrite_existing_files:
-                            action, reason = "skip", "File exists and overwrite is disabled."
-                        elif output_path.exists():
-                            action, reason = "update", "Existing STRM content would be updated." if effective_dry_run else "Existing STRM content updated."
-                        else:
-                            action, reason = "create", "STRM file would be created." if effective_dry_run else "STRM file created."
-                        if not effective_dry_run and action in {"create", "update"}:
-                            try:
-                                output_path.parent.mkdir(parents=True, exist_ok=True)
-                                output_path.write_text(content)
-                            except OSError as exc:
-                                raise OutputPathError(f"Could not write STRM file at {output_path}: {exc}") from exc
-                            _record_generated_file(conn, item, output_path, digest, datetime.utcnow().isoformat(), run_id)
-                        elif not effective_dry_run and action == "skip" and output_path.exists() and existing_content == content:
-                            _record_generated_file(conn, item, output_path, digest, datetime.utcnow().isoformat(), run_id)
-                        counts[action] = counts.get(action, 0) + 1
-                        if len(operations) < MAX_OPERATION_PREVIEW:
-                            operations.append(_operation(action, item, output_path, runtime_url, reason))
+                        tracked = tracked_hashes.get((item.internal_id, str(output_path)))
+                        plans.append(_StrmFilePlan(
+                            item=item, output_path=output_path, runtime_url=runtime_url, content=content,
+                            content_bytes=content.encode("utf-8"), content_hash=digest,
+                            tracking_current=bool(tracked and tracked[0] == digest),
+                            tracked_at_timestamp=tracked[1] if tracked else None,
+                        ))
                     except Exception as exc:
                         counts["fail"] = counts.get("fail", 0) + 1
                         failed_path = output_path if "output_path" in locals() else Path("")
                         if len(operations) < MAX_OPERATION_PREVIEW:
                             operations.append(_operation("fail", item, failed_path, None, f"Failed to prepare STRM output: {exc}"))
                         UVICORN_LOGGER.exception("STRM %s failed for catalog item %s at %s", mode, item.internal_id, failed_path)
-                counts[media_type] += len(items)
-                offset += len(items)
+                path_construction_seconds = time.monotonic() - path_started
+                directory_started = time.monotonic()
+                if not effective_dry_run:
+                    for directory in dict.fromkeys(plan.output_path.parent for plan in plans):
+                        directory.mkdir(parents=True, exist_ok=True)
+                directory_creation_seconds = time.monotonic() - directory_started
+
+                file_stage_started = time.monotonic()
+                results = list(executor.map(
+                    lambda plan: _process_strm_file(plan, dry_run=effective_dry_run,
+                                                    overwrite=settings.overwrite_existing_files),
+                    plans,
+                ))
+                file_stage_seconds = time.monotonic() - file_stage_started
+                file_check_seconds = sum(result.check_seconds for result in results)
+                file_write_seconds = sum(result.write_seconds for result in results)
+                for result in results:
+                    counts[result.action] = counts.get(result.action, 0) + 1
+                    if len(operations) < MAX_OPERATION_PREVIEW:
+                        operations.append(_operation(result.action, result.plan.item, result.plan.output_path,
+                                                     result.plan.runtime_url if result.error is None else None, result.reason))
+                    if result.error is not None:
+                        UVICORN_LOGGER.error("STRM %s failed for catalog item %s at %s", mode,
+                                             result.plan.item.internal_id, result.plan.output_path,
+                                             exc_info=(type(result.error), result.error, result.error.__traceback__))
+
+                sqlite_started = time.monotonic()
+                if not effective_dry_run:
+                    _record_generated_files(conn, results, datetime.utcnow().isoformat(), run_id)
+                sqlite_update_seconds = time.monotonic() - sqlite_started
+                commit_started = time.monotonic()
                 if not effective_dry_run:
                     conn.commit()
+                commit_seconds = time.monotonic() - commit_started
+                counts[media_type] += len(items)
+                offset += len(items)
                 processed = counts["movie"] + counts["episode"]
                 progress = 100 if total_items == 0 else min(99, int(processed * 100 / total_items))
                 progress_result = {**_summary_from_counts(mode, counts, output_paths, time.monotonic() - started, settings, total_items, excluded).model_dump(), "current_media_type": media_type, "current_batch": batch_number, "percentage_complete": progress}
+                progress_started = time.monotonic()
                 if job_id:
                     update_job(job_id, progress=progress, message=f"{media_type.title()} batch {batch_number}: {processed}/{total_items}", result=progress_result)
-                add_log("info", "outputs", f"STRM {mode} batch {batch_number}: media_type={media_type}, processed={processed}/{total_items}, created={counts.get('create', 0)}, updated={counts.get('update', 0)}, skipped={counts.get('skip', 0)}, failed={counts.get('fail', 0)}")
-                del items
+                progress_update_seconds = time.monotonic() - progress_started
+                batch_seconds = time.monotonic() - batch_started
+                batch_rate = len(items) / batch_seconds if batch_seconds else 0
+                add_log("info", "outputs", (
+                    f"STRM {mode} batch {batch_number}: media_type={media_type}, items={len(items)}, "
+                    f"processed={processed}/{total_items}, created={counts.get('create', 0)}, updated={counts.get('update', 0)}, "
+                    f"skipped={counts.get('skip', 0)}, failed={counts.get('fail', 0)}; timing_s "
+                    f"catalog_query={catalog_query_seconds:.3f}, path_construction={path_construction_seconds:.3f}, "
+                    f"directory_creation={directory_creation_seconds:.3f}, file_checks_worker={file_check_seconds:.3f}, "
+                    f"file_writes_worker={file_write_seconds:.3f}, file_stage_wall={file_stage_seconds:.3f}, "
+                    f"tracking_query={tracking_query_seconds:.3f}, sqlite_updates={sqlite_update_seconds:.3f}, "
+                    f"sqlite_commit={commit_seconds:.3f}, progress_update={progress_update_seconds:.3f}, "
+                    f"batch_duration={batch_seconds:.3f}, items_per_second={batch_rate:.2f}"
+                ))
+                del items, plans, results, tracked_hashes
                 if job_id and is_job_cancel_requested(job_id):
                     cancelled = True
                     break
@@ -830,7 +971,9 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
         "outputs",
         (
             f"STRM {mode} {'cancelled' if cancelled else 'completed'}: {summary.created_count} created, {summary.updated_count} updated, "
-            f"{summary.skipped_count} skipped, {summary.removed_count} removed, {summary.failed_count} failed"
+            f"{summary.skipped_count} skipped, {summary.removed_count} removed, {summary.failed_count} failed; "
+            f"total_elapsed={summary.duration_seconds:.3f}s, items_per_second={summary.items_per_second:.2f}, "
+            f"average_ms_per_item={summary.average_ms_per_item:.3f}"
         ),
     )
     return StrmOutputResult(settings=settings, runtime_base_url=runtime_base_url, summary=summary, operations=operations)

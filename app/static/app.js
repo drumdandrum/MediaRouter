@@ -60,6 +60,10 @@ const fieldLabels = {
   app_name: "App Name",
   public_base_url: "Public Base URL",
   runtime_public_base_url: "Runtime Public Base URL",
+  trust_proxy_headers: "Trust Proxy Client Headers",
+  trusted_proxy_client_header: "Trusted Proxy Client Header",
+  trusted_proxy_networks: "Trusted Proxy Networks",
+  startup_coalescing_window_seconds: "Startup Coalescing Window (seconds)",
   timezone: "Timezone",
   log_level: "Log Level",
   data_directory: "Data Directory",
@@ -181,7 +185,7 @@ function normalizeValues(form) {
   for (const [key, value] of Object.entries(values)) {
     if (value === "true") values[key] = true;
     if (value === "false") values[key] = false;
-    if (["api_port", "job_history_limit"].includes(key)) values[key] = Number(value || 0);
+    if (["api_port", "job_history_limit", "startup_coalescing_window_seconds"].includes(key)) values[key] = Number(value || 0);
   }
   return values;
 }
@@ -711,14 +715,15 @@ function renderBrokerReservations() {
       <td>${formatDate(reservation.expires_at)}</td>
       <td>${reservation.client_label || ""}</td>
       <td>${reservation.identity_type || ""}<br><code>${reservation.masked_client_identity || ""}</code></td>
-      <td>${reservation.last_action === "reservation_reused" ? "Reused" : "Created"}<br><span class="muted">${formatDate(reservation.last_seen_at)}</span></td>
-      <td>${reservation.reuse_count ? `${reservation.reuse_count} reuse(s)<br><span class="muted">${formatDate(reservation.last_reused_at)}</span>` : ""}</td>
+      <td>${reservation.last_action || "reservation_created"}<br><span class="muted">${formatDate(reservation.last_seen_at)}</span></td>
+      <td>${reservation.reuse_count || 0} reuse(s)<br>${reservation.alias_count || 0} alias(es)<br>${reservation.coalesced_reuse_count || 0} coalesced</td>
+      <td>${reservation.startup_coalesced ? badge("Startup coalesced", "warning") : ""}</td>
       <td>${reservation.duplicate_warning ? badge("Possible duplicate", "warning") : ""}</td>
       <td>${reservation.status === "active" ? `<button data-release-reservation="${reservation.reservation_id}">Release</button>` : ""}</td>
     </tr>
   `);
   const target = document.getElementById("broker-reservations-list");
-  target.innerHTML = table(["Reservation", "Status", "Catalog Item", "Type", "Account", "Remaining", "Expires", "Client", "Identity", "Last Action", "Reuse", "Duplicate", "Actions"], rows);
+  target.innerHTML = table(["Reservation", "Status", "Catalog Item", "Type", "Account", "Remaining", "Expires", "Client", "Primary Identity", "Last Action", "Reuse / Aliases", "Coalescing", "Duplicate", "Actions"], rows);
   bindBrokerReleaseButtons(target);
 }
 
@@ -771,6 +776,7 @@ function strmSettingsValues() {
   values.maximum_movies = Number(values.maximum_movies || 0);
   values.maximum_episodes = Number(values.maximum_episodes || 0);
   values.batch_size = Number(values.batch_size || 250);
+  values.worker_count = Number(values.worker_count || 4);
   return values;
 }
 
@@ -796,6 +802,9 @@ function renderStrmSummary(result = state.strmResult || (state.strmHistory[0] ? 
       <div><span>Skipped</span><strong>${summary.skipped_count}</strong></div>
       <div><span>Removed</span><strong>${summary.removed_count}</strong></div>
       <div><span>Failed</span><strong>${summary.failed_count}</strong></div>
+      <div><span>Throughput</span><strong>${summary.items_per_second || 0} items/s</strong></div>
+      <div><span>Average</span><strong>${summary.average_ms_per_item || 0} ms/item</strong></div>
+      <div><span>Workers</span><strong>${summary.worker_count || 4}</strong></div>
     </div>
   `;
   const rows = result.operations.slice(0, 200).map((operation) => `

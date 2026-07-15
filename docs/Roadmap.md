@@ -172,7 +172,10 @@ Deliverables:
 - Live TV M3U settings, path validation, dry-run, generation job, history, and preview.
 - Live TV M3U channel number and group preservation.
 - Runtime playback reservation TTL defaults for generated/runtime URLs.
+- v0.8.1 atomic slow-start reservation convergence with database uniqueness and trusted-proxy-aware client identity.
+- v0.8.1 privacy-safe fingerprint diagnostics and conservative Emby startup fingerprint aliases.
 - v0.8.1 memory-safe paginated STRM generation with configurable presets, batch progress, incremental commits, and batch-boundary cancellation.
+- v0.8.1 STRM throughput profiling and optimization with bounded file concurrency, bulk tracking updates, directory caching, and per-batch benchmark logs.
 - v0.8.1 configurable Live M3U channel presets, eligibility estimates, explicit Unlimited confirmation, paginated selection, and streamed ordered output.
 - v0.8.1 additive editorial channel-placement persistence and placement-based Live M3U generation without duplicating catalog identity.
 
