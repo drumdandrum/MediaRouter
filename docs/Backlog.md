@@ -1,215 +1,111 @@
 # Backlog
 
-## Epic 1
+This backlog is organized by product milestone. Completed implementation history remains available in Git tags and the changelog.
 
-Foundation
+## Core Platform — Complete ✅
 
-### Sprint 1
+- [x] FastAPI and Docker foundation.
+- [x] Persistent settings, setup wizard, jobs, logs, and About/System metadata.
+- [x] SQLite catalog engine and stable internal IDs.
+- [x] M3U import for live channels, movies, series, and episodes.
+- [x] Provider and account management.
+- [x] Source availability and multi-account deduplication.
+- [x] Capacity-aware Broker with priorities, weights, reservations, expiry, and release.
+- [x] Broker explanations, candidate diagnostics, live polling, and Release All Active.
+- [x] Stable runtime URLs and HTTP redirects.
+- [x] GET, HEAD, Range, reconnect, and slow-start reservation reuse.
+- [x] Atomic SQLite reservation reuse-or-create.
+- [x] Trusted-proxy-aware client identity.
+- [x] Emby startup identity coalescing and aliases.
+- [x] STRM generation for movies and episodes.
+- [x] STRM path validation, dry-run, tracking, cleanup, cancellation, and history.
+- [x] Configurable STRM presets and custom limits.
+- [x] Batched, paginated, memory-stable STRM generation.
+- [x] Bounded concurrent atomic STRM writes and benchmark logging.
+- [x] Live TV M3U generation.
+- [x] Live M3U path validation, dry-run, preview, history, and configurable limits.
+- [x] Channel-number, group, metadata, source-order, and repeated-placement preservation.
+- [x] Emby Live TV and STRM movie playback validation.
+- [x] Channels DVR Live TV ingestion and playback validation.
+- [x] Jellyfin runtime STRM playback exercise.
+- [x] VLC runtime playback exercise.
 
-☑ Docker
-☑ FastAPI
-☑ Wizard
-☑ Settings
-☑ Dashboard
-☑ Job System
-☑ Principles checklist
-☑ Documentation index
+## Production Readiness — Current 🚧
 
-### Sprint 1.5
+### Dashboard and clarity
 
-☑ Step-by-step wizard polish
-☑ Manual placeholder values
-☑ Categorized settings
-☑ Host path and container path fields
-☑ Friendly dashboard status badges
-☑ About/System page
-☑ Test job lifecycle
-☑ Logs page with secret scrubbing
-☑ README run instructions
-☑ Sprint 1 acceptance checklist
-☑ Docker data persistence
-☑ Sidebar version display
-☑ About/System metadata cleanup
-☑ Docker/container detection
+- [ ] Fix or relabel the dashboard Catalog card so unique catalog items are not confused with source-availability rows.
+- [ ] Show unique channels, movies, series, episodes, total catalog items, and source rows as distinct metrics.
+- [ ] Review status labels for production clarity.
 
-## Epic 2
+### Operations
 
-Catalog
+- [ ] Backup and restore guidance/tooling.
+- [ ] Database migration tests.
+- [ ] Upgrade notes and rollback procedure.
+- [ ] Health diagnostics page or report.
+- [ ] Review structured logging and secret scrubbing coverage.
+- [ ] Optional local-network UI authentication.
+- [ ] Document production and development environment separation.
+- [ ] Document local STRM output as the preferred same-host deployment model.
 
-### Sprint 2
+### Provider health
 
-☑ M3U Parser
-☐ XMLTV Parser
-☑ Catalog Database
-☑ Internal ID strategy
-☑ Duplicate detection
-☑ Source URL mapping
-☑ Catalog import jobs
-☑ Catalog UI
-☑ Sample data
-☐ Existing STRM scanner
+- [ ] Define provider/account health scoring.
+- [ ] Add periodic provider/account health checks.
+- [ ] Integrate health into Broker eligibility and explanations.
+- [ ] Add health history and last-check visibility.
 
-## Epic 3
+### Reservation policy
 
-Provider And Availability
+- [ ] Make runtime TTL configurable by media type.
+- [ ] Make startup-coalescing window configurable and visible.
+- [ ] Document explicit session, fingerprint, and alias behavior.
+- [ ] Define stale-reservation cleanup policy.
+- [ ] Evaluate client heartbeat or explicit playback-end release for post-1.0.
 
-### Sprint 3
+### Catalog and output polish
 
-☑ Provider CRUD
-☑ Provider types
-☑ Account CRUD
-☑ Redacted account reads
-☑ Priority groups
-☑ Account weights
-☑ Lightweight connection test
-☑ Source availability records
-☑ Catalog import provider/account assignment
-☑ Dashboard availability summary
-☑ Account playlist URL removed
-☑ Streaming M3U import
-☑ Catalog/source pagination
-☐ Secret encryption
+- [ ] Add configurable title normalization rules for provider/language/quality prefixes.
+- [ ] Improve movie and series filename normalization.
+- [ ] Validate large local STRM generation and scan performance.
+- [ ] Add clear warnings for network-backed STRM output paths where detectable.
 
-## Epic 4
+## Core v1.0
 
-Broker
+### Native HTTP outputs
 
-### Sprint 4
+- [ ] Serve generated Live M3U directly from Media Router over HTTP.
+- [ ] Establish XMLTV ingestion/generation strategy.
+- [ ] Serve XMLTV directly from Media Router over HTTP.
+- [ ] Provide stable client-facing output URLs.
+- [ ] Retire the temporary static file server from the recommended deployment.
 
-☑ Reservation model
-☑ Resolve endpoint
-☑ Release endpoint
-☑ Reservation expiry
-☑ Account selection policy
-☑ Shared account capacity tracking
-☑ Broker status UI
-☑ Broker page polling updates
-☑ Broker explainability
-☑ Evaluated candidate diagnostics
-☑ Release All Active
-☑ Broker URL builder
+### Setup and release
 
-## Epic 5
+- [ ] Refine initial setup wizard for providers, accounts, imports, runtime URL, and outputs.
+- [ ] Add backup/restore acceptance tests.
+- [ ] Add migration and upgrade acceptance tests.
+- [ ] Publish supported Docker deployment guidance.
+- [ ] Publish Core v1.0 release notes.
 
-Source Resolution Runtime
+## Post-1.0 Ecosystem
 
-### Sprint 5
+- [ ] Runtime proxy mode for clients that cannot reliably consume redirects.
+- [ ] HDHomeRun emulation.
+- [ ] Emby adapter.
+- [ ] Jellyfin adapter.
+- [ ] Channels DVR enhancements.
+- [ ] IPTV Boss import watcher.
+- [ ] Local media providers.
+- [ ] Cloud or remote-storage providers.
+- [ ] Existing STRM scanner/importer.
+- [ ] Output plugin registry and formal plugin SDK.
+- [ ] WebSockets or Server-Sent Events for Broker updates.
+- [ ] Kodi-specific M3U compatibility profile.
 
-☑ Runtime resolve routes
-☑ Runtime redirect mode
-☑ Runtime JSON/debug mode
-☑ Runtime HEAD redirect probes
-☑ Runtime repeated GET reservation reuse
-☑ Stable port-independent runtime fingerprints
-☑ Full active-lifetime GET/HEAD/Range reservation reuse
-☑ Atomic SQLite reservation reuse-or-create
-☑ Duplicate reservation diagnostics and repair action
-☑ Reservation TTL query parameter
-☑ Runtime client_session query parameter
-☑ Client label query parameter
-☑ Runtime preview API
-☑ Catalog runtime URL preview
-☑ Broker runtime URL preview
-☑ Runtime Public Base URL setting
-☑ Runtime URL request-host fallback
-☑ Runtime error details
-☑ STRM generation deferred
+## Known client behavior
 
-## Epic 6
-
-Outputs
-
-### Sprint 6
-
-☑ STRM Output
-☑ STRM settings persistence
-☑ STRM dry-run
-☑ STRM generation job
-☑ Generated STRM file tracking
-☑ STRM Outputs UI
-☑ STRM output path validation
-☑ STRM generation diagnostics
-☑ Configurable STRM generation presets and custom limits
-☑ Batched STRM catalog processing and incremental tracking commits
-☑ STRM batch progress and cooperative cancellation
-☑ STRM batch timing instrumentation and throughput benchmark metrics
-☑ Bounded concurrent atomic STRM writes and bulk tracking upserts
-☑ Runtime fingerprint input diagnostics and trusted proxy peer allowlist
-☑ Short-window Emby startup identity coalescing and reservation aliases
-☑ Paginated recent generated files
-☐ XMLTV Output
-☐ HDHomeRun Output
-☐ Output plugin registry
-☑ Build status
-☑ Rebuild jobs
-☑ Disposable output validation
-
-### Sprint 7
-
-☑ Live TV M3U Output
-☑ Live M3U settings persistence
-☑ Live M3U path validation
-☑ Live M3U dry-run preview
-☑ Live M3U generation job
-☑ Live M3U history
-☑ Live M3U preview API
-☑ Live M3U Outputs UI
-☑ Runtime URL-only generated playlists
-☑ Live M3U `tvg-chno` preservation
-☑ Live M3U channel sorting
-☑ Configurable Live M3U Test/Small/Medium/Unlimited/Custom limits
-☑ Live M3U eligibility estimates and excluded-by-limit reporting
-☑ Paginated Live channel selection and streamed playlist output
-☑ Explicit Unlimited Live M3U confirmation
-☑ Separate Live channel editorial placement model
-☑ Preserve repeated CUID memberships, group numbers, metadata, and source order
-☑ Idempotent placement re-import with stale-position deactivation
-☑ Placement-based Live M3U generation with shared runtime identity
-☑ Live channel placement detail API/UI
-☑ Runtime playback TTL defaults
-☐ Client heartbeat / playback-end release
-☐ Runtime proxy mode for media-server compatibility
-☐ WebSockets / Server-Sent Events for live Broker updates
-
-## Epic 7
-
-Integrations
-
-### Future Sprint
-
-☐ IPTV Boss import watcher
-☐ Emby adapter
-☐ Jellyfin adapter
-☐ NextPVR adapter
-☐ Channels DVR validation
-☐ Guide data handoff
-☐ Library sync hooks
-
-## Epic 8
-
-Operations
-
-### Sprint 8
-
-☐ Logging
-☐ Secret scrubbing
-☐ Backup and restore
-☐ Database migrations
-☐ Health diagnostics
-☐ UI authentication option
-☐ Docker volume guidance
-☐ Upgrade notes
-
-## Epic 8
-
-Plugin SDK
-
-### Sprint 8
-
-☐ Plugin metadata schema
-☐ Service-layer plugin context
-☐ Plugin status contract
-☐ Plugin build contract
-☐ Plugin settings schema
-☐ Plugin permission rules
-☐ Plugin test harness
+- Emby and Channels DVR consume the Live M3U output successfully.
+- Kodi IPTV Simple can play the output but may apply its own channel order or duplicate-placement behavior.
+- The same Kodi behavior occurs with the original IPTV Boss playlist, so it is not currently treated as a Media Router core-output defect.
