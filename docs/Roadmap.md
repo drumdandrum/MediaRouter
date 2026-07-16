@@ -1,224 +1,123 @@
 # Roadmap
 
-## Phase 0: Foundation
+Media Router planning now uses product milestones rather than implementation sprints.
 
-Deliverables:
+## Milestone 1 — Core Platform ✅
 
-- Minimal FastAPI app.
-- Docker scaffold.
-- Architecture docs.
-- Module boundaries.
-- Domain contracts.
-- Health and foundation metadata API.
+Status: Complete and validated in real client workflows.
 
-Exit criteria:
+Delivered:
 
-- Documentation is accepted.
-- Module ownership is clear.
-- Next implementation phase is selected.
+- FastAPI and Docker foundation.
+- Persistent settings, wizard, jobs, logs, and system metadata.
+- SQLite catalog identity for channels, movies, series, and episodes.
+- Provider/account model and source availability.
+- Capacity-aware Broker with priority, weight, reservations, expiry, release, diagnostics, and polling UI.
+- Stable runtime URLs for live channels, movies, and episodes.
+- HTTP redirect-based source resolution.
+- Atomic reservation reuse for probes, seeks, reconnects, and slow startup.
+- Conservative Emby startup fingerprint coalescing and aliases.
+- Movie and episode STRM generation.
+- Live TV M3U generation.
+- Editorial channel-placement preservation.
+- Configurable output limits and paginated generation.
+- Bounded STRM filesystem concurrency and benchmark logging.
 
-## Phase 1: Settings And Wizard Shell
+Validated clients:
 
-Deliverables:
+- Emby Live TV and STRM movie playback.
+- Channels DVR Live TV ingestion and playback.
+- Jellyfin runtime STRM playback.
+- VLC runtime playback.
+- Kodi IPTV Simple playback, with client-specific ordering limitations.
 
-- JSON-backed settings persistence.
-- First-run wizard shell.
-- Dashboard summary.
-- Lightweight background job system.
-- Principles visible in implementation checklist.
-- Setup state tracking.
+## Milestone 2 — Production Readiness 🚧
 
-Exit criteria:
+Status: Current focus.
 
-- User can complete a non-destructive wizard flow.
-- Dashboard reports health, setup progress, settings count, and job counts.
-- Foundation jobs can run asynchronously and report progress.
-- Catalog and broker remain unimplemented.
+Goals:
 
-## Phase 1.5: Foundation Polish
+- Run continuously on the home media server with predictable upgrades and recovery.
+- Improve operational clarity without expanding scope into a full media server.
 
-Deliverables:
+Planned work:
 
-- Real step-by-step first-run wizard: Welcome, Environment, Paths, Services, Review, Complete.
-- Manual placeholder values for environment, paths, and services.
-- Categorized settings: General, Storage, Network, Services, Advanced.
-- Host path and container path fields.
-- Friendly dashboard status badges.
-- About/System page.
-- Test job lifecycle for queued, running, and completed states.
-- Logs page with secret scrubbing.
-- README local run instructions and Sprint 1 acceptance checklist.
-- Docker Compose persistent data mount for settings, wizard state, and job history.
-- Version/About cleanup with app version `v0.2.1`, Git metadata, Docker detection, and container detection.
-
-Exit criteria:
-
-- Wizard completion persists after restart.
-- Settings persist after restart.
-- Dashboard uses user-friendly labels.
-- Test job proves job state transitions before catalog jobs exist.
-- Settings, wizard completion state, and completed job history persist through Docker down/up.
-- Sidebar shows `v0.2.1`.
-- About/System shows version, environment, branch, commit, database, Docker, and container status.
-- No catalog, broker, STRM, HDHomeRun, IPTV parsing, or media integrations are implemented.
-
-## Phase 2: Catalog Engine
-
-Deliverables:
-
-- SQLite-backed catalog database under `/data`.
-- M3U parser for live, movie, and series playlists.
-- Stable internal IDs for channels, movies, series, and episodes.
-- Separate source mapping table for future multi-source/account support.
-- Series/episode naming parser with confidence flag.
-- Catalog import jobs.
-- Catalog UI page with Overview, Live Channels, Movies, Series, Episodes, and Sources.
-- Sample playlists under `sample_data/`.
+- Correct dashboard labeling for unique catalog items versus source-availability rows.
+- Provider/account health checks and health-scoring policy.
+- Configurable reservation TTL and reuse policies by media type.
+- Backup and restore guidance or tooling.
+- Database migration tests and upgrade notes.
+- Runtime URL configuration polish.
+- Setup wizard refinements.
+- UI authentication option for deployments that require it.
+- Structured diagnostics and secret-scrubbing review.
+- Local-output deployment guidance for large STRM libraries.
 
 Exit criteria:
 
-- Sample import produces 5 channels, 3 movies, 2 series, 4 episodes, and 12 source mappings.
-- Docker restart preserves catalog data.
-- Re-importing sample playlists does not create duplicate catalog items.
-- Catalog test data can be cleared and re-imported.
-- No broker, STRM, HDHomeRun, IPTV parsing beyond M3U metadata import, or integrations are implemented.
+- Clean install, upgrade, restart, and restore procedures are documented and tested.
+- Dashboard counts and status labels are unambiguous.
+- Provider health can affect Broker decisions safely.
+- Reservation policies are configurable and documented.
+- The app can run continuously on the production host without manual repair.
 
-## Phase 3: Provider, Account, And Source Availability
+## Milestone 3 — Media Router Core v1.0
 
-Deliverables:
+Goals:
 
-- Provider create/read/update/delete.
-- Provider-agnostic provider types.
-- Account/connection create/read/update/delete.
-- Redacted account read models.
-- Local secret field with future encryption task.
-- Provider connection test interface.
-- Account health metadata.
-- Source availability records that connect catalog items to provider/accounts.
-- Catalog import assignment to provider/account.
-- Streaming M3U import with batched writes.
-- Paginated catalog/source APIs and bounded UI tables.
-- Dashboard provider/account/source availability summary.
+- Complete the core output and distribution surface while preserving module boundaries.
 
-Exit criteria:
+Planned work:
 
-- Providers and accounts can be configured through the UI.
-- Credentials are not exposed in logs or reads.
-- Importing the same playlist under two accounts keeps one catalog identity and creates multiple availability records.
-- Re-importing the same playlist under the same account updates sources instead of duplicating them.
-- Accounts do not own playlist URLs; Catalog Import associates playlist paths/URLs to provider/accounts.
-- Docker restart preserves providers, accounts, and source availability.
-- No broker routing, failover, stream playback, STRM generation, HDHomeRun output, or integrations are implemented.
-
-## Phase 4: Broker
-
-Deliverables:
-
-- Account selection policy.
-- Active stream reservation model.
-- Capacity-aware routing.
-- Reservation expiry.
-- Broker status and usage UI.
-- Broker status auto-refresh by polling.
-- Decision tester UI.
-- Structured decision explanations.
-- Evaluated candidate diagnostics.
-- Release All Active operation.
+- Native HTTP-served Live M3U endpoint.
+- XMLTV ingestion/generation strategy.
+- Native HTTP-served XMLTV endpoint.
+- Stable output URLs that remove the need for the temporary port-8090 file server.
+- Initial setup flow for providers, accounts, catalog imports, runtime URL, and outputs.
+- Backup/restore and migration acceptance tests.
+- Release documentation and supported deployment model.
 
 Exit criteria:
 
-- Broker can choose the best available source and reserve account capacity.
-- Active stream usage is visible.
-- Broker page updates active reservations and account capacity without manual refresh.
-- Account capacity is shared across live, movie, and episode reservations.
-- Broker resolve results explain selected and skipped candidates.
-- No playback, proxy streaming, transcoding, STRM generation, HDHomeRun output, or media integrations are implemented.
+- Clients can consume Live M3U and XMLTV directly from Media Router over HTTP.
+- Emby and Channels DVR can be configured without a separate static file server.
+- A new installation can be configured from the UI with documented defaults.
+- Core state can be backed up, restored, and upgraded safely.
 
-## Phase 5: Source Resolution Runtime
+## Milestone 4 — Media Ecosystem v1.x
 
-Deliverables:
+Potential work:
 
-- Stable Media Router runtime URLs for live channels, movies, and episodes.
-- Runtime routes that call the Broker and create reservations.
-- Redirect mode using HTTP `302` to the selected source URL.
-- HEAD support for media-server redirect probes.
-- Idempotent reservation reuse for repeated media-server startup GET probes.
-- JSON/debug mode with Broker decision explanations and evaluated candidates.
-- Runtime URL preview API.
-- Catalog and Broker UI runtime URL previews.
-- User-configurable Runtime Public Base URL for browser/client-visible previews.
-
-Exit criteria:
-
-- Clients can call `/r/live/{id}`, `/r/movie/{id}`, or `/r/episode/{id}` instead of direct provider URLs.
-- Runtime resolution respects source/provider/account enablement, account health, capacity, and Broker TTL.
-- Debug mode returns JSON and does not redirect.
-- HEAD probes return redirect headers without consuming long-lived account capacity.
-- Repeated GET probes from the same short-lived client/session reuse one reservation.
-- Runtime previews do not display Docker-internal hostnames.
-- No STRM generation, HDHomeRun output, media-server integration, proxy streaming, playback, or transcoding is implemented.
-
-## Phase 6: Outputs
-
-Deliverables:
-
-- STRM output plugin.
-- Live TV M3U output plugin.
-- XMLTV output plugin.
-- HDHomeRun output plugin.
-- Output build/status jobs.
-- STRM dry-run and generated-file tracking.
-- STRM output path validation and generate diagnostics.
-- Live TV M3U settings, path validation, dry-run, generation job, history, and preview.
-- Live TV M3U channel number and group preservation.
-- Runtime playback reservation TTL defaults for generated/runtime URLs.
-- v0.8.1 atomic slow-start reservation convergence with database uniqueness and trusted-proxy-aware client identity.
-- v0.8.1 privacy-safe fingerprint diagnostics and conservative Emby startup fingerprint aliases.
-- v0.8.1 memory-safe paginated STRM generation with configurable presets, batch progress, incremental commits, and batch-boundary cancellation.
-- v0.8.1 STRM throughput profiling and optimization with bounded file concurrency, bulk tracking updates, directory caching, and per-batch benchmark logs.
-- v0.8.1 configurable Live M3U channel presets, eligibility estimates, explicit Unlimited confirmation, paginated selection, and streamed ordered output.
-- v0.8.1 additive editorial channel-placement persistence and placement-based Live M3U generation without duplicating catalog identity.
-
-Exit criteria:
-
-- Movie and episode STRM outputs are generated from catalog and runtime URL contracts.
-- Generated STRM files contain Media Router runtime URLs, not provider URLs.
-- Dry-run previews create, update, skip, and tracked orphan cleanup actions without writing files.
-- Generate fails gracefully with a clear path-specific reason when output directories are missing, invalid, or not writable.
-- Generated Live TV M3U playlists contain `/r/live/{catalog_item_id}` runtime URLs, not provider URLs.
-- Generated Live TV M3U playlists preserve placement channel numbers/groups and source order, with channel number/group/title fallback ordering for legacy records.
-- Broker remains responsible for choosing the actual account/source when a client opens a runtime URL.
-- Runtime reservations release by TTL expiration until heartbeat/client release is implemented later.
-- Generated outputs can be deleted and rebuilt from catalog/settings.
-- XMLTV, HDHomeRun output, integrations, proxy streaming, playback, and transcoding remain deferred.
-
-## Phase 7: Integrations
-
-Deliverables:
-
-- Emby adapter.
-- Jellyfin adapter.
-- NextPVR adapter.
-- Channels DVR validation.
+- HDHomeRun emulation.
+- Runtime proxy mode for clients that cannot consume redirects reliably.
+- Explicit playback heartbeat or stop/release integration.
+- Emby and Jellyfin adapters.
+- Channels DVR enhancements.
 - IPTV Boss folder watcher.
-- Runtime proxy mode for media servers that cannot reliably consume redirects.
-- WebSockets or Server-Sent Events for live Broker updates if polling becomes insufficient.
+- Local media providers.
+- Cloud or remote-storage providers.
+- Kodi-specific output compatibility profile.
+- WebSockets or Server-Sent Events if Broker polling becomes insufficient.
 
-Exit criteria:
+These are valuable ecosystem features but are not prerequisites for Core v1.0.
 
-- Media servers can consume broker-backed outputs.
-- IPTV Boss exports can trigger safe catalog updates.
+## Architectural boundaries
 
-## Phase 8: Hardening
+Media Router owns:
 
-Deliverables:
+- Catalog identity.
+- Source availability.
+- Provider/account capacity.
+- Broker decisions.
+- Stable runtime URLs.
+- Disposable output generation and distribution.
 
-- Migration tests.
-- Backup/restore guidance.
-- Structured logs with secret scrubbing.
-- Authentication option for the web UI.
-- Operational diagnostics.
+Client applications own:
 
-Exit criteria:
+- Playback UI.
+- DVR and recording behavior.
+- Viewing history.
+- Transcoding and media presentation.
+- Client-specific guide and library presentation.
 
-- The application is safe to run continuously on the home media server.
+Media Router does not aim to become another Emby, Jellyfin, NextPVR, or Channels DVR server.
