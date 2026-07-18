@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from app.schemas.broker import BrokerDecision, BrokerReleaseRequest, BrokerReservation, BrokerResolveRequest, BrokerStatus, DuplicateRepairResult
-from app.services.broker import BrokerUnavailable, expire_now, get_status, list_reservations, release_all_active, release_reservation, repair_duplicate_reservations, resolve_source
+from app.services.broker import BrokerUnavailable, confirm_reservation, expire_now, force_expire_reservation, get_status, heartbeat_reservation, list_reservations, release_all_active, release_reservation, repair_duplicate_reservations, resolve_source
 
 router = APIRouter(prefix="/api/broker", tags=["broker"])
 
@@ -36,6 +36,35 @@ def broker_release(payload: BrokerReleaseRequest) -> BrokerReservation:
     if reservation is None:
         raise HTTPException(status_code=404, detail="Reservation not found")
     return reservation
+
+
+def _reservation_or_404(reservation: BrokerReservation | None) -> BrokerReservation:
+    if reservation is None:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    return reservation
+
+
+@router.post("/reservations/{reservation_id}/confirm", response_model=BrokerReservation)
+def broker_confirm(reservation_id: str) -> BrokerReservation:
+    try:
+        return _reservation_or_404(confirm_reservation(reservation_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/reservations/{reservation_id}/heartbeat", response_model=BrokerReservation)
+def broker_heartbeat(reservation_id: str) -> BrokerReservation:
+    return _reservation_or_404(heartbeat_reservation(reservation_id))
+
+
+@router.post("/reservations/{reservation_id}/release", response_model=BrokerReservation)
+def broker_release_by_id(reservation_id: str) -> BrokerReservation:
+    return _reservation_or_404(release_reservation(reservation_id))
+
+
+@router.post("/reservations/{reservation_id}/expire", response_model=BrokerReservation)
+def broker_expire_by_id(reservation_id: str) -> BrokerReservation:
+    return _reservation_or_404(force_expire_reservation(reservation_id))
 
 
 @router.post("/release-all", response_model=BrokerStatus)

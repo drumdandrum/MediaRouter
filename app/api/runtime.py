@@ -64,6 +64,7 @@ def _runtime_response(
             stable_client_id=str(context["stable_client_id"]) if context["stable_client_id"] else None,
             request_profile=str(context["user_agent_family"]),
             reserve=reserve,
+            meaningful_activity=method == "GET",
         )
     except RuntimeResolveUnavailable as exc:
         raise _runtime_error(exc) from exc

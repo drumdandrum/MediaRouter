@@ -236,7 +236,7 @@ Important fields:
 - `client_session`
 - `client_fingerprint`
 
-Statuses are `active`, `released`, `expired`, and `failed`. Expired and released reservations do not count against account capacity. Account max stream limits apply across all media types because active reservations are counted by account.
+`lifecycle_state` values are `provisional`, `active`, `released`, `expired`, `superseded`, and legacy `failed`. Only provisional and active rows consume account capacity. Additive lifecycle columns record provisional/active expiries, promotion and supersession relationships, first/last activity, request counters, policy TTL, and terminal reasons. Legacy `status` and `expires_at` remain compatibility mirrors. Upgrade maps existing non-expired active rows to lifecycle active without changing reservation IDs.
 
 Runtime playback reservations currently release by TTL expiration. Manual Broker tests default to a short 60-second TTL; runtime live/movie/episode routes default to four hours unless a `ttl` query parameter is supplied. Client heartbeat and client-driven playback-end release are deferred.
 

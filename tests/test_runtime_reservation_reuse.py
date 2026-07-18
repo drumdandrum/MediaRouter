@@ -66,7 +66,7 @@ class RuntimeReservationReuseTests(unittest.TestCase):
         ranged_seek = self.resolve()
         ids = {decision.reservation.reservation_id for decision in [*decisions, head, ranged_seek]}
         self.assertEqual(len(ids), 1)
-        active = [row for row in list_reservations() if row.status == "active"]
+        active = [row for row in list_reservations() if row.lifecycle_state in {"provisional", "active"}]
         self.assertEqual(len(active), 1)
         self.assertEqual(active[0].reuse_count, 5)
 
@@ -77,7 +77,7 @@ class RuntimeReservationReuseTests(unittest.TestCase):
         seek = client.get("/r/movie/movie_one", headers={"x-forwarded-for": "192.0.2.44:43000", "user-agent": "Emby/4.8.3", "range": "bytes=500000-"})
         self.assertEqual((head.status_code, first.status_code, seek.status_code), (302, 302, 302))
         self.assertEqual(first.headers["x-media-router-reservation-id"], seek.headers["x-media-router-reservation-id"])
-        self.assertEqual(len([row for row in list_reservations() if row.status == "active"]), 1)
+        self.assertEqual(len([row for row in list_reservations() if row.lifecycle_state in {"provisional", "active"}]), 1)
 
     def test_http_generic_ffmpeg_to_unknown_playback_ua_coalesces_range_requests(self):
         client = TestClient(app, follow_redirects=False)
@@ -94,14 +94,14 @@ class RuntimeReservationReuseTests(unittest.TestCase):
         self.assertEqual(len({first.headers["x-media-router-reservation-id"],
                               second.headers["x-media-router-reservation-id"],
                               seek.headers["x-media-router-reservation-id"]}), 1)
-        reservation = [row for row in list_reservations() if row.status == "active"][0]
+        reservation = [row for row in list_reservations() if row.lifecycle_state in {"provisional", "active"}][0]
         self.assertEqual((reservation.alias_count, reservation.coalesced_reuse_count), (2, 1))
 
     def test_simultaneous_requests_are_atomic(self):
         with ThreadPoolExecutor(max_workers=8) as pool:
             decisions = list(pool.map(lambda _: self.resolve(fingerprint="simultaneous"), range(8)))
         self.assertEqual(len({decision.reservation.reservation_id for decision in decisions}), 1)
-        self.assertEqual(len([row for row in list_reservations() if row.status == "active"]), 1)
+        self.assertEqual(len([row for row in list_reservations() if row.lifecycle_state in {"provisional", "active"}]), 1)
 
     def test_simultaneous_explicit_sessions_are_atomic(self):
         def acquire(_):
@@ -110,7 +110,7 @@ class RuntimeReservationReuseTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=8) as pool:
             decisions = list(pool.map(acquire, range(8)))
         self.assertEqual(len({decision.reservation.reservation_id for decision in decisions}), 1)
-        active = [row for row in list_reservations() if row.status == "active"]
+        active = [row for row in list_reservations() if row.lifecycle_state in {"provisional", "active"}]
         self.assertEqual((len(active), active[0].reuse_count), (1, 7))
 
     def test_slow_redirect_handoff_retries_reuse_committed_reservation(self):
@@ -131,7 +131,7 @@ class RuntimeReservationReuseTests(unittest.TestCase):
                 responses = list(pool.map(request, range(6)))
         self.assertTrue(all(response.status_code == 302 for response in responses))
         self.assertEqual(len({response.headers["x-media-router-reservation-id"] for response in responses}), 1)
-        active = [row for row in list_reservations() if row.status == "active"]
+        active = [row for row in list_reservations() if row.lifecycle_state in {"provisional", "active"}]
         self.assertEqual((len(active), active[0].reuse_count), (1, 5))
 
     def test_proxy_headers_are_used_only_when_explicitly_trusted(self):
@@ -162,7 +162,7 @@ class RuntimeReservationReuseTests(unittest.TestCase):
             allow_reservation_reuse=True, reservation_ttl_seconds=3600)
         self.assertEqual(len({item.reservation.reservation_id for item in
             (first, second, probe_again, playback_again)}), 1)
-        reservation = [row for row in list_reservations() if row.status == "active"][0]
+        reservation = [row for row in list_reservations() if row.lifecycle_state in {"provisional", "active"}][0]
         self.assertEqual((reservation.alias_count, reservation.coalesced_reuse_count), (2, 1))
         self.assertTrue(reservation.startup_coalesced)
         self.assertTrue(any("coalescing_candidate_count=1" in row.message and "result=reused" in row.message
@@ -174,7 +174,7 @@ class RuntimeReservationReuseTests(unittest.TestCase):
         second = resolve_source("movie_one", "movie", client_session="session-b",
             origin_identity="same-origin", request_profile="emby_server", allow_reservation_reuse=True)
         self.assertNotEqual(first.reservation.reservation_id, second.reservation.reservation_id)
-        self.assertEqual(len([row for row in list_reservations() if row.status == "active"]), 2)
+        self.assertEqual(len([row for row in list_reservations() if row.lifecycle_state in {"provisional", "active"}]), 2)
 
     def test_two_simultaneous_explicit_playbacks_are_not_merged(self):
         def acquire(session):
@@ -184,7 +184,7 @@ class RuntimeReservationReuseTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as pool:
             decisions = list(pool.map(acquire, ("real-session-a", "real-session-b")))
         self.assertEqual(len({decision.reservation.reservation_id for decision in decisions}), 2)
-        self.assertEqual(len([row for row in list_reservations() if row.status == "active"]), 2)
+        self.assertEqual(len([row for row in list_reservations() if row.lifecycle_state in {"provisional", "active"}]), 2)
 
     def test_distinct_origins_are_not_coalesced(self):
         first = resolve_source("movie_one", "movie", client_fingerprint="probe-a",
@@ -273,7 +273,7 @@ class RuntimeReservationReuseTests(unittest.TestCase):
                 (decision.reservation.reservation_id,)).fetchone()
             indexes = {item[1] for item in conn.execute("PRAGMA index_list(broker_reservations)").fetchall()}
         self.assertTrue(row[0])
-        self.assertIn("uq_broker_active_playback_identity", indexes)
+        self.assertIn("uq_broker_consuming_playback_identity", indexes)
 
     def test_active_identity_reuses_beyond_old_thirty_second_window(self):
         first = self.resolve(fingerprint="long-playback")
@@ -303,8 +303,8 @@ class RuntimeReservationReuseTests(unittest.TestCase):
                 VALUES ('duplicate',?,?,?,?,?,?,'active',?,?,?,?,?,'reservation_created')""",
                 (row[2], row[3], row[4], row[5], row[6], row[7], row[9], row[10], row[14], "derived_fingerprint", row[9]))
         repaired = repair_duplicate_reservations()
-        self.assertEqual(repaired.released_reservations, 0)  # Schema reconciliation runs before maintenance.
-        self.assertEqual(len([row for row in list_reservations() if row.status == "active"]), 1)
+        self.assertEqual(repaired.released_reservations, 1)
+        self.assertEqual(len([row for row in list_reservations() if row.lifecycle_state in {"provisional", "active"}]), 1)
 
     def test_distinct_clients_use_distinct_accounts_and_capacity_is_real(self):
         first = self.resolve(fingerprint="client-a")

@@ -17,6 +17,9 @@ This backlog is organized by product milestone. Completed implementation history
 - [x] Atomic SQLite reservation reuse-or-create.
 - [x] Trusted-proxy-aware client identity.
 - [x] Emby startup identity coalescing and aliases.
+- [x] Provisional and active capacity leases with evidence-based promotion.
+- [x] Sliding active renewal and explicit lifecycle APIs.
+- [x] Atomic same-identity Live switching and conservative provisional VOD supersession.
 - [x] STRM generation for movies and episodes.
 - [x] STRM path validation, dry-run, tracking, cleanup, cancellation, and history.
 - [x] Configurable STRM presets and custom limits.
@@ -58,11 +61,14 @@ This backlog is organized by product milestone. Completed implementation history
 
 ### Reservation policy
 
-- [ ] Make runtime TTL configurable by media type.
-- [ ] Make startup-coalescing window configurable and visible.
-- [ ] Document explicit session, fingerprint, and alias behavior.
+- [x] Make runtime TTL configurable by media type.
+- [x] Make startup-coalescing window configurable and visible.
+- [x] Document explicit session, fingerprint, and alias behavior.
+- [x] Add provisional TTL, promotion, sliding renewal, and supersession policy.
 - [ ] Define stale-reservation cleanup policy.
-- [ ] Evaluate client heartbeat or explicit playback-end release for post-1.0.
+- [x] Add client-agnostic confirm, heartbeat, and release endpoints.
+- [ ] Connect Emby/Jellyfin/Kodi events to lifecycle endpoints.
+- [ ] Evaluate optional proxy byte/disconnect observation.
 
 ### Catalog and output polish
 

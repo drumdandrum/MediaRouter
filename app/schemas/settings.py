@@ -9,6 +9,22 @@ class AppSettings(BaseModel):
     trusted_proxy_client_header: str = "x-forwarded-for"
     trusted_proxy_networks: str = ""
     startup_coalescing_window_seconds: int = Field(default=90, ge=0, le=600)
+    live_provisional_ttl_seconds: int = Field(default=45, ge=10, le=300)
+    live_promotion_minimum_age_seconds: int = Field(default=20, ge=5, le=180)
+    live_promotion_request_threshold: int = Field(default=2, ge=1, le=10)
+    live_active_ttl_seconds: int = Field(default=14400, ge=300, le=86400)
+    live_same_identity_supersession: bool = True
+    movie_provisional_ttl_seconds: int = Field(default=60, ge=10, le=300)
+    movie_promotion_minimum_age_seconds: int = Field(default=20, ge=5, le=180)
+    movie_promotion_request_threshold: int = Field(default=2, ge=1, le=10)
+    movie_active_ttl_seconds: int = Field(default=10800, ge=300, le=86400)
+    movie_provisional_supersession: bool = True
+    episode_provisional_ttl_seconds: int = Field(default=60, ge=10, le=300)
+    episode_promotion_minimum_age_seconds: int = Field(default=20, ge=5, le=180)
+    episode_promotion_request_threshold: int = Field(default=2, ge=1, le=10)
+    episode_active_ttl_seconds: int = Field(default=7200, ge=300, le=86400)
+    episode_provisional_supersession: bool = True
+    active_lease_sliding_renewal: bool = True
     timezone: str = "America/Los_Angeles"
     log_level: str = "info"
     data_directory: str = "./data"
@@ -38,6 +54,22 @@ class SettingsUpdate(BaseModel):
     trusted_proxy_client_header: str | None = None
     trusted_proxy_networks: str | None = None
     startup_coalescing_window_seconds: int | None = Field(default=None, ge=0, le=600)
+    live_provisional_ttl_seconds: int | None = Field(default=None, ge=10, le=300)
+    live_promotion_minimum_age_seconds: int | None = Field(default=None, ge=5, le=180)
+    live_promotion_request_threshold: int | None = Field(default=None, ge=1, le=10)
+    live_active_ttl_seconds: int | None = Field(default=None, ge=300, le=86400)
+    live_same_identity_supersession: bool | None = None
+    movie_provisional_ttl_seconds: int | None = Field(default=None, ge=10, le=300)
+    movie_promotion_minimum_age_seconds: int | None = Field(default=None, ge=5, le=180)
+    movie_promotion_request_threshold: int | None = Field(default=None, ge=1, le=10)
+    movie_active_ttl_seconds: int | None = Field(default=None, ge=300, le=86400)
+    movie_provisional_supersession: bool | None = None
+    episode_provisional_ttl_seconds: int | None = Field(default=None, ge=10, le=300)
+    episode_promotion_minimum_age_seconds: int | None = Field(default=None, ge=5, le=180)
+    episode_promotion_request_threshold: int | None = Field(default=None, ge=1, le=10)
+    episode_active_ttl_seconds: int | None = Field(default=None, ge=300, le=86400)
+    episode_provisional_supersession: bool | None = None
+    active_lease_sliding_renewal: bool | None = None
     timezone: str | None = None
     log_level: str | None = None
     data_directory: str | None = None

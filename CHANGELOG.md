@@ -6,6 +6,29 @@ All notable changes are documented here.
 
 ---
 
+# v0.9.0 — Stateful Reservation Management
+
+**Release Date:** July 2026
+
+## Added
+
+- Three-state reservation leases with provisional startup, evidence-based active promotion, terminal released/expired/superseded history, and persisted per-media policy.
+- Atomic same-identity Live TV switching and conservative provisional VOD supersession.
+- Explicit confirmation, heartbeat, release, and diagnostic-expiry APIs.
+- Broker capacity breakdowns, lifecycle filters, and lifecycle actions.
+
+## Changed
+
+- Only provisional and active leases consume capacity.
+- Active leases use configurable sliding renewal by default.
+- Runtime `ttl=` overrides active TTL only; provisional TTL remains policy-controlled.
+
+## Known limitation
+
+- Redirect mode cannot observe byte-level disconnects; future client integrations or optional proxy mode can provide stronger stop signals.
+
+---
+
 # Unreleased
 
 ## Planned
@@ -13,7 +36,6 @@ All notable changes are documented here.
 - Native HTTP-served Live M3U.
 - XMLTV strategy and HTTP-served XMLTV.
 - Provider/account health monitoring.
-- Configurable reservation policies.
 - Backup, restore, migration, and upgrade hardening.
 - Dashboard catalog-count clarification.
 - Setup wizard refinements.

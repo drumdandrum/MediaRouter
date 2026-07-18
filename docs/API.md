@@ -58,6 +58,12 @@ Reservation responses include `alias_count`, `coalesced_reuse_count`, and `start
 | `DELETE` | `/api/sources/{id}` | Deletes one source availability record. |
 | `GET` | `/api/broker/status` | Returns reservation counts and account capacity usage. |
 | `GET` | `/api/broker/reservations` | Lists recent broker reservations. |
+| `POST` | `/api/broker/reservations/{id}/confirm` | Explicitly promotes a non-expired provisional lease. |
+| `POST` | `/api/broker/reservations/{id}/heartbeat` | Records activity and renews an active lease when sliding renewal is enabled; terminal leases are never revived. |
+| `POST` | `/api/broker/reservations/{id}/release` | Idempotently releases a capacity-consuming lease. |
+| `POST` | `/api/broker/reservations/{id}/expire` | Explicitly expires a capacity-consuming lease for diagnostics/UI use. |
+
+Normal runtime GET acquisition creates a provisional lease. Only provisional and active states consume capacity. The `ttl` runtime query parameter overrides active TTL only. HEAD remains non-reserving. Defaults are Live 45s provisional/20s age/2 requests/14400s active, Movie 60s/20s/2/10800s, and Episode 60s/20s/2/7200s; sliding renewal and safe supersession are enabled.
 | `POST` | `/api/broker/resolve` | Chooses the best available source and creates a temporary reservation. |
 | `POST` | `/api/broker/release` | Releases one active reservation. |
 | `POST` | `/api/broker/release-all` | Releases every active reservation. |

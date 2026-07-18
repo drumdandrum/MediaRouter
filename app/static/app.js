@@ -64,6 +64,22 @@ const fieldLabels = {
   trusted_proxy_client_header: "Trusted Proxy Client Header",
   trusted_proxy_networks: "Trusted Proxy Networks",
   startup_coalescing_window_seconds: "Startup Coalescing Window (seconds)",
+  live_provisional_ttl_seconds: "Live Provisional TTL (seconds)",
+  live_promotion_minimum_age_seconds: "Live Promotion Minimum Age (seconds)",
+  live_promotion_request_threshold: "Live Promotion Request Threshold",
+  live_active_ttl_seconds: "Live Active TTL (seconds)",
+  live_same_identity_supersession: "Live Same-Identity Supersession",
+  movie_provisional_ttl_seconds: "Movie Provisional TTL (seconds)",
+  movie_promotion_minimum_age_seconds: "Movie Promotion Minimum Age (seconds)",
+  movie_promotion_request_threshold: "Movie Promotion Request Threshold",
+  movie_active_ttl_seconds: "Movie Active TTL (seconds)",
+  movie_provisional_supersession: "Movie Provisional Supersession",
+  episode_provisional_ttl_seconds: "Episode Provisional TTL (seconds)",
+  episode_promotion_minimum_age_seconds: "Episode Promotion Minimum Age (seconds)",
+  episode_promotion_request_threshold: "Episode Promotion Request Threshold",
+  episode_active_ttl_seconds: "Episode Active TTL (seconds)",
+  episode_provisional_supersession: "Episode Provisional Supersession",
+  active_lease_sliding_renewal: "Active Lease Sliding Renewal",
   timezone: "Timezone",
   log_level: "Log Level",
   data_directory: "Data Directory",
@@ -575,6 +591,8 @@ function renderBrokerLive() {
   const status = state.brokerStatus;
   if (!status) return;
   document.getElementById("broker-active-reservations").textContent = status.active_reservations;
+  document.getElementById("broker-provisional-reservations").textContent = status.provisional_reservations;
+  document.getElementById("broker-consuming-reservations").textContent = status.consuming_reservations;
   document.getElementById("broker-total-reservations").textContent = status.total_reservations;
   document.getElementById("broker-released-reservations").textContent = status.released_reservations;
   document.getElementById("broker-expired-reservations").textContent = status.expired_reservations;
@@ -695,7 +713,7 @@ function renderBrokerAccountUsage() {
       <td>${account.provider_name}</td>
       <td>${account.priority_group}</td>
       <td>${account.weight}</td>
-      <td>${account.active_reservations} / ${account.max_simultaneous_streams}</td>
+      <td>${account.provisional_reservations} provisional<br>${account.active_reservations} active<br><strong>${account.consuming_reservations} / ${account.max_simultaneous_streams} total</strong></td>
       <td>${badge(account.health_status, account.health_status)}</td>
       <td>${account.available ? "Available" : account.at_capacity ? "At capacity" : "Unavailable"}</td>
     </tr>
@@ -704,10 +722,12 @@ function renderBrokerAccountUsage() {
 }
 
 function renderBrokerReservations() {
-  const rows = state.brokerReservations.map((reservation) => `
+  const filter = document.getElementById("broker-reservation-filter")?.value || "all";
+  const reservations = state.brokerReservations.filter((reservation) => filter === "all" || (filter === "consuming" ? ["provisional", "active"].includes(reservation.lifecycle_state) : reservation.lifecycle_state === filter));
+  const rows = reservations.map((reservation) => `
     <tr>
       <td><code>${reservation.reservation_id}</code></td>
-      <td>${badge(reservation.status, reservation.status)}</td>
+      <td>${badge(reservation.lifecycle_state, reservation.lifecycle_state)}</td>
       <td><strong>${reservation.catalog_title || reservation.catalog_item_id}</strong><br><code>${reservation.catalog_item_id}</code></td>
       <td>${reservation.media_type}</td>
       <td>${reservation.account_name || reservation.account_id}</td>
@@ -715,16 +735,23 @@ function renderBrokerReservations() {
       <td>${formatDate(reservation.expires_at)}</td>
       <td>${reservation.client_label || ""}</td>
       <td>${reservation.identity_type || ""}<br><code>${reservation.masked_client_identity || ""}</code></td>
-      <td>${reservation.last_action || "reservation_created"}<br><span class="muted">${formatDate(reservation.last_seen_at)}</span></td>
-      <td>${reservation.reuse_count || 0} reuse(s)<br>${reservation.alias_count || 0} alias(es)<br>${reservation.coalesced_reuse_count || 0} coalesced</td>
+      <td>Created ${formatDate(reservation.created_at)}<br>Promoted ${formatDate(reservation.promoted_at)}<br>Seen ${formatDate(reservation.last_seen_at)}</td>
+      <td>${reservation.request_count || 0} request(s)<br>${reservation.distinct_activity_count || 0} meaningful<br>${reservation.alias_count || 0} alias(es)</td>
       <td>${reservation.startup_coalesced ? badge("Startup coalesced", "warning") : ""}</td>
       <td>${reservation.duplicate_warning ? badge("Possible duplicate", "warning") : ""}</td>
-      <td>${reservation.status === "active" ? `<button data-release-reservation="${reservation.reservation_id}">Release</button>` : ""}</td>
+      <td>${reservation.promotion_reason || reservation.release_reason || ""}<br>${reservation.superseded_by_reservation_id ? `By <code>${reservation.superseded_by_reservation_id}</code>` : ""}</td>
+      <td>${reservation.lifecycle_state === "provisional" ? `<button data-confirm-reservation="${reservation.reservation_id}">Promote Now</button>` : ""}${["provisional","active"].includes(reservation.lifecycle_state) ? `<button data-release-reservation="${reservation.reservation_id}">Release</button><button data-expire-reservation="${reservation.reservation_id}">Expire Now</button>` : ""}</td>
     </tr>
   `);
   const target = document.getElementById("broker-reservations-list");
-  target.innerHTML = table(["Reservation", "Status", "Catalog Item", "Type", "Account", "Remaining", "Expires", "Client", "Primary Identity", "Last Action", "Reuse / Aliases", "Coalescing", "Duplicate", "Actions"], rows);
+  target.innerHTML = table(["Reservation", "Lifecycle", "Catalog Item", "Type", "Account", "Remaining", "Expires", "Client", "Identity", "Times", "Activity", "Coalescing", "Duplicate", "Reason / Relation", "Actions"], rows);
   bindBrokerReleaseButtons(target);
+  bindBrokerLifecycleButtons(target);
+}
+
+function bindBrokerLifecycleButtons(scope = document) {
+  scope.querySelectorAll("[data-confirm-reservation]").forEach((button) => button.addEventListener("click", async () => { await api(`/api/broker/reservations/${button.dataset.confirmReservation}/confirm`, { method: "POST" }); await refreshBrokerLive({ force: true }); }));
+  scope.querySelectorAll("[data-expire-reservation]").forEach((button) => button.addEventListener("click", async () => { await api(`/api/broker/reservations/${button.dataset.expireReservation}/expire`, { method: "POST" }); await refreshBrokerLive({ force: true }); }));
 }
 
 function updateBrokerTtls() {
@@ -1312,6 +1339,7 @@ function bind() {
   document.getElementById("broker-refresh-interval").addEventListener("change", (event) => {
     setBrokerRefreshInterval(event.target.value);
   });
+  document.getElementById("broker-reservation-filter").addEventListener("change", renderBrokerReservations);
   document.getElementById("broker-refresh-now").addEventListener("click", () => {
     refreshBrokerLive({ force: true });
   });

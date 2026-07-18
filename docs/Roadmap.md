@@ -17,6 +17,8 @@ Delivered:
 - HTTP redirect-based source resolution.
 - Atomic reservation reuse for probes, seeks, reconnects, and slow startup.
 - Conservative Emby startup fingerprint coalescing and aliases.
+- Provisional-to-active reservation leases, sliding renewal, and explicit lifecycle APIs.
+- Atomic same-session Live switching and provisional VOD supersession.
 - Movie and episode STRM generation.
 - Live TV M3U generation.
 - Editorial channel-placement preservation.
@@ -44,7 +46,7 @@ Planned work:
 
 - Correct dashboard labeling for unique catalog items versus source-availability rows.
 - Provider/account health checks and health-scoring policy.
-- Configurable reservation TTL and reuse policies by media type.
+- Operational validation of configurable reservation lifecycle policies.
 - Backup and restore guidance or tooling.
 - Database migration tests and upgrade notes.
 - Runtime URL configuration polish.
@@ -90,7 +92,8 @@ Potential work:
 
 - HDHomeRun emulation.
 - Runtime proxy mode for clients that cannot consume redirects reliably.
-- Explicit playback heartbeat or stop/release integration.
+- Emby/Jellyfin/Kodi playback-event integration with lifecycle APIs.
+- Optional proxy-mode byte/disconnect observation.
 - Emby and Jellyfin adapters.
 - Channels DVR enhancements.
 - IPTV Boss folder watcher.

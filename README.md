@@ -33,7 +33,8 @@ Emby / Channels DVR / Jellyfin / Kodi / VLC
   - `/r/movie/{id}`
   - `/r/episode/{id}`
 - Capacity-aware Broker with priority, weight, enablement, health metadata, reservation status, manual release, and live polling UI.
-- Atomic reservation acquisition and active-lifetime reuse for probes, seeks, range requests, reconnects, and slow provider startup.
+- Atomic provisional reservation acquisition, evidence-based active promotion, and identity/alias reuse for probes, seeks, range requests, reconnects, and slow provider startup.
+- Atomic same-session Live channel switching, provisional VOD browsing supersession, sliding active renewal, and explicit lifecycle APIs.
 - Conservative Emby startup coalescing when probe and playback requests use different User-Agent families.
 - Movie and episode STRM generation with dry-run, configurable limits, batched processing, bounded file concurrency, tracking, cleanup, cancellation, and benchmark logging.
 - Live TV M3U generation with channel-number, group, metadata, source-order, and repeated editorial-placement preservation.
@@ -42,7 +43,7 @@ Emby / Channels DVR / Jellyfin / Kodi / VLC
 
 ## Current limitations
 
-- Playback reservations release by TTL expiration; client heartbeat and explicit playback-end release remain future work.
+- Redirect mode cannot observe byte-level disconnects; explicit lifecycle APIs are available, while media-server event integrations and optional proxy observation remain future work.
 - XMLTV is currently supplied externally, such as from IPTV Boss or another web server.
 - Generated outputs are files on disk; native HTTP-served M3U and XMLTV endpoints are planned for v1.0.
 - Proxy streaming, transcoding, HDHomeRun emulation, encrypted secret storage, and formal media-server adapters are not yet implemented.
@@ -116,11 +117,11 @@ With four equivalent accounts, one catalog item can have four source-availabilit
 
 ## Runtime reservations
 
-Runtime reservation acquisition is atomic. Matching GET, HEAD, Range, reconnect, and startup requests reuse the same active reservation instead of consuming additional account capacity.
+Runtime reservation acquisition is atomic. A runtime GET starts a capacity-consuming provisional lease. Matching GET, HEAD, Range, reconnect, and startup requests reuse the same reservation instead of consuming additional capacity. Continued meaningful activity after the configured minimum age promotes that same ID to active.
 
 Media Router prefers an explicit `client_session`. Otherwise, it uses a privacy-safe derived fingerprint. A short, conservative startup-coalescing fallback can alias a changed Emby/ffmpeg fingerprint to exactly one recent same-origin reservation.
 
-Runtime URLs default to a four-hour reservation TTL. Manual Broker tests retain a short diagnostic TTL.
+Defaults are 45 seconds provisional and four hours active for Live TV, 60 seconds provisional and three hours active for movies, and 60 seconds provisional and two hours active for episodes. Promotion defaults to a 20-second minimum age and two meaningful requests. Sliding active renewal and safe same-identity supersession are enabled. Runtime `ttl=` overrides active TTL only; manual Broker tests retain short active diagnostic leases.
 
 ## Validated clients
 
@@ -138,7 +139,7 @@ The current focus is production readiness and the remaining Core v1.0 capabiliti
 - HTTP-served Live M3U.
 - XMLTV strategy and HTTP-served XMLTV.
 - Provider health monitoring.
-- Configurable reservation policies.
+- Reservation lifecycle operational validation and client-integration follow-up.
 - Backup and restore guidance/tooling.
 - Setup wizard refinements.
 - Operational diagnostics and upgrade safety.

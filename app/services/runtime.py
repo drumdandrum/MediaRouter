@@ -24,11 +24,7 @@ MEDIA_TYPE_TO_ROUTE = {
     "movie": "movie",
     "episode": "episode",
 }
-RUNTIME_DEFAULT_TTL_SECONDS = {
-    "live": 4 * 60 * 60,
-    "movie": 4 * 60 * 60,
-    "episode": 4 * 60 * 60,
-}
+RUNTIME_DEFAULT_TTL_SECONDS = {"live": 14400, "movie": 10800, "episode": 7200}
 
 
 class RuntimeResolveUnavailable(Exception):
@@ -239,9 +235,11 @@ def resolve_runtime(
     stable_client_id: str | None = None,
     request_profile: str | None = None,
     reserve: bool = True,
+    meaningful_activity: bool = True,
 ) -> tuple[RuntimeResolveDebug, str]:
     catalog_item = _validate_route(get_item(catalog_item_id), route_media_type)
-    effective_ttl = ttl or RUNTIME_DEFAULT_TTL_SECONDS[route_media_type]
+    runtime_settings = get_app_settings()
+    effective_ttl = ttl or getattr(runtime_settings, f"{route_media_type}_active_ttl_seconds")
     try:
         decision = resolve_source(
             catalog_item_id=catalog_item.internal_id,
@@ -257,6 +255,8 @@ def resolve_runtime(
             reuse_window_seconds=DEFAULT_REUSE_WINDOW_SECONDS,
             reserve=reserve,
             reservation_ttl_seconds=effective_ttl,
+            lifecycle_enabled=reserve,
+            meaningful_activity=meaningful_activity,
         )
     except BrokerUnavailable as exc:
         detail: BrokerErrorDetail = exc.detail

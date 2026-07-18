@@ -172,6 +172,8 @@
           </section>
           <div class="metric-grid compact">
             <article><span>Active</span><strong id="broker-active-reservations">0</strong></article>
+            <article><span>Provisional</span><strong id="broker-provisional-reservations">0</strong></article>
+            <article><span>Consuming</span><strong id="broker-consuming-reservations">0</strong></article>
             <article><span>Total</span><strong id="broker-total-reservations">0</strong></article>
             <article><span>Released</span><strong id="broker-released-reservations">0</strong></article>
             <article><span>Expired</span><strong id="broker-expired-reservations">0</strong></article>
@@ -215,7 +217,8 @@
           <section class="panel">
             <div class="panel-head">
               <h2>Reservations</h2>
-              <button id="release-all-broker-reservations">Release All Active</button>
+              <label>Filter<select id="broker-reservation-filter"><option value="all">All</option><option value="consuming">Consuming capacity</option><option value="provisional">Provisional</option><option value="active">Active</option><option value="released">Released</option><option value="expired">Expired</option><option value="superseded">Superseded</option></select></label>
+              <button id="release-all-broker-reservations">Release All Capacity-Consuming</button>
             </div>
             <div id="broker-reservations-list" class="table-wrap"></div>
           </section>

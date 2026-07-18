@@ -21,9 +21,10 @@ Architecture decisions should be recorded as ADRs in `docs/adr/` when they requi
 | STRM outputs use runtime URLs | Accepted | Generated movie and episode STRM files never contain provider credentials or direct provider URLs. |
 | Live M3U uses runtime URLs | Accepted | Generated Live M3U entries route through `/r/live/{catalog_item_id}`. |
 | Decision-and-redirect runtime | Accepted | Media Router brokers and redirects playback but does not currently proxy or transcode media. |
-| TTL-based release first | Accepted | Reservations expire by TTL until explicit heartbeat or playback-end signaling is implemented. |
+| Three-state reservation leases | Accepted | Runtime requests acquire short provisional capacity, sustained or explicit evidence promotes the same ID to active, and released/expired/superseded rows retain audit history. |
 | Active-lifetime identity reuse | Accepted | Matching probes, GET, HEAD, Range, seek, and reconnect requests reuse one reservation. |
 | Atomic reservation acquisition | Accepted | SQLite locking and active-playback uniqueness prevent concurrent duplicate reservations. |
+| Conservative content supersession | Accepted | Same-session Live switches atomically replace one consuming lease; movie/episode switches replace only a prior provisional VOD lease and never active VOD playback. |
 | Conservative startup coalescing | Accepted | A changed derived fingerprint may alias to exactly one recent same-origin reservation; ambiguous or conflicting sessions never coalesce. |
 | Trusted proxy headers are opt-in | Accepted | Forwarded client headers are ignored unless the proxy and header source are explicitly trusted. |
 | Editorial placement separate from channel identity | Accepted | Repeated playlist memberships preserve group, number, metadata, and order while sharing one runtime identity. |

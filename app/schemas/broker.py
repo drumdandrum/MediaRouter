@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-ReservationStatus = Literal["active", "released", "expired", "failed"]
+ReservationStatus = Literal["provisional", "active", "released", "expired", "superseded", "failed"]
 
 
 class BrokerResolveRequest(BaseModel):
@@ -85,6 +85,17 @@ class BrokerReservation(BaseModel):
     alias_count: int = 0
     coalesced_reuse_count: int = 0
     startup_coalesced: bool = False
+    lifecycle_state: ReservationStatus
+    provisional_expires_at: datetime | None = None
+    active_expires_at: datetime | None = None
+    promoted_at: datetime | None = None
+    superseded_at: datetime | None = None
+    superseded_by_reservation_id: str | None = None
+    first_seen_at: datetime | None = None
+    request_count: int = 1
+    distinct_activity_count: int = 0
+    promotion_reason: str | None = None
+    release_reason: str | None = None
 
 
 class DuplicateRepairResult(BaseModel):
@@ -128,6 +139,8 @@ class BrokerAccountUsage(BaseModel):
     priority_group: str
     weight: int
     active_reservations: int
+    provisional_reservations: int = 0
+    consuming_reservations: int = 0
     max_simultaneous_streams: int
     at_capacity: bool
     available: bool
@@ -136,6 +149,9 @@ class BrokerAccountUsage(BaseModel):
 class BrokerStatus(BaseModel):
     total_reservations: int
     active_reservations: int
+    provisional_reservations: int = 0
+    superseded_reservations: int = 0
+    consuming_reservations: int = 0
     released_reservations: int
     expired_reservations: int
     failed_reservations: int
