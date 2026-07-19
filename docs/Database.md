@@ -148,7 +148,7 @@ Sprint 2 implemented fields also include:
 - `confidence`
 - `raw_title`
 
-Sprint 7 preserves imported live TV channel numbers in `tvg_chno` when M3U `#EXTINF` metadata includes `tvg-chno`, `channel-number`, or `chno`. Live TV M3U output emits `tvg-chno` and sorts by numeric channel number when available, then group title, then display title.
+Sprint 7 preserves imported live TV channel numbers in `tvg_chno` when M3U `#EXTINF` metadata includes `tvg-chno`, `channel-number`, or `chno`. Live TV M3U output emits `tvg-chno` and a stable `media-router-id`, adds the same identity as `mr_catalog_id` on the credential-free runtime URL, and sorts by numeric channel number when available, then group title, then display title.
 
 Constraints:
 
@@ -237,6 +237,10 @@ Important fields:
 - `client_fingerprint`
 
 `lifecycle_state` values are `provisional`, `active`, `released`, `expired`, `superseded`, and legacy `failed`. Only provisional and active rows consume account capacity. Additive lifecycle columns record provisional/active expiries, promotion and supersession relationships, first/last activity, request counters, policy TTL, and terminal reasons. Legacy `status` and `expires_at` remain compatibility mirrors. Upgrade maps existing non-expired active rows to lifecycle active without changing reservation IDs.
+
+The Emby adapter additively adds `last_confirmation_source` and `last_confirmed_at` to reservations. `emby_playback_bindings` maps exactly one `(Emby server ID, Emby session ID)` consumer lifecycle to a reservation and records ItemId, MediaSourceId, catalog identity, observation/missing/release timestamps, state, sanitized display metadata, and correlation method/confidence. `PlaySessionId`, server address, and device origin never own or merge bindings. A partial unique index permits one unreleased binding per Emby binding key. Reservation capacity is never counted from this table. `emby_observed_sessions` contains only the current bounded normalized diagnostic representation; complete Emby responses are never stored. `runtime_correlation_observations` holds capacity-neutral, privacy-safe hints from reserving runtime GETs for 120 seconds. Correlation considers them for a 90-second candidate window; identity values are hashed, and provider URLs, credentials, and headers are not stored. Initialization is idempotent and does not rewrite existing reservation rows.
+
+`emby_channel_mappings` is an additive channel crosswalk keyed by Emby server/integration ID and TvChannel ItemId. It stores an optional MediaSourceId, display name, nullable Media Router catalog item, mapping source (`manual`, `automatic_marker`, `automatic_title`, or `unmapped`), and creation/update timestamps. Live M3U output carries the catalog ID in a dedicated `media-router-id` attribute and deterministic runtime URL. Playback resolution prioritizes manual mappings, automatic-marker mappings, other exact ItemId mappings, then exact MediaSourceId mappings; mapping rows never consume capacity themselves.
 
 Runtime playback reservations currently release by TTL expiration. Manual Broker tests default to a short 60-second TTL; runtime live/movie/episode routes default to four hours unless a `ttl` query parameter is supplied. Client heartbeat and client-driven playback-end release are deferred.
 

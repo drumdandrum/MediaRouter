@@ -25,6 +25,7 @@ Architecture decisions should be recorded as ADRs in `docs/adr/` when they requi
 | Active-lifetime identity reuse | Accepted | Matching probes, GET, HEAD, Range, seek, and reconnect requests reuse one reservation. |
 | Atomic reservation acquisition | Accepted | SQLite locking and active-playback uniqueness prevent concurrent duplicate reservations. |
 | Conservative content supersession | Accepted | Same-session Live switches atomically replace one consuming lease; movie/episode switches replace only a prior provisional VOD lease and never active VOD playback. |
+| Emby polling as lifecycle evidence | Accepted | A MediaRouter-side poller observes Emby without requiring a plugin and calls the existing Broker transition services. Failed or uncertain polls fail open and never imply stopped playback. |
 | Conservative startup coalescing | Accepted | A changed derived fingerprint may alias to exactly one recent same-origin reservation; ambiguous or conflicting sessions never coalesce. |
 | Trusted proxy headers are opt-in | Accepted | Forwarded client headers are ignored unless the proxy and header source are explicitly trusted. |
 | Editorial placement separate from channel identity | Accepted | Repeated playlist memberships preserve group, number, metadata, and order while sharing one runtime identity. |

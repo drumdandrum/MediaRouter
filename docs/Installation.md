@@ -139,6 +139,12 @@ When a trusted reverse proxy such as Cloudflare sits directly in front of Media 
 
 The default startup coalescing window is 90 seconds. Keep this short: it is intended only to bridge Emby probe/playback agent changes. Set it to 0 to disable coalescing. Media Router does not coalesce explicit sessions or ambiguous recent playbacks.
 
+## Emby session polling
+
+In Emby, create an API key for Media Router. In Media Router open Integrations, enter the client-reachable Emby base URL (for example `http://emby:8096` inside the same Docker network), paste the key, save, and use Test Connection. Leave TLS verification enabled for trusted HTTPS certificates. The adapter defaults to a 10-second poll, 30-second stop grace, 60-second unavailable threshold, and 10-second request timeout. A blank key on later saves preserves the stored secret. Disabling the adapter stops observation and does not release existing Broker reservations.
+
+Start playback through a Media Router runtime-backed STRM or Live M3U entry. The Integrations page should show the normalized session and binding. When playback stops, allow at least the release grace plus one poll interval before expecting release. During Emby maintenance or credential failures, reservations remain governed by ordinary Broker TTL behavior.
+
 Expected response:
 
 ```json

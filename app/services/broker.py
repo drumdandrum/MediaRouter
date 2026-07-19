@@ -132,6 +132,8 @@ def ensure_broker_schema(conn: sqlite3.Connection | None = None) -> None:
         "release_reason": "ALTER TABLE broker_reservations ADD COLUMN release_reason TEXT",
         "active_ttl_seconds": "ALTER TABLE broker_reservations ADD COLUMN active_ttl_seconds INTEGER",
         "provisional_hard_expires_at": "ALTER TABLE broker_reservations ADD COLUMN provisional_hard_expires_at TEXT",
+        "last_confirmation_source": "ALTER TABLE broker_reservations ADD COLUMN last_confirmation_source TEXT",
+        "last_confirmed_at": "ALTER TABLE broker_reservations ADD COLUMN last_confirmed_at TEXT",
     }
     applied: list[str] = []
     for column, statement in migrations.items():
@@ -402,6 +404,8 @@ def _reservation_from_row(row: sqlite3.Row) -> BrokerReservation:
         distinct_activity_count=int(row["distinct_activity_count"] or 0) if "distinct_activity_count" in row.keys() else 0,
         promotion_reason=row["promotion_reason"] if "promotion_reason" in row.keys() else None,
         release_reason=row["release_reason"] if "release_reason" in row.keys() else None,
+        last_confirmation_source=row["last_confirmation_source"] if "last_confirmation_source" in row.keys() else None,
+        last_confirmed_at=parsed("last_confirmed_at"),
     )
 
 
@@ -458,6 +462,43 @@ def get_raw_reservation_location_ref(reservation_id: str) -> str | None:
             (reservation_id,),
         ).fetchone()
     return row["location_ref"] if row else None
+
+
+def consume_ticketed_reservation(reservation_id: str, catalog_item_id: str, media_type: str) -> tuple[BrokerReservation, str]:
+    """Atomically promote and reuse exactly the reservation named by a validated ticket."""
+    with closing(_connect()) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        expire_reservations(conn, commit=False)
+        row = conn.execute("SELECT * FROM broker_reservations WHERE reservation_id=?", (reservation_id,)).fetchone()
+        if row is None:
+            conn.commit()
+            raise LookupError("missing_reservation")
+        if row["catalog_item_id"] != catalog_item_id:
+            conn.commit()
+            raise ValueError("catalog_mismatch")
+        if row["media_type"] != media_type:
+            conn.commit()
+            raise ValueError("catalog_mismatch")
+        if row["lifecycle_state"] not in CONSUMING_STATES:
+            state = row["lifecycle_state"]
+            conn.commit()
+            raise ValueError(f"reservation_{state}")
+        now = _now()
+        ttl = int(row["active_ttl_seconds"] or _lease_policy(row["media_type"])["active_ttl"])
+        expiry = (now + timedelta(seconds=ttl)).isoformat()
+        conn.execute("""UPDATE broker_reservations SET lifecycle_state='active', status='active',
+            promoted_at=COALESCE(promoted_at,?), active_expires_at=?, expires_at=?,
+            promotion_reason=COALESCE(promotion_reason,'playback_ticket'),
+            last_confirmation_source='playback_ticket', last_confirmed_at=?, last_seen_at=?,
+            last_action='ticketed_reservation_reused', request_count=COALESCE(request_count,1)+1,
+            reuse_count=COALESCE(reuse_count,0)+1 WHERE reservation_id=?""",
+            (now.isoformat(), expiry, expiry, now.isoformat(), now.isoformat(), reservation_id))
+        detail = _reservation_detail_row(conn, reservation_id)
+        raw_location_ref = row["location_ref"]
+        conn.commit()
+    if detail is None:
+        raise LookupError("missing_reservation")
+    return _reservation_from_row(detail), raw_location_ref
 
 
 def _reservation_detail_row(conn: sqlite3.Connection, reservation_id: str) -> sqlite3.Row | None:
@@ -1088,7 +1129,7 @@ def resolve_source(
     )
 
 
-def confirm_reservation(reservation_id: str) -> BrokerReservation | None:
+def confirm_reservation(reservation_id: str, *, source: str = "explicit_confirmation") -> BrokerReservation | None:
     with closing(_connect()) as conn:
         conn.execute("BEGIN IMMEDIATE")
         expire_reservations(conn, commit=False)
@@ -1101,18 +1142,21 @@ def confirm_reservation(reservation_id: str) -> BrokerReservation | None:
             now = _now()
             ttl = int(row["active_ttl_seconds"] or _lease_policy(row["media_type"])["active_ttl"])
             conn.execute("""UPDATE broker_reservations SET lifecycle_state='active', status='active', promoted_at=?,
-                active_expires_at=?, expires_at=?, promotion_reason='explicit_confirmation',
-                last_action='reservation_promoted', last_seen_at=? WHERE reservation_id=?""",
+                active_expires_at=?, expires_at=?, promotion_reason=?, last_confirmation_source=?,
+                last_confirmed_at=?, last_action='reservation_promoted', last_seen_at=? WHERE reservation_id=?""",
                 (now.isoformat(), (now + timedelta(seconds=ttl)).isoformat(),
-                 (now + timedelta(seconds=ttl)).isoformat(), now.isoformat(), reservation_id))
+                 (now + timedelta(seconds=ttl)).isoformat(), source, source, now.isoformat(), now.isoformat(), reservation_id))
+        elif row["lifecycle_state"] == "active":
+            conn.execute("UPDATE broker_reservations SET last_confirmation_source=?, last_confirmed_at=? WHERE reservation_id=?",
+                         (source, _now().isoformat(), reservation_id))
         conn.commit()
     result = _reservation_query("WHERE broker_reservations.reservation_id=?", (reservation_id,))
     if result:
-        add_log("info", "broker", f"reservation_promoted reservation={reservation_id} reason=explicit_confirmation")
+        add_log("info", "broker", f"reservation_promoted reservation={reservation_id} reason={source}")
     return result[0] if result else None
 
 
-def heartbeat_reservation(reservation_id: str) -> BrokerReservation | None:
+def heartbeat_reservation(reservation_id: str, *, source: str = "explicit_heartbeat") -> BrokerReservation | None:
     with closing(_connect()) as conn:
         conn.execute("BEGIN IMMEDIATE")
         expire_reservations(conn, commit=False)
@@ -1127,12 +1171,13 @@ def heartbeat_reservation(reservation_id: str) -> BrokerReservation | None:
         expiry = (now + timedelta(seconds=int(policy["active_ttl"]))).isoformat()
         conn.execute("""UPDATE broker_reservations SET last_seen_at=?, request_count=COALESCE(request_count,1)+1,
             distinct_activity_count=COALESCE(distinct_activity_count,0)+1, last_action='reservation_heartbeat',
+            last_confirmation_source=?, last_confirmed_at=?,
             active_expires_at=CASE WHEN lifecycle_state='active' AND ? THEN ? ELSE active_expires_at END,
             expires_at=CASE WHEN lifecycle_state='active' AND ? THEN ? ELSE expires_at END
-            WHERE reservation_id=?""", (now.isoformat(), bool(policy["sliding"]), expiry,
+            WHERE reservation_id=?""", (now.isoformat(), source, now.isoformat(), bool(policy["sliding"]), expiry,
             bool(policy["sliding"]), expiry, reservation_id))
         conn.commit()
-    add_log("info", "broker", f"reservation_heartbeat reservation={reservation_id}")
+    add_log("info", "broker", f"reservation_heartbeat reservation={reservation_id} source={source}")
     result = _reservation_query("WHERE broker_reservations.reservation_id=?", (reservation_id,))
     return result[0] if result else None
 

@@ -96,6 +96,8 @@ class BrokerReservation(BaseModel):
     distinct_activity_count: int = 0
     promotion_reason: str | None = None
     release_reason: str | None = None
+    last_confirmation_source: str | None = None
+    last_confirmed_at: datetime | None = None
 
 
 class DuplicateRepairResult(BaseModel):
@@ -118,6 +120,7 @@ class BrokerDecision(BaseModel):
     reservation_created: bool = False
     reservation_reused: bool = False
     reuse_reason: str | None = None
+    runtime_url: str | None = None
 
 
 class BrokerErrorDetail(BaseModel):

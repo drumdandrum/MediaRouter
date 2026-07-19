@@ -20,6 +20,7 @@ This backlog is organized by product milestone. Completed implementation history
 - [x] Provisional and active capacity leases with evidence-based promotion.
 - [x] Sliding active renewal and explicit lifecycle APIs.
 - [x] Atomic same-identity Live switching and conservative provisional VOD supersession.
+- [x] MediaRouter-side Emby session polling, correlation, health, bindings, and lifecycle evidence.
 - [x] STRM generation for movies and episodes.
 - [x] STRM path validation, dry-run, tracking, cleanup, cancellation, and history.
 - [x] Configurable STRM presets and custom limits.
@@ -67,7 +68,9 @@ This backlog is organized by product milestone. Completed implementation history
 - [x] Add provisional TTL, promotion, sliding renewal, and supersession policy.
 - [ ] Define stale-reservation cleanup policy.
 - [x] Add client-agnostic confirm, heartbeat, and release endpoints.
-- [ ] Connect Emby/Jellyfin/Kodi events to lifecycle endpoints.
+- [x] Connect Emby playback observation to lifecycle endpoints through polling.
+- [ ] Add stronger explicit Emby stop events only if a future plugin/webhook phase is approved.
+- [ ] Connect Jellyfin/Kodi events to lifecycle endpoints.
 - [ ] Evaluate optional proxy byte/disconnect observation.
 
 ### Catalog and output polish

@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     app_port: int = 8088
     public_base_url: str = "http://media-router:8088"
     data_dir: Path = Path("./data")
+    playback_ticket_secret: str = ""
+    playback_ticket_ttl_seconds: int = 60
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="MEDIA_ROUTER_")
 

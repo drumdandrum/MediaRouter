@@ -24,6 +24,7 @@
           <button data-view="outputs">Outputs</button>
           <button data-view="providers">Providers</button>
           <button data-view="accounts">Accounts</button>
+          <button data-view="integrations">Integrations</button>
           <button data-view="settings">Settings</button>
           <button data-view="jobs">Jobs</button>
           <button data-view="logs">Logs</button>
@@ -403,6 +404,38 @@
             </div>
             <div id="logs-list" class="log-list"></div>
           </section>
+        </section>
+
+        <section id="integrations" class="view">
+          <section class="panel">
+            <div class="panel-head"><h2>Emby Session Adapter</h2><span id="emby-health" class="status-badge">Disabled</span></div>
+            <p class="muted helper-text">Polls Emby playback sessions and feeds confirmed playback, heartbeat, and stop evidence into the existing Broker lifecycle. Media remains direct-redirected and is never proxied.</p>
+            <form id="emby-settings-form" class="form-grid">
+              <label>Enabled<select name="enabled"><option value="false">Disabled</option><option value="true">Enabled</option></select></label>
+              <label>Server URL<input name="server_url" placeholder="http://emby:8096" /></label>
+              <label>API Key<input name="api_key" type="password" value="" placeholder="Blank preserves stored key" autocomplete="new-password" /></label>
+              <label>Poll Interval (seconds)<input name="poll_interval_seconds" type="number" min="5" max="3600" /></label>
+              <label>Release Grace (seconds)<input name="release_grace_seconds" type="number" min="5" max="3600" /></label>
+              <label>Unavailable Timeout (seconds)<input name="unavailable_timeout_seconds" type="number" min="10" max="86400" /></label>
+              <label>Request Timeout (seconds)<input name="request_timeout_seconds" type="number" min="1" max="120" /></label>
+              <label>Verify TLS<select name="verify_tls"><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+              <label>Runtime Correlation Diagnostics<select name="emby_runtime_correlation_enabled"><option value="false">Disabled</option><option value="true">Enabled</option></select></label>
+            </form>
+            <p id="emby-settings-error" class="form-error" role="alert"></p>
+            <div class="button-row"><button id="save-emby-settings" class="primary">Save</button><button id="test-emby-connection">Test Connection</button></div>
+          </section>
+          <div class="metric-grid compact">
+            <article><span>Server</span><strong id="emby-server">Not configured</strong></article>
+            <article><span>Last Success</span><strong id="emby-last-success">Never</strong></article>
+            <article><span>Observed</span><strong id="emby-observed">0</strong></article>
+            <article><span>Matched / Unmatched</span><strong id="emby-match-count">0 / 0</strong></article>
+            <article><span>Active Bindings</span><strong id="emby-active-bindings">0</strong></article>
+            <article><span>Pending Releases</span><strong id="emby-pending-releases">0</strong></article>
+          </div>
+          <p id="emby-status-error" class="form-error"></p>
+          <section class="panel"><h2>Observed Playback</h2><div id="emby-sessions-list" class="table-wrap"></div></section>
+          <section class="panel"><div class="panel-head"><h2>Emby Channel Mappings</h2><div class="button-row"><button id="preview-emby-channel-mappings">Preview Matches</button><button id="refresh-emby-channel-mappings">Apply Safe Matches</button></div></div><div class="button-row"><input id="search-emby-channel-mappings" placeholder="Search channel, ItemId, or catalog ID"/><button id="prev-emby-channel-mappings">Previous</button><span id="emby-channel-mapping-page-status"></span><button id="next-emby-channel-mappings">Next</button></div><div id="emby-channel-mappings-list" class="table-wrap"></div></section>
+          <section class="panel"><h2>Binding History</h2><div id="emby-bindings-list" class="table-wrap"></div></section>
         </section>
 
         <section id="system" class="view">

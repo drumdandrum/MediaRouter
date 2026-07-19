@@ -11,6 +11,13 @@ const state = {
   catalogTab: "overview",
   providers: [],
   accounts: [],
+  embySettings: null,
+  embyStatus: null,
+  embySessions: [],
+  embyBindings: [],
+  embyChannelMappings: [],
+  embyChannelMappingPage: { total: 0, limit: 100, offset: 0 },
+  embyChannelMappingSearch: "",
   editingAccountId: null,
   catalogImportProviderId: "",
   catalogImportAccountId: "",
@@ -49,6 +56,7 @@ const titles = {
   outputs: "Outputs",
   providers: "Providers",
   accounts: "Accounts",
+  integrations: "Integrations",
   settings: "Settings",
   jobs: "Jobs",
   logs: "Logs",
@@ -272,6 +280,30 @@ function runtimeUrlFor(item, debug = false) {
   const route = runtimeRouteFor(item);
   if (!route) return "";
   return `${publicBaseUrl()}/r/${route}/${item.internal_id}${debug ? "?debug=true" : ""}`;
+}
+
+function brokerDecisionRuntimeUrl(decision) {
+  if (!decision || !decision.reservation) return "";
+  return decision.runtime_url || decision.stream_url || "";
+}
+
+function runtimeUrlKind(url) {
+  if (!url) return "generic";
+  try {
+    return new URL(url, window.location.origin).searchParams.has("ticket") ? "ticketed" : "generic";
+  } catch (_) {
+    return "generic";
+  }
+}
+
+function bindExactRuntimeActions(scope, url) {
+  scope.querySelector("[data-broker-runtime-open]")?.addEventListener("click", () => {
+    window.open(url, "_blank", "noopener");
+  });
+  scope.querySelector("[data-broker-runtime-copy]")?.addEventListener("click", async () => {
+    await navigator.clipboard.writeText(url);
+    toast("Runtime URL copied");
+  });
 }
 
 function runtimeCell(item) {
@@ -564,7 +596,10 @@ function renderBrokerRuntimePreview() {
     target.innerHTML = '<p class="muted">Select a catalog item to preview its runtime URL.</p>';
     return;
   }
-  const url = runtimeUrlFor(item);
+  const resolvedUrl = state.brokerDecision?.reservation?.catalog_item_id === item.internal_id
+    ? brokerDecisionRuntimeUrl(state.brokerDecision)
+    : "";
+  const url = resolvedUrl || runtimeUrlFor(item);
   if (!url) {
     target.innerHTML = '<p class="muted">This catalog item does not have a Sprint 5 runtime route.</p>';
     return;
@@ -572,11 +607,11 @@ function renderBrokerRuntimePreview() {
   target.innerHTML = `
     <div class="runtime-preview">
       <code>${url}</code>
-      <button data-runtime-debug="${runtimeUrlFor(item, true)}">Resolve JSON/debug</button>
-      <button data-runtime-open="${url}">Resolve redirect/open</button>
+      <span><strong>URL type:</strong> ${runtimeUrlKind(url)}</span>
+      ${resolvedUrl ? '<button data-broker-runtime-copy>Copy Runtime URL</button><button data-broker-runtime-open>Open Runtime URL</button>' : '<span class="muted">Resolve first to open a reservation-specific URL.</span>'}
     </div>
   `;
-  bindRuntimeButtons(target);
+  if (resolvedUrl) bindExactRuntimeActions(target, resolvedUrl);
 }
 
 function renderBroker() {
@@ -657,6 +692,7 @@ function renderBrokerDecision() {
   }
   const selected = decision.selected_source;
   const reservation = decision.reservation;
+  const runtimeUrl = brokerDecisionRuntimeUrl(decision);
   target.innerHTML = `
     <div class="detail-grid">
       <div><span>Reservation</span><strong><code>${reservation.reservation_id}</code></strong></div>
@@ -668,14 +704,18 @@ function renderBrokerDecision() {
       <div><span>TTL</span><strong>${decision.reservation_ttl_seconds}s</strong></div>
       <div><span>Expires</span><strong>${formatDate(decision.expires_at)}</strong></div>
     </div>
-    <p class="muted helper-text url-cell">${decision.stream_url}</p>
+    <p class="muted helper-text url-cell">${runtimeUrl}</p>
+    <p class="helper-text"><strong>URL type:</strong> ${runtimeUrlKind(runtimeUrl)}</p>
     <p class="helper-text"><strong>Why selected:</strong> ${decision.decision_reason}</p>
     <div class="button-row">
+      <button data-broker-runtime-copy>Copy Runtime URL</button>
+      <button data-broker-runtime-open>Open Runtime URL</button>
       <button data-release-reservation="${reservation.reservation_id}">Release Reservation</button>
     </div>
     <div class="muted-list">${decision.decision_reasons.map((reason) => `<div>${reason}</div>`).join("")}</div>
     ${candidateTable(decision.evaluated_candidates || [])}
   `;
+  bindExactRuntimeActions(target, runtimeUrl);
   bindBrokerReleaseButtons(target);
 }
 
@@ -1073,6 +1113,59 @@ function renderSettings() {
     .join("");
 }
 
+function renderEmby() {
+  if (!state.embySettings || !state.embyStatus) return;
+  const form = document.getElementById("emby-settings-form");
+  for (const [key, value] of Object.entries(state.embySettings)) {
+    const input = form.elements.namedItem(key);
+    if (input && key !== "has_api_key") input.value = String(value);
+  }
+  form.elements.api_key.value = "";
+  form.elements.api_key.placeholder = state.embySettings.has_api_key ? "Stored — blank preserves key" : "API key required";
+  const status = state.embyStatus;
+  setBadge("emby-health", status.health_state, status.health_state);
+  document.getElementById("emby-server").textContent = status.server_name ? `${status.server_name} ${status.server_version || ""}`.trim() : "Not connected";
+  document.getElementById("emby-last-success").textContent = formatDate(status.last_successful_poll);
+  document.getElementById("emby-observed").textContent = status.observed_playback_count;
+  document.getElementById("emby-match-count").textContent = `${status.matched_playback_count} / ${status.unmatched_playback_count}`;
+  document.getElementById("emby-active-bindings").textContent = status.active_binding_count;
+  document.getElementById("emby-pending-releases").textContent = status.pending_release_count;
+  document.getElementById("emby-status-error").textContent = status.last_error || "";
+  const orderedSessions = [...state.embySessions].sort((left, right) =>
+    Number(Boolean(left.catalog_item_id)) - Number(Boolean(right.catalog_item_id)));
+  const sessionRows = orderedSessions.map((session) => `<tr>
+    <td>${session.user_name || ""}</td><td>${session.device_name || ""}<br><span class="muted">${session.client_name || ""}</span></td>
+    <td><strong>${session.item_name || session.emby_item_id || "Unknown"}</strong><br>${session.media_type || session.item_type || ""}</td>
+    <td>${badge(session.playback_state, session.playback_state)}</td><td><code>${session.catalog_item_id || ""}</code></td>
+    <td><code>${session.reservation_id || "Unmatched"}</code></td><td>${session.correlation_method || ""}<br><span class="muted">${session.correlation_confidence || ""}${session.unmatched_reason ? ` · ${session.unmatched_reason}` : ""}${session.correlation_candidate_count ? ` · ${session.correlation_candidate_count} candidates` : ""}${session.recent_runtime_observation_found ? " · recent runtime request" : ""}${session.rejected_for_client_context_count ? ` · ${session.rejected_for_client_context_count} client mismatch` : ""}</span></td>
+    <td>${formatDate(session.observed_at)}</td></tr>`);
+  document.getElementById("emby-sessions-list").innerHTML = table(["User", "Device / Client", "Item", "State", "Catalog", "Reservation", "Correlation", "Observed"], sessionRows);
+  const bindingRows = state.embyBindings.map((binding) => `<tr>
+    <td><code>${binding.emby_session_id}</code></td><td>${binding.user_name || ""}</td><td>${binding.device_name || ""}<br><span class="muted">${binding.client_name || ""}</span></td>
+    <td><strong>${binding.item_name || binding.emby_item_id || ""}</strong><br>${binding.media_type}</td><td>${badge(binding.playback_state, binding.playback_state)}</td>
+    <td><code>${binding.reservation_id}</code></td><td>${binding.correlation_method}<br><span class="muted">${binding.correlation_confidence}</span></td>
+    <td>${binding.missing_since ? badge("Pending release", "warning") : binding.released_at ? badge("Released", "released") : badge("Bound", "ready")}</td>
+    <td>${formatDate(binding.last_observed_at)}<br><span class="muted">${binding.release_reason || ""}</span></td></tr>`);
+  document.getElementById("emby-bindings-list").innerHTML = table(["Session", "User", "Device / Client", "Item", "State", "Reservation", "Correlation", "Binding", "Last Seen / Reason"], bindingRows);
+  const channelOptions = state.brokerCatalogItems.filter((item) => item.media_type === "channel")
+    .map((item) => `<option value="${item.internal_id}">${item.title} · ${item.internal_id}</option>`).join("");
+  const mappingRows = state.embyChannelMappings.map((mapping) => `<tr>
+    <td>${mapping.emby_channel_name || ""}</td><td><code>${mapping.emby_item_id}</code></td>
+    <td><code>${mapping.emby_media_source_id || ""}</code></td>
+    <td>${mapping.catalog_item_id ? `<code>${mapping.catalog_item_id}</code>` : `<select data-emby-map-select="${mapping.emby_item_id}"><option value="">Choose channel</option>${channelOptions}</select>`}</td>
+    <td>${badge(mapping.catalog_item_id ? mapping.mapping_source : "Unmapped", mapping.catalog_item_id ? "ready" : "warning")}</td>
+    <td>${mapping.catalog_item_id ? "" : `<button data-emby-map-link="${mapping.emby_item_id}" data-emby-server="${mapping.emby_server_id}">Link</button>`}</td></tr>`);
+  document.getElementById("emby-channel-mappings-list").innerHTML = table(["Emby Channel", "ItemId", "MediaSourceId", "Media Router Catalog", "Source", "Action"], mappingRows);
+  document.getElementById("emby-channel-mapping-page-status").textContent = `${state.embyChannelMappingPage.offset + 1}-${Math.min(state.embyChannelMappingPage.offset + state.embyChannelMappings.length, state.embyChannelMappingPage.total)} of ${state.embyChannelMappingPage.total}`;
+  document.querySelectorAll("[data-emby-map-link]").forEach((button) => button.addEventListener("click", async () => {
+    const select = document.querySelector(`[data-emby-map-select="${button.dataset.embyMapLink}"]`);
+    if (!select?.value) return toast("Choose a Media Router channel");
+    await api(`/api/integrations/emby/channel-mappings/${encodeURIComponent(button.dataset.embyServer)}/${encodeURIComponent(button.dataset.embyMapLink)}`,
+      { method: "PUT", body: JSON.stringify({ catalog_item_id: select.value }) });
+    await loadEmby(); renderEmby(); toast("Emby channel linked");
+  }));
+}
+
 function renderJobs() {
   const list = document.getElementById("jobs-list");
   if (!state.jobs.length) {
@@ -1154,6 +1247,16 @@ function renderFoundation() {
 async function loadDashboard() { state.dashboard = await api("/api/dashboard"); }
 async function loadWizard() { [state.wizardSteps, state.wizardState, state.settings] = await Promise.all([api("/api/wizard/steps"), api("/api/wizard/state"), api("/api/settings")]); }
 async function loadSettings() { [state.settings, state.categories] = await Promise.all([api("/api/settings"), api("/api/settings/categories")]); }
+async function loadEmby() {
+  const mappingQuery = new URLSearchParams({ limit: "100", offset: String(state.embyChannelMappingPage.offset || 0), search: state.embyChannelMappingSearch });
+  [state.embySettings, state.embyStatus, state.embySessions, state.embyBindings, state.embyChannelMappingPage, state.brokerCatalogItems] = await Promise.all([
+    api("/api/integrations/emby"), api("/api/integrations/emby/status"),
+    api("/api/integrations/emby/sessions?limit=100&offset=0"), api("/api/integrations/emby/bindings?limit=100&offset=0"),
+    api(`/api/integrations/emby/channel-mappings/page?${mappingQuery}`),
+    api("/api/catalog/items?limit=500&offset=0"),
+  ]);
+  state.embyChannelMappings = state.embyChannelMappingPage.items;
+}
 async function loadProviders() { state.providers = await api("/api/providers"); }
 async function loadAccounts() { state.accounts = await api("/api/accounts"); }
 async function loadBroker() {
@@ -1218,6 +1321,7 @@ async function refresh() {
     if (state.view === "outputs") { await loadOutputs(); renderOutputs(); }
     if (state.view === "providers") { await loadProviders(); renderProviders(); }
     if (state.view === "accounts") { await Promise.all([loadProviders(), loadAccounts()]); renderAccounts(); }
+    if (state.view === "integrations") { await loadEmby(); renderEmby(); }
     if (state.view === "settings") { await loadSettings(); renderSettings(); }
     if (state.view === "jobs") { await loadJobs(); renderJobs(); }
     if (state.view === "logs") { await loadLogs(); renderLogs(); }
@@ -1361,6 +1465,8 @@ function bind() {
     try {
       setFormError("broker-resolve-error");
       state.brokerDecision = await api("/api/broker/resolve", { method: "POST", body: JSON.stringify(values) });
+      renderBrokerRuntimePreview();
+      renderBrokerDecision();
       toast("Broker reservation created");
       await refreshBrokerLive({ force: true });
       await loadDashboard();
@@ -1598,6 +1704,52 @@ function bind() {
     renderSettings();
     await loadDashboard();
     renderDashboard();
+  });
+  document.getElementById("save-emby-settings").addEventListener("click", async () => {
+    try {
+      setFormError("emby-settings-error");
+      const values = normalizeValues(document.getElementById("emby-settings-form"));
+      ["poll_interval_seconds", "release_grace_seconds", "unavailable_timeout_seconds", "request_timeout_seconds"].forEach((key) => values[key] = Number(values[key]));
+      state.embySettings = await api("/api/integrations/emby", { method: "PUT", body: JSON.stringify(values) });
+      await loadEmby(); renderEmby(); toast("Emby settings saved");
+    } catch (error) { setFormError("emby-settings-error", error.message); }
+  });
+  document.getElementById("test-emby-connection").addEventListener("click", async () => {
+    try {
+      setFormError("emby-settings-error");
+      const values = normalizeValues(document.getElementById("emby-settings-form"));
+      ["poll_interval_seconds", "release_grace_seconds", "unavailable_timeout_seconds", "request_timeout_seconds"].forEach((key) => values[key] = Number(values[key]));
+      state.embySettings = await api("/api/integrations/emby", { method: "PUT", body: JSON.stringify(values) });
+      const result = await api("/api/integrations/emby/test", { method: "POST" });
+      if (!result.success) throw new ApiError(result.message);
+      toast(`${result.message}${result.server_name ? ` ${result.server_name}` : ""}`);
+      await loadEmby(); renderEmby();
+    } catch (error) { setFormError("emby-settings-error", error.message); }
+  });
+  document.getElementById("preview-emby-channel-mappings").addEventListener("click", async () => {
+    try {
+      const result = await api("/api/integrations/emby/channel-mappings/preview", { method: "POST" });
+      toast(`Preview: ${result.automatic_matches} automatic, ${result.manual_matches} manual, ${result.ambiguous} ambiguous, ${result.unmatched} unmatched, ${result.conflicts} conflicts`);
+    } catch (error) { setFormError("emby-status-error", error.message); }
+  });
+  document.getElementById("refresh-emby-channel-mappings").addEventListener("click", async () => {
+    try {
+      const result = await api("/api/integrations/emby/channel-mappings/refresh", { method: "POST" });
+      await loadEmby(); renderEmby();
+      toast(`Emby channels refreshed: ${result.mapped} mapped, ${result.unmapped} unmapped`);
+    } catch (error) { setFormError("emby-status-error", error.message); }
+  });
+  document.getElementById("search-emby-channel-mappings").addEventListener("change", async (event) => {
+    state.embyChannelMappingSearch = event.target.value.trim(); state.embyChannelMappingPage.offset = 0;
+    await loadEmby(); renderEmby();
+  });
+  document.getElementById("prev-emby-channel-mappings").addEventListener("click", async () => {
+    state.embyChannelMappingPage.offset = Math.max(0, state.embyChannelMappingPage.offset - 100);
+    await loadEmby(); renderEmby();
+  });
+  document.getElementById("next-emby-channel-mappings").addEventListener("click", async () => {
+    if (state.embyChannelMappingPage.offset + 100 < state.embyChannelMappingPage.total) state.embyChannelMappingPage.offset += 100;
+    await loadEmby(); renderEmby();
   });
   document.getElementById("start-job").addEventListener("click", async () => {
     await api("/api/jobs", { method: "POST", body: JSON.stringify({ kind: "test_job" }) });

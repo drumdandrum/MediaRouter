@@ -18,6 +18,8 @@ Delivered:
 - Atomic reservation reuse for probes, seeks, reconnects, and slow startup.
 - Conservative Emby startup fingerprint coalescing and aliases.
 - Provisional-to-active reservation leases, sliding renewal, and explicit lifecycle APIs.
+- MediaRouter-side Emby polling with persistent bindings and fail-open lifecycle evidence.
+- Provisional-to-active reservation leases, sliding renewal, and explicit lifecycle APIs.
 - Atomic same-session Live switching and provisional VOD supersession.
 - Movie and episode STRM generation.
 - Live TV M3U generation.
@@ -46,7 +48,7 @@ Planned work:
 
 - Correct dashboard labeling for unique catalog items versus source-availability rows.
 - Provider/account health checks and health-scoring policy.
-- Operational validation of configurable reservation lifecycle policies.
+- Operational validation of configurable reservation lifecycle policies and Emby polling.
 - Backup and restore guidance or tooling.
 - Database migration tests and upgrade notes.
 - Runtime URL configuration polish.
@@ -92,7 +94,8 @@ Potential work:
 
 - HDHomeRun emulation.
 - Runtime proxy mode for clients that cannot consume redirects reliably.
-- Emby/Jellyfin/Kodi playback-event integration with lifecycle APIs.
+- Jellyfin/Kodi playback-event integration with lifecycle APIs.
+- Optional stronger Emby stop events through a future plugin or webhook phase.
 - Optional proxy-mode byte/disconnect observation.
 - Emby and Jellyfin adapters.
 - Channels DVR enhancements.

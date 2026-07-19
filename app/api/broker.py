@@ -1,7 +1,11 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from urllib.parse import quote
 
 from app.schemas.broker import BrokerDecision, BrokerReleaseRequest, BrokerReservation, BrokerResolveRequest, BrokerStatus, DuplicateRepairResult
 from app.services.broker import BrokerUnavailable, confirm_reservation, expire_now, force_expire_reservation, get_status, heartbeat_reservation, list_reservations, release_all_active, release_reservation, repair_duplicate_reservations, resolve_source
+from app.services.logs import add_log
+from app.services.playback_tickets import issue_playback_ticket
+from app.services.runtime import public_runtime_base_url, route_for_media_type
 
 router = APIRouter(prefix="/api/broker", tags=["broker"])
 
@@ -17,15 +21,25 @@ def broker_reservations() -> list[BrokerReservation]:
 
 
 @router.post("/resolve", response_model=BrokerDecision, status_code=201)
-def broker_resolve(payload: BrokerResolveRequest) -> BrokerDecision:
+def broker_resolve(payload: BrokerResolveRequest, request: Request) -> BrokerDecision:
     try:
-        return resolve_source(
+        decision = resolve_source(
             catalog_item_id=payload.catalog_item_id,
             media_type=payload.media_type,
             client_label=payload.client_label,
             client_session=payload.client_session,
             reservation_ttl_seconds=payload.reservation_ttl_seconds,
         )
+        if decision.reservation and decision.expires_at:
+            route = route_for_media_type(decision.reservation.media_type)
+            if route:
+                ticket, ticket_expiry = issue_playback_ticket(decision.reservation.reservation_id,
+                    decision.reservation.catalog_item_id, decision.expires_at)
+                base = public_runtime_base_url(str(request.base_url))
+                decision.runtime_url = f"{base}/r/{route}/{quote(decision.reservation.catalog_item_id, safe='')}?ticket={quote(ticket, safe='')}"
+                decision.stream_url = decision.runtime_url
+                add_log("info", "broker", f"reservation_ticket_issued reservation={decision.reservation.reservation_id} catalog_item={decision.reservation.catalog_item_id} expires_at={ticket_expiry.isoformat()} ticket=[redacted]")
+        return decision
     except BrokerUnavailable as exc:
         raise HTTPException(status_code=409, detail=exc.detail.model_dump()) from exc
 

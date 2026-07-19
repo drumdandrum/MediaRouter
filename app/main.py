@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -8,6 +9,7 @@ from app.api.dashboard import router as dashboard_router
 from app.api.catalog import router as catalog_router
 from app.api.foundation import router as foundation_router
 from app.api.jobs import router as jobs_router
+from app.api.integrations import router as integrations_router
 from app.api.logs import router as logs_router
 from app.api.outputs import router as outputs_router
 from app.api.providers import router as providers_router
@@ -18,13 +20,25 @@ from app.api.system import router as system_router
 from app.api.wizard import router as wizard_router
 from app.core.config import get_settings
 from app.main_meta import APP_VERSION
+from app.services.emby_poller import EmbyPoller
 
 settings = get_settings()
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    poller = EmbyPoller()
+    await poller.start()
+    try:
+        yield
+    finally:
+        await poller.stop()
+
 
 app = FastAPI(
     title="Media Router",
     description="Sprint 7 Live TV M3U output generator for a modular home media orchestration platform.",
     version=APP_VERSION,
+    lifespan=lifespan,
 )
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -34,6 +48,7 @@ app.include_router(catalog_router)
 app.include_router(dashboard_router)
 app.include_router(foundation_router)
 app.include_router(jobs_router)
+app.include_router(integrations_router)
 app.include_router(logs_router)
 app.include_router(outputs_router)
 app.include_router(providers_router)

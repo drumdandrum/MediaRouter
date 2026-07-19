@@ -5,7 +5,10 @@ from fastapi.responses import RedirectResponse
 
 from app.schemas.runtime import RuntimePreview, RuntimeResolveDebug
 from app.services.logs import add_log
+from app.services.emby import record_runtime_correlation_observation
 from app.services.runtime import RuntimeResolveUnavailable, mask_runtime_target, preview_runtime, resolve_runtime, runtime_client_context, runtime_client_fingerprint
+from app.services.broker import consume_ticketed_reservation
+from app.services.playback_tickets import PlaybackTicketError, validate_playback_ticket
 
 router = APIRouter(tags=["runtime"])
 
@@ -33,8 +36,35 @@ def _runtime_response(
     ttl: int | None,
     client_label: str | None,
     client_session: str | None,
+    ticket: str | None = None,
     reserve: bool = True,
 ) -> RuntimeResolveDebug | RedirectResponse:
+    if ticket:
+        try:
+            claims = validate_playback_ticket(ticket)
+            if claims["c"] != catalog_item_id:
+                raise PlaybackTicketError("catalog_mismatch", "Playback ticket does not match this catalog item.", 409)
+            expected_media_type = {"live": "channel", "movie": "movie", "episode": "episode"}[route_media_type]
+            reservation, raw_location_ref = consume_ticketed_reservation(str(claims["r"]), catalog_item_id, expected_media_type)
+        except PlaybackTicketError as exc:
+            add_log("warning", "runtime", f"reservation_ticket_rejected reason={exc.code} catalog_item={catalog_item_id} ticket=[redacted]")
+            raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+        except LookupError as exc:
+            add_log("warning", "runtime", f"reservation_ticket_rejected reason=missing_reservation catalog_item={catalog_item_id} ticket=[redacted]")
+            raise HTTPException(status_code=404, detail={"code": "missing_reservation", "message": "Playback reservation was not found."}) from exc
+        except ValueError as exc:
+            code = str(exc)
+            status = 409 if code == "catalog_mismatch" else 410
+            add_log("warning", "runtime", f"reservation_ticket_rejected reason={code} catalog_item={catalog_item_id} ticket=[redacted]")
+            raise HTTPException(status_code=status, detail={"code": code, "message": "Playback reservation is no longer available."}) from exc
+        add_log("info", "runtime", f"reservation_ticket_validated reservation={reservation.reservation_id} catalog_item={catalog_item_id} ticket=[redacted]")
+        add_log("info", "runtime", f"ticketed_reservation_reused reservation={reservation.reservation_id} catalog_item={catalog_item_id} account={reservation.account_name or reservation.account_id} redirect={mask_runtime_target(raw_location_ref)}")
+        return RedirectResponse(raw_location_ref, status_code=302, headers={
+            "X-Media-Router-Reservation-Action": "ticketed_reservation_reused",
+            "X-Media-Router-Reservation-Id": reservation.reservation_id,
+            "X-Media-Router-Selected-Account": str(reservation.account_name or reservation.account_id),
+            "X-Media-Router-Reuse-Reason": "Validated broker playback ticket.",
+        })
     peer_addr = request.client.host if request.client else None
     context = runtime_client_context(peer_addr, request.headers)
     remote_addr = str(context["address"])
@@ -72,6 +102,23 @@ def _runtime_response(
     reservation = payload.broker_decision.reservation
     action = payload.reservation_action
     reuse_reason = payload.reuse_reason or ("new playback reservation" if action == "reservation_created" else "non-reserving probe")
+    if reserve and method == "GET":
+        observation_identity_type = ("explicit_session" if identity_session else
+            "stable_client_id" if context["stable_client_id"] else "derived_fingerprint")
+        observation_identity = identity_session or context["stable_client_id"] or identity_fingerprint
+        try:
+            record_runtime_correlation_observation(
+                reservation_id=payload.reservation_id, catalog_item_id=catalog_item_id,
+                media_type=route_media_type, route_type=route_media_type,
+                request_identity_type=observation_identity_type,
+                request_identity=str(observation_identity) if observation_identity else None,
+                stable_emby_identifier=str(context["stable_client_id"]) if context["stable_client_id"] else None,
+                request_profile=str(context["user_agent_family"]),
+                address_signature=str(context["address_signature"]),
+                user_agent_signature=str(context["user_agent_signature"]),
+            )
+        except Exception as exc:
+            add_log("warning", "runtime", f"correlation_observation_failed reservation={payload.reservation_id} error={type(exc).__name__}")
     add_log(
         "info",
         "runtime",
@@ -100,8 +147,9 @@ def resolve_live(
     ttl: int | None = Query(default=None, ge=1, le=86400),
     client_label: str | None = None,
     client_session: str | None = None,
+    ticket: str | None = None,
 ) -> RuntimeResolveDebug | RedirectResponse:
-    return _runtime_response(request, "GET", "live", catalog_item_id, debug, ttl, client_label, client_session)
+    return _runtime_response(request, "GET", "live", catalog_item_id, debug, ttl, client_label, client_session, ticket)
 
 
 @router.head("/r/live/{catalog_item_id}")
@@ -123,8 +171,9 @@ def resolve_movie(
     ttl: int | None = Query(default=None, ge=1, le=86400),
     client_label: str | None = None,
     client_session: str | None = None,
+    ticket: str | None = None,
 ) -> RuntimeResolveDebug | RedirectResponse:
-    return _runtime_response(request, "GET", "movie", catalog_item_id, debug, ttl, client_label, client_session)
+    return _runtime_response(request, "GET", "movie", catalog_item_id, debug, ttl, client_label, client_session, ticket)
 
 
 @router.head("/r/movie/{catalog_item_id}")
@@ -146,8 +195,9 @@ def resolve_episode(
     ttl: int | None = Query(default=None, ge=1, le=86400),
     client_label: str | None = None,
     client_session: str | None = None,
+    ticket: str | None = None,
 ) -> RuntimeResolveDebug | RedirectResponse:
-    return _runtime_response(request, "GET", "episode", catalog_item_id, debug, ttl, client_label, client_session)
+    return _runtime_response(request, "GET", "episode", catalog_item_id, debug, ttl, client_label, client_session, ticket)
 
 
 @router.head("/r/episode/{catalog_item_id}")

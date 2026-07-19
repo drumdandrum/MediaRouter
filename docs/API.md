@@ -2,7 +2,7 @@
 
 ## Current Sprint 7 API
 
-The current project exposes Sprint 7 Live TV M3U output endpoints and Sprint 6 STRM output endpoints on top of Sprint 5 source resolution runtime endpoints and Sprint 4 broker decisions. Runtime URLs redirect to selected provider/source URLs; generated STRM and M3U outputs contain only Media Router runtime URLs. Playback, proxy streaming, transcoding, XMLTV output, HDHomeRun output, and media integrations are deliberately deferred.
+Runtime URLs redirect to selected provider/source URLs; generated STRM and M3U outputs contain only Media Router runtime URLs. The optional Emby adapter observes sessions and supplies lifecycle evidence but does not proxy, transcode, control playback, or synchronize libraries.
 
 Runtime acquisition uses an immediate SQLite transaction and an active-playback unique key. Matching retries reuse the committed reservation before redirect construction and update `last_seen_at` and `reuse_count`. A uniqueness conflict is resolved by loading the winning reservation rather than returning an error.
 
@@ -58,13 +58,28 @@ Reservation responses include `alias_count`, `coalesced_reuse_count`, and `start
 | `DELETE` | `/api/sources/{id}` | Deletes one source availability record. |
 | `GET` | `/api/broker/status` | Returns reservation counts and account capacity usage. |
 | `GET` | `/api/broker/reservations` | Lists recent broker reservations. |
+| `GET` | `/api/integrations/emby` | Reads redacted Emby adapter settings; returns `has_api_key`, never the key. |
+| `PUT` | `/api/integrations/emby` | Updates Emby settings; a blank API key preserves the stored key. |
+| `POST` | `/api/integrations/emby/test` | Tests authenticated Emby system information and returns sanitized identity/version or failure. |
+| `GET` | `/api/integrations/emby/status` | Returns health, poll timestamps/counters, server identity, and binding counters. |
+| `GET` | `/api/integrations/emby/sessions?limit=100&offset=0` | Lists bounded normalized observed playback without raw Emby payloads, including categorical correlation candidate/rejection diagnostics. |
+| `GET` | `/api/integrations/emby/bindings?limit=100&offset=0` | Lists bounded persistent Emby-to-reservation binding history. |
+| `GET` | `/api/integrations/emby/channel-mappings` | Lists mapped and unmapped Emby Live TV channels. |
+| `GET` | `/api/integrations/emby/channel-mappings/page?limit=100&offset=0&search=` | Searches and paginates large mapping inventories. |
+| `POST` | `/api/integrations/emby/channel-mappings/preview` | Dry-runs marker, persisted-ID, and guarded unique-title matching with automatic, existing-manual, ambiguous, unmatched, and conflict results. |
+| `POST` | `/api/integrations/emby/channel-mappings/refresh` | Rebuilds the Emby channel inventory and exact durable-marker mappings. |
+| `PUT` | `/api/integrations/emby/channel-mappings/{server_id}/{item_id}` | Creates or updates a manual Emby ItemId-to-catalog mapping; channel refresh is not required first. |
+
+The mapping body requires `catalog_item_id` and may include the observed `emby_media_source_id` to establish the secondary exact-match key.
+
+Emby defaults to disabled. Poll interval defaults to 10 seconds (minimum 5), release grace 30 seconds, unavailable timeout 60 seconds, request timeout 10 seconds, and TLS verification enabled. Failed polls update integration health but never infer stopped playback.
 | `POST` | `/api/broker/reservations/{id}/confirm` | Explicitly promotes a non-expired provisional lease. |
 | `POST` | `/api/broker/reservations/{id}/heartbeat` | Records activity and renews an active lease when sliding renewal is enabled; terminal leases are never revived. |
 | `POST` | `/api/broker/reservations/{id}/release` | Idempotently releases a capacity-consuming lease. |
 | `POST` | `/api/broker/reservations/{id}/expire` | Explicitly expires a capacity-consuming lease for diagnostics/UI use. |
 
 Normal runtime GET acquisition creates a provisional lease. Only provisional and active states consume capacity. The `ttl` runtime query parameter overrides active TTL only. HEAD remains non-reserving. Defaults are Live 45s provisional/20s age/2 requests/14400s active, Movie 60s/20s/2/10800s, and Episode 60s/20s/2/7200s; sliding renewal and safe supersession are enabled.
-| `POST` | `/api/broker/resolve` | Chooses the best available source and creates a temporary reservation. |
+| `POST` | `/api/broker/resolve` | Chooses a source, creates a reservation, and returns a short-lived ticketed runtime URL. |
 | `POST` | `/api/broker/release` | Releases one active reservation. |
 | `POST` | `/api/broker/release-all` | Releases every active reservation. |
 | `POST` | `/api/broker/expire-now` | Expires stale reservations immediately for testing. |
@@ -180,6 +195,12 @@ Deferred:
 - `GET /api/broker/status`
 - `GET /api/broker/reservations`
 - `POST /api/broker/resolve`
+
+Successful resolve responses include `runtime_url` (and the compatibility `stream_url` field points to the same value). The URL targets `/r/{media}/{catalog_item_id}?ticket=...`. The opaque ticket is short-lived and HMAC-signed; it identifies only the reservation, catalog item, and expiration, and never contains provider credentials or the raw client session. Clients must use the URL as returned and must not parse or persist its ticket.
+
+When a ticket is present, the runtime validates it and reuses the reservation's selected account. Invalid or tampered tickets return `400`, missing reservations return `404`, catalog/route mismatches return `409`, and expired tickets or terminal reservations return `410`. These failures never fall back to generic allocation. Repeated valid startup requests are idempotent. Runtime requests without `ticket` retain the generic fingerprint/coalescing behavior.
+
+The Source Decision Tester displays, copies, and opens the exact `runtime_url` returned by resolve. It labels the URL as `ticketed` or `generic` and does not reconstruct reservation playback URLs from catalog identifiers. Generic runtime URLs remain the form emitted for normal unticketed M3U/STRM playback.
 - `POST /api/broker/release`
 - `POST /api/broker/release-all`
 - `POST /api/broker/expire-now`
@@ -407,8 +428,8 @@ Sprint 7 generates disposable extended M3U playlists for live/channel catalog it
 
 ```text
 #EXTM3U
-#EXTINF:-1 tvg-chno="4.1" tvg-id="NBCKNBC.us" tvg-name="NBC 4 Los Angeles" tvg-logo="..." group-title="LA Locals",NBC 4 Los Angeles
-http://localhost:8088/r/live/channel_abc123
+#EXTINF:-1 media-router-id="channel_abc123" tvg-chno="4.1" tvg-id="NBCKNBC.us" tvg-name="NBC 4 Los Angeles" tvg-logo="..." group-title="LA Locals",NBC 4 Los Angeles
+http://localhost:8088/r/live/channel_abc123?mr_catalog_id=channel_abc123
 ```
 
 Live M3U settings include:
@@ -429,6 +450,14 @@ Path validation also warns when the Movies STRM directory, Series STRM directory
 `POST /api/outputs/live-m3u/generate` starts a background job that reports selection progress and streams the numerically ordered playlist through a temporary file before replacement. Unlimited mode must be explicitly selected in saved settings and confirmed in the request body.
 
 Generated M3U files never contain direct provider stream URLs or credentials. Broker capacity decisions still happen later, when a client opens one of the generated `/r/live/{catalog_item_id}` URLs.
+
+Every generated live entry carries the stable Media Router catalog identity in the dedicated `media-router-id` attribute, the deterministic runtime path, and the `mr_catalog_id` URL marker. `media-router-id` is deliberately separate from editorial `tvg-id`, so XMLTV identity is preserved. During channel refresh the Emby adapter checks preserved M3U metadata, runtime paths, ProviderIds, media-source IDs, and tuner/source IDs. If no marker exists, an exact normalized-title match is accepted only when the name is unique in both lineups and has no manual or marker conflict.
+
+The normal workflow is: generate the playlist with `POST /api/outputs/live-m3u/generate`, have Emby refresh its Live TV guide/tuner lineup, preview matches with `POST /api/integrations/emby/channel-mappings/preview`, then persist safe matches with `POST /api/integrations/emby/channel-mappings/refresh`. Existing manual mappings are never overwritten by either operation.
+
+Because `/Sessions` may contain a reduced item representation, unresolved live sessions are enriched with the full authenticated Emby item DTO before catalog correlation. This retrieves omitted `Path`, `ProviderIds`, and `MediaSources` identity without making runtime client context authoritative.
+
+Emby polling treats durable catalog recognition and reservation acquisition as separate phases. If ItemId, MediaSourceId, or an imported `mr:` marker cannot resolve the catalog item, processing stops with `catalog_identity_unresolved`; runtime observations and provisional reservations are not inspected. `emby_runtime_correlation_enabled` defaults to `false` and is reserved for opt-in diagnostics only—it never makes runtime evidence authoritative for unresolved playback.
 
 Generated placements prefer original source-playlist order. Legacy records without placement order fall back to numeric channel number, group title, then display title. Guide XML is currently external to Media Router and can continue to come from IPTV Boss or a separate webserver.
 

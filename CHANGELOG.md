@@ -31,6 +31,18 @@ All notable changes are documented here.
 
 # Unreleased
 
+## Added
+
+- MediaRouter-side Emby session polling adapter with redacted configuration, connection testing, health status, normalized observed playback, and persistent reservation bindings.
+- Authoritative Emby playback confirmation and heartbeat evidence feeding the existing Broker lifecycle, plus grace-delayed release after confirmed disappearance.
+- Integrations UI for Emby configuration, health, observed playback, correlation diagnostics, and binding history.
+- Short-lived, capacity-neutral runtime correlation observations allow unique Emby playback to bind when Emby omits the original MediaRouter runtime URL; ambiguous, stale, IP-only, and title-only matches remain rejected.
+
+## Safety
+
+- Failed, malformed, timed-out, or unauthorized Emby polls never mark playback missing or release Broker reservations.
+- The Emby API key is write-only through the API/UI and excluded from logs and diagnostics.
+
 ## Planned
 
 - Native HTTP-served Live M3U.

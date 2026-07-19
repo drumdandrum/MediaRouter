@@ -37,6 +37,8 @@ flowchart LR
   Outputs["Output Plugins"] --> Catalog
   Outputs --> Broker
   Integrations["External Integrations"] --> API
+  Emby["Emby Session Poller"] --> Integrations
+  Integrations --> Broker
 ```
 
 ## Modules
@@ -118,6 +120,10 @@ Approved plugin-facing capabilities should include:
 - Path mapper.
 - Event logger.
 - Job status reporter.
+
+## Emby lifecycle evidence adapter
+
+The Emby adapter is application-managed integration code, not a plugin installed in Emby and not a second reservation subsystem. Its bounded poller normalizes active sessions and persists only correlation/binding metadata. Successful observations call the Broker confirmation, heartbeat, and release services. Unavailable or ambiguous observations do not mutate reservations. Direct provider redirects remain unchanged.
 
 ## Identity Boundary
 

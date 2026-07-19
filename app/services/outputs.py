@@ -516,6 +516,7 @@ def get_live_m3u_estimate() -> LiveM3uEstimate:
 
 def _live_m3u_entry(item: CatalogItem, settings: LiveM3uSettings, runtime_base_url: str) -> LiveM3uPreviewEntry:
     attrs: list[str] = []
+    attrs.append(f'media-router-id="{_xml_attr(item.internal_id)}"')
     if item.tvg_chno:
         attrs.append(f'tvg-chno="{_xml_attr(item.tvg_chno)}"')
     if settings.include_tvg_id and item.tvg_id:
@@ -529,7 +530,7 @@ def _live_m3u_entry(item: CatalogItem, settings: LiveM3uSettings, runtime_base_u
     attr_text = f" {' '.join(attrs)}" if attrs else ""
     display_title = item.tvg_name or item.title
     extinf = f'#EXTINF:-1{attr_text},{display_title}'
-    runtime_url = f"{runtime_base_url}/r/live/{item.internal_id}"
+    runtime_url = f"{runtime_base_url}/r/live/{item.internal_id}?mr_catalog_id={item.internal_id}"
     return LiveM3uPreviewEntry(
         catalog_item_id=item.internal_id,
         title=display_title,
@@ -541,7 +542,7 @@ def _live_m3u_entry(item: CatalogItem, settings: LiveM3uSettings, runtime_base_u
 
 
 def _live_m3u_placement_entry(row: sqlite3.Row, settings: LiveM3uSettings, runtime_base_url: str) -> LiveM3uPreviewEntry:
-    attrs: list[str] = []
+    attrs: list[str] = [f'media-router-id="{_xml_attr(row["catalog_item_id"])}"']
     if row["channel_number"]:
         attrs.append(f'tvg-chno="{_xml_attr(row["channel_number"])}"')
     if settings.include_tvg_id and row["tvg_id"]:
@@ -558,7 +559,7 @@ def _live_m3u_placement_entry(row: sqlite3.Row, settings: LiveM3uSettings, runti
         catalog_item_id=row["catalog_item_id"], title=title,
         channel_number=row["channel_number"], group_title=row["group_title"],
         extinf=f"#EXTINF:-1{attr_text},{title}",
-        runtime_url=f"{runtime_base_url}/r/live/{row['catalog_item_id']}",
+        runtime_url=f"{runtime_base_url}/r/live/{row['catalog_item_id']}?mr_catalog_id={row['catalog_item_id']}",
     )
 
 

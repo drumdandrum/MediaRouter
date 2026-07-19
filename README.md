@@ -40,6 +40,7 @@ Emby / Channels DVR / Jellyfin / Kodi / VLC
 - Live TV M3U generation with channel-number, group, metadata, source-order, and repeated editorial-placement preservation.
 - Paginated APIs and UI tables for large catalogs.
 - Persistent wizard, settings, jobs, logs, and operational metadata.
+- Optional MediaRouter-side Emby session polling that confirms, renews, and grace-releases existing Broker reservations without requiring an Emby plugin.
 
 ## Current limitations
 
@@ -119,9 +120,15 @@ With four equivalent accounts, one catalog item can have four source-availabilit
 
 Runtime reservation acquisition is atomic. A runtime GET starts a capacity-consuming provisional lease. Matching GET, HEAD, Range, reconnect, and startup requests reuse the same reservation instead of consuming additional capacity. Continued meaningful activity after the configured minimum age promotes that same ID to active.
 
-Media Router prefers an explicit `client_session`. Otherwise, it uses a privacy-safe derived fingerprint. A short, conservative startup-coalescing fallback can alias a changed Emby/ffmpeg fingerprint to exactly one recent same-origin reservation.
+Media Router prefers an explicit `client_session`. Otherwise, it uses a privacy-safe derived fingerprint. A short, conservative startup-coalescing fallback can alias a changed Emby/ffmpeg fingerprint to exactly one recent same-origin reservation. The Emby adapter also uses its securely normalized session ID as an explicit identity when authoritative observed playback must acquire a reservation directly.
 
 Defaults are 45 seconds provisional and four hours active for Live TV, 60 seconds provisional and three hours active for movies, and 60 seconds provisional and two hours active for episodes. Promotion defaults to a 20-second minimum age and two meaningful requests. Sliding active renewal and safe same-identity supersession are enabled. Runtime `ttl=` overrides active TTL only; manual Broker tests retain short active diagnostic leases.
+
+## Emby session adapter
+
+Enable the adapter under Integrations and provide the Emby server URL and an API key. Media Router polls active Emby sessions; no Emby plugin, webhook, proxy, or transcoder is installed. It correlates Media Router runtime paths first, then existing bindings, then catalog identity plus Emby device/session evidence, and finally one recent unambiguous catalog candidate. It never matches by IP or title alone.
+
+An observed session with durable catalog identity reuses a compatible provisional reservation when possible; otherwise the Broker creates an explicit-session reservation. A recent runtime observation can disambiguate candidates but is not required. The reservation is promoted through the Broker’s confirmation service, and active or paused playback renews the same lease through heartbeat. A missing session starts the configured grace timer and is released only after successful polls continue to confirm absence. Failed polls retain bindings and do not advance release timers. The API key is stored locally using the project’s current secret convention and is never returned by read APIs; local encryption remains future hardening.
 
 ## Validated clients
 
