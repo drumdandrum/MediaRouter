@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from datetime import datetime, timedelta
+from html import unescape
 import json
 import re
 import sqlite3
@@ -566,6 +567,10 @@ def _catalog_from_identity_values(conn: sqlite3.Connection, values: set[str]) ->
     return rows[0]["internal_id"] if len(rows) == 1 else None
 
 
+def _normalize_channel_title(value: Any) -> str:
+    return re.sub(r"\s+", " ", unescape(str(value or "")).strip()).lower()
+
+
 def preview_emby_channel_mappings() -> EmbyChannelMappingPreview:
     settings = _private_settings()
     info = _request_json("/System/Info", settings)
@@ -577,8 +582,13 @@ def preview_emby_channel_mappings() -> EmbyChannelMappingPreview:
         emby_name_counts: dict[str, int] = {}
         for item in channels:
             if isinstance(item, dict):
-                name = re.sub(r"\s+", " ", str(item.get("Name") or "").strip().lower())
+                name = _normalize_channel_title(item.get("Name"))
                 emby_name_counts[name] = emby_name_counts.get(name, 0) + 1
+        placement_catalogs: dict[str, set[str]] = {}
+        for row in conn.execute("SELECT catalog_item_id,display_title FROM channel_placements WHERE active=1").fetchall():
+            title = _normalize_channel_title(row["display_title"])
+            if title:
+                placement_catalogs.setdefault(title, set()).add(row["catalog_item_id"])
         for item in channels:
             if not isinstance(item, dict) or not _safe_id(item.get("Id")):
                 continue
@@ -604,11 +614,14 @@ def preview_emby_channel_mappings() -> EmbyChannelMappingPreview:
             elif previous and previous["catalog_item_id"]:
                 status, source, catalog_item_id, detail = "automatic", previous["mapping_source"], previous["catalog_item_id"], "Preserved exact persisted ItemId mapping."
             else:
-                normalized = re.sub(r"\s+", " ", str(item.get("Name") or "").strip().lower())
+                normalized = _normalize_channel_title(item.get("Name"))
                 catalog_rows = conn.execute("SELECT internal_id FROM catalog_items WHERE media_type='channel' AND normalized_title=?", (normalized,)).fetchall()
+                placement_ids = placement_catalogs.get(normalized, set())
                 if normalized and emby_name_counts.get(normalized) == 1 and len(catalog_rows) == 1:
                     status, source, catalog_item_id, detail = "automatic", "automatic_title", catalog_rows[0]["internal_id"], "Exact unique normalized title match."
-                elif normalized and (emby_name_counts.get(normalized, 0) > 1 or len(catalog_rows) > 1):
+                elif normalized and emby_name_counts.get(normalized) == 1 and not catalog_rows and len(placement_ids) == 1:
+                    status, source, catalog_item_id, detail = "automatic", "automatic_placement_title", next(iter(placement_ids)), "Exact unique active placement title match."
+                elif normalized and (emby_name_counts.get(normalized, 0) > 1 or len(catalog_rows) > 1 or len(placement_ids) > 1):
                     status, source, catalog_item_id, detail = "ambiguous", "title", None, "Duplicate normalized channel name."
                 else:
                     status, source, catalog_item_id, detail = "unmatched", "unmapped", None, "No safe exact match."
