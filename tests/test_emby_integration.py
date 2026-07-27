@@ -100,6 +100,10 @@ class EmbyIntegrationTests(unittest.TestCase):
                 (catalog_id, f"source-{catalog_id}-{index}", "Test", "test.m3u",
                  display_title, index, active, now, now))
 
+    def _captured_live_session_15769(self):
+        fixture = Path(__file__).parent / "fixtures" / "emby_session_tvchannel_15769.json"
+        return json.loads(fixture.read_text())
+
     def _observation(self, reservation, *, profile="emby_server", stable="device-1",
                      address="weak-address"):
         from app.services.emby import record_runtime_correlation_observation
@@ -321,6 +325,51 @@ class EmbyIntegrationTests(unittest.TestCase):
             item = preview_emby_channel_mappings().items[0]
         self.assertEqual((item.status, item.catalog_item_id, item.match_source),
                          ("automatic", "live_one", "automatic_marker"))
+
+    def test_duplicate_emby_lineup_names_make_placement_title_ambiguous(self):
+        from app.services.emby import preview_emby_channel_mappings
+        self._placement("live_one", "Duplicate Emby Name")
+        channels = {"Items": [
+            {"Id": "duplicate-emby-a", "Name": "Duplicate Emby Name", "Type": "TvChannel"},
+            {"Id": "duplicate-emby-b", "Name": "Duplicate Emby Name", "Type": "TvChannel"},
+        ]}
+        with patch("app.services.emby._request_json", side_effect=[{"Id": "server"}, channels]):
+            preview = preview_emby_channel_mappings()
+        self.assertTrue(all(item.status == "ambiguous" and item.catalog_item_id is None
+                            for item in preview.items))
+
+    def test_captured_sparse_tvchannel_maps_only_after_refresh_persists_crosswalk(self):
+        from app.services.emby import (
+            list_emby_channel_mappings, normalize_emby_sessions,
+            reconcile_emby_sessions, refresh_emby_channel_mappings,
+        )
+        payload = self._captured_live_session_15769()
+        sessions = normalize_emby_sessions(payload, "server")
+        matched, unmatched = reconcile_emby_sessions(
+            sessions, server_id="server", release_grace_seconds=30)
+        self.assertEqual((matched, unmatched, sessions[0].unmatched_reason),
+                         (0, 1, "catalog_identity_unresolved"))
+        self.assertEqual(len(list_reservations()), 0)
+
+        self._placement("live_one", "24/7 BRUCE LEE MOVIES")
+        channels = {"Items": [payload[0]["NowPlayingItem"] | {
+            "MediaSources": [{"Id": payload[0]["PlayState"]["MediaSourceId"]}]
+        }]}
+        with patch("app.services.emby._request_json", side_effect=[{"Id": "server"}, channels]):
+            refresh_emby_channel_mappings()
+        mapping = list_emby_channel_mappings()[0]
+        self.assertEqual(
+            (mapping.emby_item_id, mapping.emby_media_source_id,
+             mapping.catalog_item_id, mapping.mapping_source),
+            ("15769", "a952eb5529de17e017ad5b97cce9f424",
+             "live_one", "automatic_placement_title"),
+        )
+
+        sessions = normalize_emby_sessions(payload, "server")
+        matched, unmatched = reconcile_emby_sessions(
+            sessions, server_id="server", release_grace_seconds=30)
+        self.assertEqual((matched, unmatched, sessions[0].catalog_item_id), (1, 0, "live_one"))
+        self.assertEqual(len(list_reservations()), 1)
 
     def test_mapping_preview_preserves_manual_and_guards_title_fallback(self):
         from app.services.emby import link_emby_channel, preview_emby_channel_mappings, refresh_emby_channel_mappings, list_emby_channel_mappings

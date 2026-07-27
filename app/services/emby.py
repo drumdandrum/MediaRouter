@@ -8,6 +8,7 @@ import re
 import sqlite3
 import ssl
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -568,7 +569,8 @@ def _catalog_from_identity_values(conn: sqlite3.Connection, values: set[str]) ->
 
 
 def _normalize_channel_title(value: Any) -> str:
-    return re.sub(r"\s+", " ", unescape(str(value or "")).strip()).lower()
+    text = unicodedata.normalize("NFKC", unescape(str(value or "")))
+    return re.sub(r"\s+", " ", text).strip().casefold()
 
 
 def preview_emby_channel_mappings() -> EmbyChannelMappingPreview:
