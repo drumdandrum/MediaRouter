@@ -24,7 +24,10 @@ from app.schemas.integrations import (
     EmbyChannelMapping, EmbyChannelRefreshResult, EmbyChannelMappingPreview,
     EmbyChannelMappingPreviewItem, EmbyChannelMappingPage,
 )
-from app.services.broker import BrokerUnavailable, confirm_reservation, heartbeat_reservation, release_reservation, resolve_source
+from app.services.broker import (
+    BrokerUnavailable, adopt_provisional_reservation, confirm_reservation,
+    heartbeat_reservation, release_reservation, resolve_source,
+)
 from app.services.logs import add_log
 
 
@@ -847,6 +850,32 @@ def _acquire_emby_reservation(session: EmbyPlaybackSession) -> None:
                 session.reservation_id = reservation["reservation_id"]
                 session.correlation_method = "existing_binding"
                 return
+    adoption = adopt_provisional_reservation(
+        session.catalog_item_id, session.media_type, session.emby_session_id,
+        startup_window_seconds=EMBY_CORRELATION_WINDOW_SECONDS,
+    )
+    if adoption.status == "adopted" and adoption.reservation:
+        session.reservation_id = adoption.reservation.reservation_id
+        session.correlation_method = "emby_provisional_reservation_adopted"
+        add_log("info", "emby", (
+            f"emby_provisional_adoption_succeeded reservation={adoption.reservation.reservation_id} "
+            f"session={session.emby_session_id} catalog_item={session.catalog_item_id} "
+            f"candidate_count={adoption.candidate_count}"
+        ))
+        return
+    event = {
+        "no_candidate": "emby_provisional_adoption_no_candidate",
+        "ambiguous": "emby_provisional_adoption_ambiguous",
+        "race_lost": "emby_provisional_adoption_race_lost",
+    }.get(adoption.status, "emby_provisional_adoption_no_candidate")
+    add_log("info", "emby", (
+        f"{event} reservation=none session={session.emby_session_id} "
+        f"catalog_item={session.catalog_item_id} candidate_count={adoption.candidate_count}"
+    ))
+    add_log("info", "emby", (
+        f"emby_provisional_adoption_fallback reservation=none session={session.emby_session_id} "
+        f"catalog_item={session.catalog_item_id} candidate_count={adoption.candidate_count}"
+    ))
     try:
         decision = resolve_source(
             catalog_item_id=session.catalog_item_id,
