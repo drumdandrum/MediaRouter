@@ -1,0 +1,22 @@
+[
+  {
+    "Id": "captured-session-15769",
+    "DeviceId": "captured-device",
+    "DeviceName": "Captured Emby Endpoint",
+    "Client": "Emby",
+    "UserId": "captured-user",
+    "UserName": "Viewer",
+    "NowPlayingItem": {
+      "Id": "15769",
+      "Name": "24/7 BRUCE LEE MOVIES",
+      "Type": "TvChannel",
+      "ProviderIds": {}
+    },
+    "PlayState": {
+      "PlaySessionId": "captured-play-session-15769",
+      "MediaSourceId": "a952eb5529de17e017ad5b97cce9f424",
+      "PositionTicks": 1000,
+      "IsPaused": false
+    }
+  }
+]
