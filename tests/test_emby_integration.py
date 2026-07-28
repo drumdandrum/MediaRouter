@@ -104,6 +104,38 @@ class EmbyIntegrationTests(unittest.TestCase):
                 (catalog_id, f"source-{catalog_id}-{index}", "Test", "test.m3u",
                  display_title, index, active, now, now))
 
+    def _catalog_item(self, internal_id, media_type, title, *,
+                      show_name=None, season=None, episode=None, parent=None):
+        now = datetime.utcnow().isoformat()
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            conn.execute("""INSERT INTO catalog_items
+                (internal_id,media_type,title,normalized_title,show_name,season_number,
+                 episode_number,parent_internal_id,confidence,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?, 'high',?,?)""",
+                (internal_id, media_type, title, title.strip().lower(), show_name,
+                 season, episode, parent, now, now))
+
+    def _mapping_audit(self, media_types, *, channels=None, items=None):
+        from app.schemas.integrations import EmbyMappingAuditRequest
+        from app.services.emby_audit import preview_emby_mapping_audit
+        responses = [{"Id": "server"}]
+        if "channel" in media_types:
+            channel_items = channels or []
+            responses.append({"Items": channel_items,
+                              "TotalRecordCount": len(channel_items)})
+        if any(media_type in {"movie", "series", "episode"}
+               for media_type in media_types):
+            vod_items = items or []
+            responses.append({"Items": vod_items,
+                              "TotalRecordCount": len(vod_items)})
+        configured = {"server_url": "http://emby", "api_key": "key",
+                      "request_timeout_seconds": 10, "verify_tls": True}
+        with patch("app.services.emby._private_settings", return_value=configured), \
+             patch("app.services.emby._request_json", side_effect=responses):
+            return preview_emby_mapping_audit(
+                EmbyMappingAuditRequest(media_types=media_types)
+            )
+
     def _captured_live_session_15769(self):
         fixture = Path(__file__).parent / "fixtures" / "emby_session_tvchannel_15769.json"
         return json.loads(fixture.read_text())
@@ -402,6 +434,266 @@ class EmbyIntegrationTests(unittest.TestCase):
         self.assertEqual((mappings["manual-item"].catalog_item_id, mappings["manual-item"].mapping_source), ("live_one", "manual"))
         self.assertEqual(mappings["unique-title"].mapping_source, "automatic_title")
         self.assertIsNone(mappings["duplicate-a"].catalog_item_id)
+
+    def test_mapping_audit_request_validation_and_api_failure_boundaries(self):
+        from app.main import app
+        from app.schemas.integrations import EmbyMappingAuditRequest
+        from app.services.emby import EmbyError
+        for values in (
+            {"media_types": ["invalid"]},
+            {"media_types": []},
+            {"media_types": ["movie", "movie"]},
+            {"offset": -1},
+            {"limit": 0},
+            {"limit": 501},
+        ):
+            with self.assertRaises(ValidationError):
+                EmbyMappingAuditRequest(**values)
+        client = TestClient(app)
+        self.assertEqual(client.post(
+            "/api/integrations/emby/mapping-audit/preview",
+            json={"limit": 501},
+        ).status_code, 422)
+        not_configured = client.post(
+            "/api/integrations/emby/mapping-audit/preview",
+            json={"media_types": ["movie"]},
+        )
+        self.assertEqual(not_configured.status_code, 409)
+        configured = {"server_url": "http://emby", "api_key": "key",
+                      "request_timeout_seconds": 10, "verify_tls": True}
+        with patch("app.services.emby._private_settings",
+                   return_value=configured), \
+             patch("app.services.emby._request_json", side_effect=[
+                 {"Id": "server"}, {"Items": [], "TotalRecordCount": 0},
+             ]):
+            empty = client.post(
+                "/api/integrations/emby/mapping-audit/preview",
+                json={"media_types": ["movie"]},
+            )
+        self.assertEqual(empty.status_code, 200)
+        self.assertEqual((empty.json()["scanned_count"],
+                          empty.json()["scan_complete"],
+                          empty.json()["truncated"]), (0, True, False))
+        with patch("app.api.integrations.preview_emby_mapping_audit",
+                   side_effect=EmbyError("credential-bearing detail", "degraded")):
+            failed = client.post(
+                "/api/integrations/emby/mapping-audit/preview",
+                json={"media_types": ["movie"]},
+            )
+        self.assertEqual(failed.status_code, 502)
+        self.assertNotIn("credential-bearing", failed.text)
+
+    def test_mapping_audit_uses_bounded_paging_and_reports_truncation(self):
+        from app.schemas.integrations import EmbyMappingAuditRequest
+        from app.services.emby_audit import preview_emby_mapping_audit
+        configured = {"server_url": "http://emby", "api_key": "key",
+                      "request_timeout_seconds": 10, "verify_tls": True}
+        first = [{"Id": "m1", "Name": "One", "Type": "Movie"},
+                 {"Id": "m2", "Name": "Two", "Type": "Movie"}]
+        second = [{"Id": "m3", "Name": "Three", "Type": "Movie"}]
+        with patch("app.services.emby._private_settings", return_value=configured), \
+             patch("app.services.emby._request_json", side_effect=[
+                 {"Id": "server"},
+                 {"Items": first, "TotalRecordCount": 4},
+                 {"Items": second, "TotalRecordCount": 4},
+             ]) as request, \
+             patch("app.services.emby_audit.EMBY_AUDIT_PAGE_SIZE", 2), \
+             patch("app.services.emby_audit.EMBY_AUDIT_SCAN_CAP", 3):
+            result = preview_emby_mapping_audit(EmbyMappingAuditRequest(
+                media_types=["movie"], offset=1, limit=1,
+            ))
+        self.assertEqual((result.scanned_count, result.total_details,
+                          result.returned_count), (3, 3, 1))
+        self.assertTrue(result.truncated)
+        self.assertFalse(result.scan_complete)
+        self.assertIn("StartIndex=0", request.call_args_list[1].args[0])
+        self.assertIn("Limit=2", request.call_args_list[1].args[0])
+        self.assertIn("StartIndex=2", request.call_args_list[2].args[0])
+        self.assertIn("Limit=1", request.call_args_list[2].args[0])
+
+    def test_mapping_audit_groups_manual_exact_and_unmatched_results(self):
+        from app.services.emby import link_emby_channel
+        link_emby_channel("server", "manual-channel", "live_one")
+        channels = [
+            {"Id": "manual-channel", "Name": "Manual", "Type": "TvChannel",
+             "ProviderIds": {"MediaRouter": "mr:live_two"}},
+            {"Id": "marker-channel", "Name": "Marker", "Type": "TvChannel",
+             "Path": "http://router/r/live/live_two?token=not-returned"},
+            {"Id": "unknown-channel", "Name": "Unknown", "Type": "TvChannel",
+             "Path": "/private/provider/path"},
+        ]
+        result = self._mapping_audit(["channel"], channels=channels)
+        by_id = {item.emby_item_id: item for item in result.items}
+        self.assertEqual((by_id["manual-channel"].classification,
+                          by_id["manual-channel"].evidence_source,
+                          by_id["manual-channel"].catalog_item_id),
+                         ("manual", "manual_mapping", "live_one"))
+        self.assertEqual((by_id["marker-channel"].classification,
+                          by_id["marker-channel"].evidence_source,
+                          by_id["marker-channel"].catalog_item_id),
+                         ("exact", "durable_marker", "live_two"))
+        self.assertEqual(by_id["unknown-channel"].classification, "unmatched")
+        self.assertEqual(result.classification_counts["exact"], 1)
+        self.assertEqual(result.classification_counts["manual"], 1)
+        self.assertEqual(result.classification_counts["unmatched"], 1)
+        self.assertEqual(result.classification_counts["unsupported"], 0)
+        self.assertEqual(result.evidence_source_counts["durable_marker"], 1)
+        self.assertEqual(result.evidence_source_counts["manual_mapping"], 1)
+        self.assertEqual(result.evidence_source_counts["persisted_item_id"], 0)
+        self.assertEqual(result.collision_totals.conflicting_exact_evidence, 1)
+
+    def test_mapping_audit_normalizes_titles_and_scopes_movies(self):
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            conn.execute("""UPDATE catalog_items
+                SET title='Rock &amp; Roll',normalized_title='rock &amp; roll'
+                WHERE internal_id='live_one'""")
+            conn.execute("""UPDATE catalog_items
+                SET title='Rock & Roll',normalized_title='rock & roll'
+                WHERE internal_id='movie_one'""")
+        channels = [{"Id": "opaque-channel", "Name": "  ROCK & ROLL ",
+                     "Type": "TvChannel"}]
+        movies = [{"Id": "opaque-movie", "Name": "Rock &amp;   Roll",
+                   "Type": "Movie"}]
+        result = self._mapping_audit(
+            ["channel", "movie"], channels=channels, items=movies,
+        )
+        by_type = {item.media_type: item for item in result.items}
+        self.assertEqual((by_type["channel"].classification,
+                          by_type["channel"].catalog_item_id),
+                         ("normalized_title", "live_one"))
+        self.assertEqual((by_type["movie"].classification,
+                          by_type["movie"].catalog_item_id),
+                         ("normalized_title", "movie_one"))
+        self.assertTrue(by_type["channel"].apply_eligible)
+        self.assertFalse(by_type["movie"].apply_eligible)
+        self.assertEqual(by_type["movie"].ineligibility_reason,
+                         "vod_application_not_supported")
+
+    def test_mapping_audit_reports_title_and_placement_collisions(self):
+        self._catalog_item("movie_duplicate", "movie", "Duplicate Movie")
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            conn.execute("""UPDATE catalog_items
+                SET title='Duplicate Movie',normalized_title='duplicate movie'
+                WHERE internal_id='movie_one'""")
+        self._placement("live_one", "Repeated Placement", 10)
+        self._placement("live_one", "Repeated Placement", 11)
+        self._placement("live_one", "Shared Placement", 12)
+        self._placement("live_two", "Shared Placement", 13)
+        channels = [
+            {"Id": "repeat", "Name": "Repeated Placement", "Type": "TvChannel"},
+            {"Id": "collision", "Name": "Shared Placement", "Type": "TvChannel"},
+            {"Id": "duplicate-a", "Name": "Duplicate Emby", "Type": "TvChannel"},
+            {"Id": "duplicate-b", "Name": "Duplicate Emby", "Type": "TvChannel"},
+        ]
+        movies = [
+            {"Id": "movie-duplicate", "Name": "Duplicate Movie", "Type": "Movie"},
+            {"Id": "movie-placement-only", "Name": "Repeated Placement",
+             "Type": "Movie"},
+        ]
+        result = self._mapping_audit(
+            ["channel", "movie"], channels=channels, items=movies,
+        )
+        by_id = {item.emby_item_id: item for item in result.items}
+        self.assertEqual((by_id["repeat"].classification,
+                          by_id["repeat"].catalog_item_id,
+                          by_id["repeat"].evidence_source),
+                         ("placement_title", "live_one", "active_placement_title"))
+        self.assertEqual(by_id["collision"].classification, "ambiguous")
+        self.assertTrue(all(by_id[item].classification == "ambiguous"
+                            for item in ("duplicate-a", "duplicate-b")))
+        self.assertEqual(by_id["movie-duplicate"].classification, "ambiguous")
+        self.assertEqual(by_id["movie-placement-only"].classification, "unmatched")
+        self.assertIsNone(by_id["movie-placement-only"].evidence_source)
+        self.assertGreaterEqual(result.collision_totals.duplicate_emby_names, 2)
+        self.assertGreaterEqual(result.collision_totals.duplicate_catalog_titles, 1)
+        self.assertGreaterEqual(result.collision_totals.placement_title_collisions, 1)
+
+    def test_mapping_audit_series_and_structural_episode_matching(self):
+        self._catalog_item("series_show", "series", "My Show")
+        self._catalog_item("episode_structural", "episode", "Pilot",
+                           show_name="My Show", season=1, episode=2,
+                           parent="series_show")
+        self._catalog_item("episode_structural_duplicate", "episode", "Other Cut",
+                           show_name="Duplicated Show", season=3, episode=4)
+        self._catalog_item("episode_structural_duplicate_2", "episode", "Other Cut 2",
+                           show_name="Duplicated Show", season=3, episode=4)
+        items = [
+            {"Id": "series-opaque", "Name": "MY SHOW", "Type": "Series"},
+            {"Id": "episode-opaque", "Name": "Any Episode Title", "Type": "Episode",
+             "SeriesName": "My Show", "ParentIndexNumber": 1, "IndexNumber": 2},
+            {"Id": "episode-title-only", "Name": "Pilot", "Type": "Episode"},
+            {"Id": "episode-duplicate", "Name": "Cut", "Type": "Episode",
+             "SeriesName": "Duplicated Show", "ParentIndexNumber": 3,
+             "IndexNumber": 4},
+        ]
+        result = self._mapping_audit(["series", "episode"], items=items)
+        by_id = {item.emby_item_id: item for item in result.items}
+        self.assertEqual((by_id["series-opaque"].classification,
+                          by_id["series-opaque"].catalog_item_id),
+                         ("normalized_title", "series_show"))
+        self.assertEqual((by_id["episode-opaque"].classification,
+                          by_id["episode-opaque"].evidence_source,
+                          by_id["episode-opaque"].catalog_item_id),
+                         ("exact", "structural_episode_identity",
+                          "episode_structural"))
+        self.assertEqual(
+            (by_id["episode-title-only"].classification,
+             by_id["episode-title-only"].ineligibility_reason),
+            ("unmatched", "incomplete_episode_structure"),
+        )
+        self.assertEqual(by_id["episode-duplicate"].classification, "ambiguous")
+        self.assertEqual(result.collision_totals.incomplete_episode_structure, 1)
+        self.assertEqual(result.collision_totals.duplicate_episode_structures, 1)
+        self.assertTrue(all(not item.apply_eligible for item in result.items))
+
+    def test_mapping_audit_omits_unsupported_vod_crosswalk_evidence(self):
+        now = datetime.utcnow().isoformat()
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            conn.execute("""INSERT INTO emby_channel_mappings
+                (emby_server_id,integration_id,emby_item_id,emby_channel_name,
+                 catalog_item_id,mapping_source,created_at,updated_at)
+                VALUES ('server','server','shared-emby-id','Channel only',
+                        'live_one','manual',?,?)""", (now, now))
+        movie = {"Id": "shared-emby-id", "Name": "No Movie Match",
+                 "Type": "Movie"}
+        result = self._mapping_audit(["movie"], items=[movie])
+        item = result.items[0]
+        self.assertEqual(item.classification, "unmatched")
+        self.assertIsNone(item.evidence_source)
+        self.assertNotIn("persisted", item.model_dump_json())
+        self.assertFalse(item.apply_eligible)
+
+    def test_mapping_audit_is_read_only_and_sanitizes_diagnostics(self):
+        from app.services.emby import refresh_emby_channel_mappings
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            before = {
+                table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in (
+                    "emby_channel_mappings", "emby_observed_sessions",
+                    "runtime_correlation_observations",
+                )
+            }
+        movie = {
+            "Id": "opaque",
+            "Name": "Movie http://user:password@example/path?token=secret",
+            "Type": "Movie",
+            "Path": "http://provider/private?api_key=secret",
+            "Overview": "token=secret",
+        }
+        with patch("app.services.emby.refresh_emby_channel_mappings",
+                   wraps=refresh_emby_channel_mappings) as refresh:
+            result = self._mapping_audit(["movie"], items=[movie])
+        refresh.assert_not_called()
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            after = {
+                table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in before
+            }
+        self.assertEqual(before, after)
+        serialized = result.model_dump_json()
+        self.assertIn("[redacted-url]", serialized)
+        for secret in ("password", "token=secret", "api_key", "/private"):
+            self.assertNotIn(secret, serialized)
 
     def test_mapping_page_bounds_large_lineups(self):
         from app.services.emby import page_emby_channel_mappings

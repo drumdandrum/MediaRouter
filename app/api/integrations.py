@@ -1,3 +1,5 @@
+import sqlite3
+
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas.integrations import (
@@ -5,14 +7,17 @@ from app.schemas.integrations import (
     EmbyPlaybackSession, EmbySettingsRead, EmbySettingsUpdate,
     EmbyChannelMapping, EmbyChannelMappingUpdate, EmbyChannelRefreshResult,
     EmbyChannelMappingPreview, EmbyChannelMappingPage,
+    EmbyMappingAuditRequest, EmbyMappingAuditResponse,
 )
 from app.services.emby import (
+    EmbyError,
     get_emby_settings, get_emby_status, list_emby_bindings,
     list_observed_sessions, test_emby_connection, update_emby_settings,
     link_emby_channel, list_emby_channel_mappings, refresh_emby_channel_mappings,
     delete_emby_channel_mapping,
     page_emby_channel_mappings, preview_emby_channel_mappings,
 )
+from app.services.emby_audit import preview_emby_mapping_audit
 
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
@@ -64,6 +69,37 @@ def emby_channel_mappings_preview() -> EmbyChannelMappingPreview:
         return preview_emby_channel_mappings()
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Emby channel mapping preview failed") from exc
+
+
+@router.post(
+    "/emby/mapping-audit/preview",
+    response_model=EmbyMappingAuditResponse,
+)
+def emby_mapping_audit_preview(
+    payload: EmbyMappingAuditRequest,
+) -> EmbyMappingAuditResponse:
+    try:
+        return preview_emby_mapping_audit(payload)
+    except EmbyError as exc:
+        if exc.health_state == "not_configured":
+            raise HTTPException(
+                status_code=409,
+                detail="Emby integration is not configured.",
+            ) from exc
+        raise HTTPException(
+            status_code=502,
+            detail="Emby mapping audit could not retrieve the remote library.",
+        ) from exc
+    except (LookupError, sqlite3.Error) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Media Router catalog data is unavailable for audit.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Emby mapping audit failed safely.",
+        ) from exc
 
 
 @router.post("/emby/channel-mappings/refresh", response_model=EmbyChannelRefreshResult)

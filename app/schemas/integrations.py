@@ -190,3 +190,83 @@ class EmbyChannelMappingPage(BaseModel):
     limit: int
     offset: int
     items: list[EmbyChannelMapping]
+
+
+EmbyMappingAuditMediaType = Literal["channel", "movie", "series", "episode"]
+EmbyMappingAuditClassification = Literal[
+    "manual", "exact", "normalized_title", "placement_title",
+    "ambiguous", "unmatched", "unsupported",
+]
+EmbyMappingAuditEvidence = Literal[
+    "manual_mapping", "durable_marker", "catalog_external_id",
+    "persisted_item_id", "persisted_media_source_id",
+    "canonical_normalized_title", "active_placement_title",
+    "structural_episode_identity",
+]
+
+
+class EmbyMappingAuditRequest(BaseModel):
+    media_types: list[EmbyMappingAuditMediaType] = Field(
+        default_factory=lambda: ["channel", "movie", "series", "episode"],
+        min_length=1,
+        max_length=4,
+    )
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=100, ge=1, le=500)
+
+    @field_validator("media_types")
+    @classmethod
+    def unique_media_types(
+        cls, values: list[EmbyMappingAuditMediaType],
+    ) -> list[EmbyMappingAuditMediaType]:
+        if len(values) != len(set(values)):
+            raise ValueError("media_types must not contain duplicates")
+        return values
+
+
+class EmbyMappingAuditCollisionTotals(BaseModel):
+    duplicate_emby_names: int = 0
+    duplicate_catalog_titles: int = 0
+    placement_title_collisions: int = 0
+    conflicting_exact_evidence: int = 0
+    duplicate_episode_structures: int = 0
+    incomplete_episode_structure: int = 0
+
+
+class EmbyMappingAuditItem(BaseModel):
+    emby_item_id: str | None = None
+    item_name: str
+    media_type: EmbyMappingAuditMediaType
+    series_name: str | None = None
+    season_number: int | None = None
+    episode_number: int | None = None
+    catalog_item_id: str | None = None
+    classification: EmbyMappingAuditClassification
+    evidence_source: EmbyMappingAuditEvidence | None = None
+    candidate_count: int = 0
+    distinct_candidate_ids: list[str] = Field(default_factory=list)
+    duplicate_emby_name_count: int = 0
+    catalog_title_collision_count: int = 0
+    placement_title_collision_count: int = 0
+    apply_eligible: bool = False
+    ineligibility_reason: str | None = None
+    detail: str
+
+
+class EmbyMappingAuditResponse(BaseModel):
+    integration_id: str
+    generated_at: datetime
+    requested_media_types: list[EmbyMappingAuditMediaType]
+    totals_by_media_type: dict[str, int]
+    classification_counts: dict[str, int]
+    evidence_source_counts: dict[str, int]
+    collision_totals: EmbyMappingAuditCollisionTotals
+    scanned_count: int
+    scan_complete: bool
+    truncated: bool
+    scan_cap: int
+    total_details: int
+    offset: int
+    limit: int
+    returned_count: int
+    items: list[EmbyMappingAuditItem]

@@ -67,10 +67,17 @@ Reservation responses include `alias_count`, `coalesced_reuse_count`, and `start
 | `GET` | `/api/integrations/emby/channel-mappings` | Lists mapped and unmapped Emby Live TV channels. |
 | `GET` | `/api/integrations/emby/channel-mappings/page?limit=100&offset=0&search=` | Searches and paginates large mapping inventories. |
 | `POST` | `/api/integrations/emby/channel-mappings/preview` | Dry-runs marker, persisted-ID, and guarded unique-title matching with automatic, existing-manual, ambiguous, unmatched, and conflict results. |
+| `POST` | `/api/integrations/emby/mapping-audit/preview` | Scans selected Emby library types and returns a bounded, sanitized, preview-only mapping audit without applying or persisting results. |
 | `POST` | `/api/integrations/emby/channel-mappings/refresh` | Rebuilds the Emby channel inventory and exact durable-marker mappings. |
 | `PUT` | `/api/integrations/emby/channel-mappings/{server_id}/{item_id}` | Creates or updates a manual Emby ItemId-to-catalog mapping; channel refresh is not required first. |
 
 The mapping body requires `catalog_item_id` and may include the observed `emby_media_source_id` to establish the secondary exact-match key.
+
+The full-library audit request accepts `media_types` containing one or more of `channel`, `movie`, `series`, and `episode`, plus a non-negative detail `offset` and a `limit` from 1 through 500 (default 100). The service scans Emby in pages of at most 200 items and stops at 10,000 scanned items. `totals_by_media_type`, classification counts, evidence counts, and collision totals describe the complete scanned population, while `offset` and `limit` bound only the returned detail rows. `scan_complete=false` and `truncated=true` explicitly identify results stopped by the scan cap; global completeness must not be inferred in that case.
+
+Audit classifications are `manual`, `exact`, `normalized_title`, `placement_title`, `ambiguous`, `unmatched`, and `unsupported`. Evidence names describe mechanisms that actually exist: channel-only manual and persisted ItemId/MediaSourceId crosswalks, durable Media Router markers and catalog identifiers, canonical normalized titles, channel-only active placement titles, and structural series/season/episode identity. Movies, series, and episodes are never apply-eligible in this phase. Episode titles alone are never matched, and placement titles are never considered outside live channels.
+
+The audit opens the catalog database read-only and does not call channel refresh, mapping writes, playback correlation, or Broker lifecycle services. It returns no raw Emby DTOs, paths, stream/provider URLs, credentials, or credential-bearing query strings. There is no fuzzy matching, automatic VOD application, runtime title matching, or UI workflow in this phase; API access is intentionally delivered first.
 
 Emby defaults to disabled. Poll interval defaults to 10 seconds (minimum 5), release grace 30 seconds, unavailable timeout 60 seconds, request timeout 10 seconds, and TLS verification enabled. Failed polls update integration health but never infer stopped playback.
 | `POST` | `/api/broker/reservations/{id}/confirm` | Explicitly promotes a non-expired provisional lease. |
