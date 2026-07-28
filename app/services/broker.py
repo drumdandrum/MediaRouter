@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from contextlib import closing
+from dataclasses import dataclass
 import hashlib
 import os
 from pathlib import Path
@@ -29,6 +30,13 @@ CONSUMING_STATES = ("provisional", "active")
 STARTUP_BURST_SECONDS = 3
 BLOCKED_HEALTH_STATUSES = {"Authentication Failed", "Playlist Failed", "Offline", "Disabled"}
 PRIORITY_ORDER = {"Preferred": 0, "Secondary": 1, "Emergency": 2}
+
+
+@dataclass(frozen=True)
+class ProvisionalAdoptionResult:
+    status: str
+    candidate_count: int
+    reservation: BrokerReservation | None = None
 
 
 class BrokerUnavailable(Exception):
@@ -462,6 +470,102 @@ def get_raw_reservation_location_ref(reservation_id: str) -> str | None:
             (reservation_id,),
         ).fetchone()
     return row["location_ref"] if row else None
+
+
+def adopt_provisional_reservation(
+    catalog_item_id: str,
+    media_type: str,
+    emby_session_id: str,
+    *,
+    startup_window_seconds: int = 90,
+) -> ProvisionalAdoptionResult:
+    """Atomically claim one recent, unbound provisional for an Emby session."""
+    normalized_media_type = _normalize_media_type(media_type)
+    if not catalog_item_id or not normalized_media_type or not emby_session_id or startup_window_seconds <= 0:
+        return ProvisionalAdoptionResult(status="no_candidate", candidate_count=0)
+    identity_hash = _identity_hash(emby_session_id, "explicit_session")
+    identity_key = _playback_identity_key(
+        catalog_item_id, normalized_media_type, "explicit_session", identity_hash)
+    now = _now()
+    now_value = now.isoformat()
+    cutoff = (now - timedelta(seconds=startup_window_seconds)).isoformat()
+    with closing(_connect()) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        expire_reservations(conn, commit=False)
+        candidates = conn.execute(
+            """SELECT reservations.reservation_id
+               FROM broker_reservations reservations
+               WHERE reservations.catalog_item_id=?
+                 AND reservations.media_type=?
+                 AND reservations.lifecycle_state='provisional'
+                 AND reservations.released_at IS NULL
+                 AND reservations.created_at>=?
+                 AND reservations.client_session IS NULL
+                 AND NOT EXISTS (
+                     SELECT 1 FROM emby_playback_bindings bindings
+                     WHERE bindings.reservation_id=reservations.reservation_id
+                       AND bindings.released_at IS NULL
+                 )
+               ORDER BY reservations.created_at DESC, reservations.id DESC""",
+            (catalog_item_id, normalized_media_type, cutoff),
+        ).fetchall()
+        candidate_count = len(candidates)
+        if candidate_count != 1:
+            conn.commit()
+            return ProvisionalAdoptionResult(
+                status="no_candidate" if candidate_count == 0 else "ambiguous",
+                candidate_count=candidate_count,
+            )
+        reservation_id = candidates[0]["reservation_id"]
+        try:
+            updated = conn.execute(
+                """UPDATE broker_reservations
+                   SET client_session=?, identity_type='explicit_session',
+                       client_fingerprint=NULL, stable_client_id=NULL,
+                       origin_identity_hash=NULL, request_profile=NULL,
+                       playback_identity_key=?, client_label='Emby observed playback',
+                       last_seen_at=?, last_action='emby_provisional_adopted'
+                   WHERE reservation_id=?
+                     AND catalog_item_id=?
+                     AND media_type=?
+                     AND lifecycle_state='provisional'
+                     AND released_at IS NULL
+                     AND created_at>=?
+                     AND client_session IS NULL
+                     AND NOT EXISTS (
+                         SELECT 1 FROM emby_playback_bindings bindings
+                         WHERE bindings.reservation_id=broker_reservations.reservation_id
+                           AND bindings.released_at IS NULL
+                     )""",
+                (identity_hash, identity_key, now_value, reservation_id,
+                 catalog_item_id, normalized_media_type, cutoff),
+            ).rowcount
+            if updated != 1:
+                conn.rollback()
+                return ProvisionalAdoptionResult(status="race_lost", candidate_count=1)
+            conn.execute(
+                """UPDATE broker_reservation_identity_aliases
+                   SET active=0, last_seen_at=?
+                   WHERE reservation_id=? AND active=1""",
+                (now_value, reservation_id),
+            )
+            _register_identity_alias(
+                conn, reservation_id=reservation_id,
+                identity_type="explicit_session", identity_hash=identity_hash,
+                origin_identity_hash=None, request_profile="emby_session_poller",
+                seen_at=now_value,
+            )
+            detail = _reservation_detail_row(conn, reservation_id)
+            if detail is None:
+                conn.rollback()
+                return ProvisionalAdoptionResult(status="race_lost", candidate_count=1)
+            reservation = _reservation_from_row(detail)
+            conn.commit()
+            return ProvisionalAdoptionResult(
+                status="adopted", candidate_count=1, reservation=reservation)
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            return ProvisionalAdoptionResult(status="race_lost", candidate_count=1)
 
 
 def consume_ticketed_reservation(reservation_id: str, catalog_item_id: str, media_type: str) -> tuple[BrokerReservation, str]:

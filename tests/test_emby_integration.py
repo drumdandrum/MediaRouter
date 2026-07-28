@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from datetime import datetime, timedelta
@@ -14,7 +15,10 @@ from fastapi.testclient import TestClient
 from app.core.config import get_settings
 from app.schemas.integrations import EmbySettingsUpdate
 from app.schemas.providers import AccountCreate, ProviderCreate
-from app.services.broker import ensure_broker_schema, get_status, list_reservations, resolve_source
+from app.services.broker import (
+    ensure_broker_schema, force_expire_reservation, get_status,
+    list_reservations, release_reservation, resolve_source,
+)
 from app.services.catalog import ensure_schema
 from app.services.providers import create_account, create_provider
 from pydantic import ValidationError
@@ -501,33 +505,227 @@ class EmbyIntegrationTests(unittest.TestCase):
         self.assertEqual(reservations[0].last_confirmation_source, "emby_playback_heartbeat")
         self.assertGreaterEqual(list_emby_bindings()[0].last_observed_at, first_seen)
 
-    def test_live_playback_reuses_compatible_provisional_runtime_reservation(self):
-        from app.services.emby import normalize_emby_sessions, reconcile_emby_sessions
+    def test_unique_recent_provisional_is_adopted_without_capacity_change(self):
+        from app.services.emby import list_emby_bindings, normalize_emby_sessions, reconcile_emby_sessions
         from app.services.logs import list_logs
-        provisional = resolve_source("live_one", "channel", client_session="live-session-1",
+        provisional = resolve_source("live_one", "channel", client_fingerprint="initial-runtime-request",
             allow_reservation_reuse=True, lifecycle_enabled=True).reservation
+        original = (provisional.reservation_id, provisional.account_id,
+                    provisional.source_availability_id, provisional.location_ref)
+        self.assertEqual(get_status().consuming_reservations, 1)
         reconcile_emby_sessions(normalize_emby_sessions(self._live_payload(), "server"),
                                 server_id="server", release_grace_seconds=30)
         reservations = list_reservations()
         self.assertEqual(len(reservations), 1)
-        self.assertEqual(reservations[0].reservation_id, provisional.reservation_id)
-        self.assertEqual(reservations[0].lifecycle_state, "active")
+        adopted = reservations[0]
+        self.assertEqual(
+            (adopted.reservation_id, adopted.account_id,
+             adopted.source_availability_id, adopted.location_ref),
+            original,
+        )
+        self.assertEqual((adopted.identity_type, adopted.lifecycle_state), ("explicit_session", "active"))
+        self.assertEqual(get_status().consuming_reservations, 1)
+        self.assertEqual(list_emby_bindings()[0].reservation_id, provisional.reservation_id)
+        reconcile_emby_sessions(normalize_emby_sessions(self._live_payload(), "server"),
+                                server_id="server", release_grace_seconds=5)
+        heartbeat = next(row for row in list_reservations()
+                         if row.reservation_id == provisional.reservation_id)
+        self.assertEqual(heartbeat.last_confirmation_source, "emby_playback_heartbeat")
+        self.assertEqual(get_status().consuming_reservations, 1)
         messages = [row.message for row in list_logs()]
-        self.assertTrue(any("emby_reservation_reused" in message for message in messages))
+        self.assertTrue(any("emby_provisional_adoption_succeeded" in message for message in messages))
         self.assertTrue(any("emby_reservation_promoted" in message for message in messages))
         self.assertTrue(any("emby_binding_created" in message for message in messages))
+        reconcile_emby_sessions([], server_id="server", release_grace_seconds=5)
+        old = (datetime.utcnow() - timedelta(seconds=6)).isoformat()
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            conn.execute("UPDATE emby_playback_bindings SET missing_since=? WHERE released_at IS NULL",
+                         (old,))
+        reconcile_emby_sessions([], server_id="server", release_grace_seconds=5)
+        released = next(row for row in list_reservations()
+                        if row.reservation_id == provisional.reservation_id)
+        self.assertEqual((released.lifecycle_state, released.release_reason),
+                         ("released", "emby_session_disappeared"))
 
-    def test_incompatible_provisional_is_ignored_for_fresh_explicit_session(self):
+    def test_adoption_replaces_provisional_identity_and_alias_lifecycle_is_normal(self):
+        import hashlib
         from app.services.emby import normalize_emby_sessions, reconcile_emby_sessions
-        incompatible = resolve_source("live_one", "channel", client_fingerprint="vlc-runtime",
+
+        provisional = resolve_source(
+            "live_one", "channel", client_fingerprint="initial-runtime-request",
+            origin_identity="runtime-origin", request_profile="runtime-profile",
+            allow_reservation_reuse=True, lifecycle_enabled=True,
+        ).reservation
+        reconcile_emby_sessions(
+            normalize_emby_sessions(self._live_payload(), "server"),
+            server_id="server", release_grace_seconds=30,
+        )
+        expected_session = hashlib.sha256(
+            b"explicit_session:live-session-1").hexdigest()[:32]
+        expected_key = hashlib.sha256(
+            f"live_one|channel|explicit_session|{expected_session}".encode()).hexdigest()[:40]
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """SELECT client_session,client_fingerprint,stable_client_id,
+                          origin_identity_hash,request_profile,identity_type,
+                          playback_identity_key
+                   FROM broker_reservations WHERE reservation_id=?""",
+                (provisional.reservation_id,),
+            ).fetchone()
+            aliases = conn.execute(
+                """SELECT identity_type,identity_hash,active
+                   FROM broker_reservation_identity_aliases
+                   WHERE reservation_id=? ORDER BY first_seen_at""",
+                (provisional.reservation_id,),
+            ).fetchall()
+        self.assertEqual(row["client_session"], expected_session)
+        self.assertEqual(row["playback_identity_key"], expected_key)
+        self.assertEqual(row["identity_type"], "explicit_session")
+        self.assertIsNone(row["client_fingerprint"])
+        self.assertIsNone(row["stable_client_id"])
+        self.assertIsNone(row["origin_identity_hash"])
+        self.assertIsNone(row["request_profile"])
+        self.assertEqual(sum(alias["active"] for alias in aliases), 1)
+        active_alias = next(alias for alias in aliases if alias["active"])
+        self.assertEqual(
+            (active_alias["identity_type"], active_alias["identity_hash"]),
+            ("explicit_session", expected_session),
+        )
+        self.assertTrue(any(
+            alias["identity_type"] == "derived_fingerprint" and not alias["active"]
+            for alias in aliases
+        ))
+
+        release_reservation(provisional.reservation_id)
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            active_aliases = conn.execute(
+                """SELECT COUNT(*) FROM broker_reservation_identity_aliases
+                   WHERE reservation_id=? AND active=1""",
+                (provisional.reservation_id,),
+            ).fetchone()[0]
+        self.assertEqual(active_aliases, 0)
+
+    def test_no_provisional_candidate_falls_back_to_new_explicit_reservation(self):
+        from app.services.emby import normalize_emby_sessions, reconcile_emby_sessions
+        reconcile_emby_sessions(normalize_emby_sessions(self._live_payload(), "server"),
+                                server_id="server", release_grace_seconds=30)
+        rows = list_reservations()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0].identity_type, rows[0].lifecycle_state),
+                         ("explicit_session", "active"))
+
+    def test_multiple_recent_provisionals_are_ambiguous_and_fall_back(self):
+        from app.services.emby import normalize_emby_sessions, reconcile_emby_sessions
+        from app.services.logs import list_logs
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            conn.execute("UPDATE accounts SET max_simultaneous_streams=3 WHERE id=?", (self.account.id,))
+        first = resolve_source("live_one", "channel", client_fingerprint="runtime-a",
+            allow_reservation_reuse=True, lifecycle_enabled=True).reservation
+        second = resolve_source("live_one", "channel", client_fingerprint="runtime-b",
             allow_reservation_reuse=True, lifecycle_enabled=True).reservation
         reconcile_emby_sessions(normalize_emby_sessions(self._live_payload(), "server"),
                                 server_id="server", release_grace_seconds=30)
         rows = list_reservations()
-        original = next(row for row in rows if row.reservation_id == incompatible.reservation_id)
-        emby = next(row for row in rows if row.identity_type == "explicit_session")
-        self.assertEqual(original.lifecycle_state, "provisional")
-        self.assertEqual((emby.catalog_item_id, emby.lifecycle_state), ("live_one", "active"))
+        self.assertEqual(len(rows), 3)
+        self.assertEqual({row.reservation_id for row in rows if row.lifecycle_state == "provisional"},
+                         {first.reservation_id, second.reservation_id})
+        self.assertEqual(len([row for row in rows if row.identity_type == "explicit_session"]), 1)
+        messages = [row.message for row in list_logs()]
+        self.assertTrue(any("emby_provisional_adoption_ambiguous" in message and
+                            "candidate_count=2" in message for message in messages))
+        self.assertTrue(any("emby_provisional_adoption_fallback" in message for message in messages))
+
+    def test_provisional_outside_startup_window_is_not_adopted(self):
+        from app.services.emby import normalize_emby_sessions, reconcile_emby_sessions
+        stale = resolve_source("live_one", "channel", client_fingerprint="stale-runtime",
+            allow_reservation_reuse=True, lifecycle_enabled=True).reservation
+        old = (datetime.utcnow() - timedelta(minutes=3)).isoformat()
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            conn.execute("UPDATE broker_reservations SET created_at=?,first_seen_at=? WHERE reservation_id=?",
+                         (old, old, stale.reservation_id))
+        reconcile_emby_sessions(normalize_emby_sessions(self._live_payload(), "server"),
+                                server_id="server", release_grace_seconds=30)
+        rows = {row.reservation_id: row for row in list_reservations()}
+        self.assertEqual(rows[stale.reservation_id].lifecycle_state, "provisional")
+        self.assertEqual(len([row for row in rows.values() if row.identity_type == "explicit_session"]), 1)
+
+    def test_released_and_expired_provisionals_are_not_adopted(self):
+        from app.services.emby import normalize_emby_sessions, reconcile_emby_sessions
+        for terminal in ("released", "expired"):
+            with self.subTest(terminal=terminal):
+                provisional = resolve_source("live_one", "channel",
+                    client_fingerprint=f"{terminal}-runtime",
+                    allow_reservation_reuse=True, lifecycle_enabled=True).reservation
+                if terminal == "released":
+                    release_reservation(provisional.reservation_id)
+                else:
+                    force_expire_reservation(provisional.reservation_id)
+                session = f"session-{terminal}"
+                reconcile_emby_sessions(
+                    normalize_emby_sessions(self._live_payload(session=session), "server"),
+                    server_id="server", release_grace_seconds=30,
+                )
+                rows = {row.reservation_id: row for row in list_reservations()}
+                self.assertEqual(rows[provisional.reservation_id].lifecycle_state, terminal)
+                binding = next(binding for binding in
+                    __import__("app.services.emby", fromlist=["list_emby_bindings"]).list_emby_bindings()
+                    if binding.emby_session_id == session and binding.released_at is None)
+                self.assertNotEqual(binding.reservation_id, provisional.reservation_id)
+
+    def test_provisional_already_bound_to_another_session_is_not_adopted(self):
+        from app.services.emby import list_emby_bindings, normalize_emby_sessions, reconcile_emby_sessions
+        provisional = resolve_source("live_one", "channel", client_fingerprint="bound-runtime",
+            allow_reservation_reuse=True, lifecycle_enabled=True).reservation
+        now = datetime.utcnow().isoformat()
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            conn.execute("""INSERT INTO emby_playback_bindings
+                (id,binding_key,emby_server_id,emby_session_id,reservation_id,catalog_item_id,
+                 media_type,playback_state,first_observed_at,last_observed_at,
+                 correlation_method,correlation_confidence,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,'channel','playing',?,?,'test','authoritative',?,?)""",
+                ("bound-id", "server:other-session", "server", "other-session",
+                 provisional.reservation_id, "live_one", now, now, now, now))
+        reconcile_emby_sessions(normalize_emby_sessions(self._live_payload(), "server"),
+                                server_id="server", release_grace_seconds=30)
+        current = next(binding for binding in list_emby_bindings()
+                       if binding.emby_session_id == "live-session-1" and binding.released_at is None)
+        self.assertNotEqual(current.reservation_id, provisional.reservation_id)
+
+    def test_two_emby_sessions_cannot_share_one_adoptable_provisional(self):
+        from app.services.emby import list_emby_bindings, normalize_emby_sessions, reconcile_emby_sessions
+        provisional = resolve_source("live_one", "channel", client_fingerprint="shared-runtime",
+            allow_reservation_reuse=True, lifecycle_enabled=True).reservation
+        raw = self._live_payload(session="endpoint-a") + self._live_payload(session="endpoint-b")
+        reconcile_emby_sessions(normalize_emby_sessions(raw, "server"),
+                                server_id="server", release_grace_seconds=30)
+        active_bindings = [binding for binding in list_emby_bindings() if binding.released_at is None]
+        self.assertEqual(len(active_bindings), 2)
+        self.assertEqual(len({binding.reservation_id for binding in active_bindings}), 2)
+        self.assertIn(provisional.reservation_id,
+                      {binding.reservation_id for binding in active_bindings})
+        self.assertEqual(get_status().consuming_reservations, 2)
+
+    def test_simultaneous_adoption_claims_are_atomic(self):
+        from app.services.broker import adopt_provisional_reservation
+        provisional = resolve_source("live_one", "channel", client_fingerprint="concurrent-runtime",
+            allow_reservation_reuse=True, lifecycle_enabled=True).reservation
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(
+                lambda session: adopt_provisional_reservation(
+                    "live_one", "channel", session, startup_window_seconds=90),
+                ("simultaneous-a", "simultaneous-b"),
+            ))
+        self.assertEqual([result.status for result in results].count("adopted"), 1)
+        self.assertEqual(sum(result.status in {"no_candidate", "race_lost"} for result in results), 1)
+        adopted = next(result for result in results if result.status == "adopted")
+        self.assertEqual(adopted.reservation.reservation_id, provisional.reservation_id)
+        loser_session = ("simultaneous-a" if results[0].status != "adopted"
+                         else "simultaneous-b")
+        fallback = resolve_source("live_one", "channel", client_session=loser_session,
+            allow_reservation_reuse=True, lifecycle_enabled=True).reservation
+        self.assertNotEqual(fallback.reservation_id, provisional.reservation_id)
+        self.assertEqual(get_status().consuming_reservations, 2)
 
     def test_emby_created_live_reservation_releases_after_grace(self):
         from app.services.emby import normalize_emby_sessions, reconcile_emby_sessions
