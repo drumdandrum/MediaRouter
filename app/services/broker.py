@@ -521,6 +521,8 @@ def adopt_provisional_reservation(
             updated = conn.execute(
                 """UPDATE broker_reservations
                    SET client_session=?, identity_type='explicit_session',
+                       client_fingerprint=NULL, stable_client_id=NULL,
+                       origin_identity_hash=NULL, request_profile=NULL,
                        playback_identity_key=?, client_label='Emby observed playback',
                        last_seen_at=?, last_action='emby_provisional_adopted'
                    WHERE reservation_id=?
@@ -541,6 +543,12 @@ def adopt_provisional_reservation(
             if updated != 1:
                 conn.rollback()
                 return ProvisionalAdoptionResult(status="race_lost", candidate_count=1)
+            conn.execute(
+                """UPDATE broker_reservation_identity_aliases
+                   SET active=0, last_seen_at=?
+                   WHERE reservation_id=? AND active=1""",
+                (now_value, reservation_id),
+            )
             _register_identity_alias(
                 conn, reservation_id=reservation_id,
                 identity_type="explicit_session", identity_hash=identity_hash,

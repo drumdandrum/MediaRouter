@@ -547,6 +547,65 @@ class EmbyIntegrationTests(unittest.TestCase):
         self.assertEqual((released.lifecycle_state, released.release_reason),
                          ("released", "emby_session_disappeared"))
 
+    def test_adoption_replaces_provisional_identity_and_alias_lifecycle_is_normal(self):
+        import hashlib
+        from app.services.emby import normalize_emby_sessions, reconcile_emby_sessions
+
+        provisional = resolve_source(
+            "live_one", "channel", client_fingerprint="initial-runtime-request",
+            origin_identity="runtime-origin", request_profile="runtime-profile",
+            allow_reservation_reuse=True, lifecycle_enabled=True,
+        ).reservation
+        reconcile_emby_sessions(
+            normalize_emby_sessions(self._live_payload(), "server"),
+            server_id="server", release_grace_seconds=30,
+        )
+        expected_session = hashlib.sha256(
+            b"explicit_session:live-session-1").hexdigest()[:32]
+        expected_key = hashlib.sha256(
+            f"live_one|channel|explicit_session|{expected_session}".encode()).hexdigest()[:40]
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """SELECT client_session,client_fingerprint,stable_client_id,
+                          origin_identity_hash,request_profile,identity_type,
+                          playback_identity_key
+                   FROM broker_reservations WHERE reservation_id=?""",
+                (provisional.reservation_id,),
+            ).fetchone()
+            aliases = conn.execute(
+                """SELECT identity_type,identity_hash,active
+                   FROM broker_reservation_identity_aliases
+                   WHERE reservation_id=? ORDER BY first_seen_at""",
+                (provisional.reservation_id,),
+            ).fetchall()
+        self.assertEqual(row["client_session"], expected_session)
+        self.assertEqual(row["playback_identity_key"], expected_key)
+        self.assertEqual(row["identity_type"], "explicit_session")
+        self.assertIsNone(row["client_fingerprint"])
+        self.assertIsNone(row["stable_client_id"])
+        self.assertIsNone(row["origin_identity_hash"])
+        self.assertIsNone(row["request_profile"])
+        self.assertEqual(sum(alias["active"] for alias in aliases), 1)
+        active_alias = next(alias for alias in aliases if alias["active"])
+        self.assertEqual(
+            (active_alias["identity_type"], active_alias["identity_hash"]),
+            ("explicit_session", expected_session),
+        )
+        self.assertTrue(any(
+            alias["identity_type"] == "derived_fingerprint" and not alias["active"]
+            for alias in aliases
+        ))
+
+        release_reservation(provisional.reservation_id)
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            active_aliases = conn.execute(
+                """SELECT COUNT(*) FROM broker_reservation_identity_aliases
+                   WHERE reservation_id=? AND active=1""",
+                (provisional.reservation_id,),
+            ).fetchone()[0]
+        self.assertEqual(active_aliases, 0)
+
     def test_no_provisional_candidate_falls_back_to_new_explicit_reservation(self):
         from app.services.emby import normalize_emby_sessions, reconcile_emby_sessions
         reconcile_emby_sessions(normalize_emby_sessions(self._live_payload(), "server"),
