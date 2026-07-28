@@ -74,6 +74,8 @@ Media Router is middleware, not another full media server.
 ### Client validation
 
 - Emby Live TV and STRM movie playback are validated.
+- The 2026-07-28 production deployment of application commit `8b97d0c` validated the Emby provisional-reservation adoption path end to end: automatically and manually mapped sessions adopted and promoted the original provisional reservation, no duplicate capacity-consuming reservation remained, heartbeats continued, playback-end release completed, and unrelated provisional behavior remained functional.
+- Current Emby release timing remains unchanged. Media-type-aware abandoned-session cleanup may be optimized only in a later lifecycle phase after polling support and validation cover live channels, movies, and series episodes; that work is separate from the full-library mapping audit.
 - Channels DVR Live TV ingestion and playback are validated.
 - Jellyfin and VLC runtime playback have been exercised.
 - Kodi IPTV Simple playback works, but Kodi may apply its own channel ordering or duplicate-placement behavior. The same behavior with the original IPTV Boss playlist indicates a client-specific presentation issue rather than a core Media Router output defect.

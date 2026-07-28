@@ -69,6 +69,7 @@ This backlog is organized by product milestone. Completed implementation history
 - [ ] Define stale-reservation cleanup policy.
 - [x] Add client-agnostic confirm, heartbeat, and release endpoints.
 - [x] Connect Emby playback observation to lifecycle endpoints through polling.
+- [ ] Design media-type-aware abandoned-session cleanup after Emby lifecycle support covers live channels, movies, and series episodes. Evaluate polling gaps, pause and seek behavior, reconnects, client crashes, channel changes, long-form movies and episodes, and grace periods by media type and available session evidence. Keep this separate from the full-library mapping audit; do not change current release timing as part of mapping work.
 - [ ] Add stronger explicit Emby stop events only if a future plugin/webhook phase is approved.
 - [ ] Connect Jellyfin/Kodi events to lifecycle endpoints.
 - [ ] Evaluate optional proxy byte/disconnect observation.
