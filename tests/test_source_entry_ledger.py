@@ -3,6 +3,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -20,6 +21,7 @@ from app.services.source_entry_ledger import (
     SourceObservation,
     SourceFeedScopeConflict,
     content_fingerprint,
+    finalize_import_run,
     provider_entry_identity,
     register_or_validate_source_feed,
     sanitized_text,
@@ -59,6 +61,29 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
             lines.extend([f"#EXTINF:-1 {attrs},{title}", url])
         path.write_text("\n".join(lines) + "\n")
         return path
+
+    def observed(self, title: str) -> SourceObservation:
+        with self.connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM source_entry_occurrences
+                   WHERE observed_title=? ORDER BY occurrence_id DESC LIMIT 1""",
+                (title,),
+            ).fetchone()
+        return SourceObservation(
+            placement_index=row["placement_index"],
+            media_type=row["media_type"],
+            observed_title=row["observed_title"],
+            normalized_series_name=row["normalized_series_name"],
+            season_number=row["season_number"],
+            episode_number=row["episode_number"],
+            provider_entry_id=row["provider_entry_id"],
+            provider_entry_id_kind=row["provider_entry_id_kind"],
+            content_fingerprint=row["content_fingerprint"],
+            observed_catalog_item_id=row["observed_catalog_item_id"],
+            observed_parent_catalog_item_id=row["observed_parent_catalog_item_id"],
+            observed_source_availability_id=row["observed_source_availability_id"],
+            observed_at=row["observed_at"],
+        )
 
     def test_feature_defaults_off_and_schema_creation_is_idempotent(self):
         self.assertFalse(get_settings().source_entry_shadow_ledger_enabled)
@@ -265,6 +290,22 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
             spool.cleanup()
         self.assertFalse(path.exists())
 
+    def test_sanitizer_redacts_userinfo_without_destroying_human_titles(self):
+        unsafe = (
+            "user:password@example.test",
+            "custom:user:password@example.test/path?token=bad",
+            "CuStOm://user:password@example.test/path?token=bad",
+        )
+        for value in unsafe:
+            sanitized = sanitized_text(value)
+            self.assertNotIn("password", sanitized)
+            self.assertNotIn("example.test", sanitized)
+        for safe in (
+            "person@example.test", "Face/Off", "go:home", "John 3:16",
+            "S01:E02", "Title: Subtitle",
+        ):
+            self.assertEqual(sanitized_text(safe), safe)
+
     def test_disabled_import_produces_no_ledger_rows(self):
         playlist = self.playlist("disabled.m3u", [
             ('cuid="movie-1" year="2024"', "Movie One", "https://one.invalid/a"),
@@ -282,6 +323,34 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
             self.assertEqual(conn.execute(
                 "SELECT COUNT(*) FROM source_feeds"
             ).fetchone()[0], 0)
+
+    def test_shadow_schema_failure_cannot_fail_enabled_or_disabled_imports(self):
+        playlist = self.playlist("schema-failure.m3u", [
+            ('cuid="one"', "One", "https://example.invalid/one"),
+        ])
+        with patch(
+            "app.services.catalog.ensure_source_entry_schema",
+            side_effect=sqlite3.OperationalError("forced shadow schema failure"),
+        ):
+            disabled = import_paths(
+                [str(playlist)], "Test", media_type_hint="movie",
+                source_feed_id=str(uuid4()),
+            )
+        self.assertEqual(disabled["entries"], 1)
+
+        self.enable_ledger()
+        second = self.playlist("schema-failure-enabled.m3u", [
+            ('cuid="two"', "Two", "https://example.invalid/two"),
+        ])
+        with patch(
+            "app.services.catalog.ensure_source_entry_schema",
+            side_effect=sqlite3.OperationalError("forced shadow schema failure"),
+        ):
+            enabled = import_paths(
+                [str(second)], "Test", media_type_hint="movie",
+                source_feed_id=str(uuid4()),
+            )
+        self.assertEqual(enabled["entries"], 1)
 
     def test_enabled_import_records_hashed_observations_and_cleans_spool(self):
         self.enable_ledger()
@@ -401,6 +470,109 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
         self.assertFalse(list(get_settings().data_dir.glob(
             ".source-entry-observations-*.jsonl"
         )))
+
+    def test_observation_construction_failure_cannot_fail_catalog_import(self):
+        self.enable_ledger()
+        playlist = self.playlist("observation-failure.m3u", [
+            ('cuid="survives"', "Survives", "https://example.invalid/survives"),
+        ])
+        with patch(
+            "app.services.catalog.content_fingerprint",
+            side_effect=ValueError("malformed observation"),
+        ):
+            summary = import_paths(
+                [str(playlist)], "Test", media_type_hint="movie",
+                source_feed_id=str(uuid4()),
+            )
+        self.assertEqual(summary["entries"], 1)
+        with self.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM catalog_items WHERE media_type='movie'"
+            ).fetchone()[0], 1)
+            run = conn.execute("SELECT * FROM source_import_runs").fetchone()
+            self.assertEqual(run["status"], "failed")
+            self.assertEqual(run["error_category"], "spool_write_failed")
+
+    def test_authoritative_failure_still_removes_spool(self):
+        self.enable_ledger()
+        playlist = self.playlist("authoritative-failure.m3u", [
+            ('cuid="fails"', "Fails", "https://example.invalid/fails"),
+        ])
+        with patch(
+            "app.services.catalog._import_paths_authoritative",
+            side_effect=ValueError("forced authoritative failure"),
+        ):
+            with self.assertRaises(ValueError):
+                import_paths(
+                    [str(playlist)], "Test", media_type_hint="movie",
+                    source_feed_id=str(uuid4()),
+                )
+        self.assertFalse(list(get_settings().data_dir.glob(
+            ".source-entry-observations-*.jsonl"
+        )))
+
+    def test_spool_constructor_and_close_failures_attempt_cleanup(self):
+        self.enable_ledger()
+        playlist = self.playlist("spool-constructor-failure.m3u", [
+            ('cuid="survives"', "Survives", "https://example.invalid/survives"),
+        ])
+        with patch(
+            "app.services.source_entry_ledger.os.chmod",
+            side_effect=OSError("forced chmod failure"),
+        ):
+            summary = import_paths(
+                [str(playlist)], "Test", media_type_hint="movie",
+                source_feed_id=str(uuid4()),
+            )
+        self.assertEqual(summary["entries"], 1)
+        self.assertFalse(list(get_settings().data_dir.glob(
+            ".source-entry-observations-*.jsonl"
+        )))
+
+        spool = ObservationSpool(get_settings().data_dir)
+        spool_path = spool.path
+        spool._handle.close()
+        with patch.object(spool, "close", side_effect=OSError("forced close failure")):
+            with self.assertRaises(OSError):
+                spool.cleanup()
+        self.assertFalse(spool_path.exists())
+
+    def test_malformed_spool_and_cleanup_failures_do_not_change_catalog_result(self):
+        self.enable_ledger()
+        playlist = self.playlist("spool-read-failure.m3u", [
+            ('cuid="survives"', "Survives", "https://example.invalid/survives"),
+        ])
+        with patch(
+            "app.services.source_entry_ledger.ObservationSpool.observations",
+            side_effect=ValueError("malformed spool line"),
+        ):
+            summary = import_paths(
+                [str(playlist)], "Test", media_type_hint="movie",
+                source_feed_id=str(uuid4()),
+            )
+        self.assertEqual(summary["entries"], 1)
+        with self.connect() as conn:
+            run = conn.execute("SELECT * FROM source_import_runs").fetchone()
+            self.assertEqual(run["status"], "failed")
+            self.assertEqual(run["catalog_import_completed"], 1)
+
+        second = self.playlist("cleanup-failure.m3u", [
+            ('cuid="also-survives"', "Also Survives",
+             "https://example.invalid/also-survives"),
+        ])
+        with patch(
+            "app.services.source_entry_ledger.ObservationSpool.cleanup",
+            side_effect=OSError("forced cleanup failure"),
+        ):
+            summary = import_paths(
+                [str(second)], "Test", media_type_hint="movie",
+                source_feed_id=str(uuid4()),
+            )
+        self.assertEqual(summary["entries"], 1)
+        for spool_path in get_settings().data_dir.glob(
+            ".source-entry-observations-*.jsonl"
+        ):
+            spool_path.unlink()
 
     def test_registered_feed_scope_conflict_skips_only_shadow_observation(self):
         self.enable_ledger()
@@ -673,12 +845,137 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
         with self.connect() as conn:
             self.assertEqual(conn.execute(
                 "SELECT COUNT(*) FROM source_entries WHERE active=1"
-            ).fetchone()[0], 2)
+            ).fetchone()[0], 1)
             conn.execute(
                 """UPDATE source_import_runs SET status='failed',finished_at=started_at,
                    error_category='test_cleanup' WHERE import_run_id=?""",
                 (overlapping_run,),
             )
+
+    def test_newer_run_supersedes_older_late_completion_and_stale_started_run(self):
+        self.enable_ledger()
+        feed_id = str(uuid4())
+        source_identity = source_identity_from_feed_id(feed_id)
+        path = self.playlist("out-of-order.m3u", [
+            ('cuid="one"', "One", "https://example.invalid/one"),
+            ('cuid="two"', "Two", "https://example.invalid/two"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        one = self.observed("One")
+        two = self.observed("Two")
+        db_path = get_settings().data_dir / "media_router.db"
+        older = start_import_run(
+            db_path, source_identity=source_identity, job_id=None,
+            provider_id=None, account_id=None, media_scope="movie",
+            started_at="2026-01-01T00:00:01",
+        )
+        newer = start_import_run(
+            db_path, source_identity=source_identity, job_id=None,
+            provider_id=None, account_id=None, media_scope="movie",
+            started_at="2026-01-01T00:00:02",
+        )
+        finalize_import_run(
+            db_path, import_run_id=newer, source_identity=source_identity,
+            provider_id=None, account_id=None,
+            observations=iter([replace(two, placement_index=0)]),
+            finished_at="2026-01-01T00:00:03",
+        )
+        result = finalize_import_run(
+            db_path, import_run_id=older, source_identity=source_identity,
+            provider_id=None, account_id=None,
+            observations=iter([one, two]),
+            finished_at="2026-01-01T00:00:04",
+        )
+        self.assertEqual(result, 0)
+        with self.connect() as conn:
+            rows = {
+                row["normalized_title"]: row
+                for row in conn.execute("SELECT * FROM source_entries")
+            }
+            self.assertEqual(rows["one"]["active"], 0)
+            self.assertEqual(rows["two"]["active"], 1)
+            old_run = conn.execute(
+                "SELECT * FROM source_import_runs WHERE import_run_id=?", (older,)
+            ).fetchone()
+            self.assertEqual(old_run["status"], "failed")
+            self.assertEqual(
+                old_run["error_category"], "superseded_by_newer_run",
+            )
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_entry_occurrences WHERE import_run_id=?",
+                (older,),
+            ).fetchone()[0], 0)
+
+    def test_newer_started_run_defers_older_deactivation_until_newer_finishes(self):
+        self.enable_ledger()
+        feed_id = str(uuid4())
+        source_identity = source_identity_from_feed_id(feed_id)
+        path = self.playlist("ordered-overlap.m3u", [
+            ('cuid="one"', "One", "https://example.invalid/one"),
+            ('cuid="two"', "Two", "https://example.invalid/two"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        one = self.observed("One")
+        two = self.observed("Two")
+        db_path = get_settings().data_dir / "media_router.db"
+        older = start_import_run(
+            db_path, source_identity=source_identity, job_id=None,
+            provider_id=None, account_id=None, media_scope="movie",
+            started_at="2026-01-01T00:00:01",
+        )
+        newer = start_import_run(
+            db_path, source_identity=source_identity, job_id=None,
+            provider_id=None, account_id=None, media_scope="movie",
+            started_at="2026-01-01T00:00:02",
+        )
+        finalize_import_run(
+            db_path, import_run_id=older, source_identity=source_identity,
+            provider_id=None, account_id=None, observations=iter([one]),
+            finished_at="2026-01-01T00:00:03",
+        )
+        with self.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_entries WHERE active=1"
+            ).fetchone()[0], 2)
+        finalize_import_run(
+            db_path, import_run_id=newer, source_identity=source_identity,
+            provider_id=None, account_id=None,
+            observations=iter([replace(two, placement_index=0)]),
+            finished_at="2026-01-01T00:00:04",
+        )
+        with self.connect() as conn:
+            rows = {
+                row["normalized_title"]: row["active"]
+                for row in conn.execute("SELECT normalized_title,active FROM source_entries")
+            }
+            self.assertEqual(rows, {"one": 0, "two": 1})
+
+    def test_zero_observation_run_does_not_deactivate_existing_entries(self):
+        self.enable_ledger()
+        feed_id = str(uuid4())
+        source_identity = source_identity_from_feed_id(feed_id)
+        path = self.playlist("zero-observation.m3u", [
+            ('cuid="one"', "One", "https://example.invalid/one"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        db_path = get_settings().data_dir / "media_router.db"
+        run_id = start_import_run(
+            db_path, source_identity=source_identity, job_id=None,
+            provider_id=None, account_id=None, media_scope="movie",
+            started_at="2026-01-01T00:00:01",
+        )
+        self.assertEqual(finalize_import_run(
+            db_path, import_run_id=run_id, source_identity=source_identity,
+            provider_id=None, account_id=None, observations=iter(()),
+            finished_at="2026-01-01T00:00:02",
+        ), 0)
+        with self.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_entries WHERE active=1"
+            ).fetchone()[0], 1)
 
     def test_diagnostics_report_position_duplicates_changes_and_reappearance(self):
         self.enable_ledger()

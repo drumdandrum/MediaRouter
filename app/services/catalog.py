@@ -225,7 +225,11 @@ def ensure_schema(conn: sqlite3.Connection | None = None) -> None:
         WHERE media_type='channel' AND NOT EXISTS (
             SELECT 1 FROM channel_placements p WHERE p.catalog_item_id=c.internal_id)
     """, (now, now))
-    ensure_source_entry_schema(conn)
+    try:
+        ensure_source_entry_schema(conn)
+    except Exception:
+        # The shadow schema has no authority over catalog initialization/imports.
+        pass
     conn.commit()
     if owns_conn:
         conn.close()
@@ -603,35 +607,35 @@ def _import_paths_authoritative(
                         )
                         summary[f"{placement_result}_channel_placements"] += 1
                     elif observation_spool is not None:
-                        provider_entry_id, provider_entry_id_kind = (
-                            provider_entry_identity(entry.attrs)
-                        )
-                        fingerprint = content_fingerprint(
-                            item_type, title=title, attrs=entry.attrs,
-                            series_name=entry.show_name,
-                            season_number=entry.season_number,
-                            episode_number=entry.episode_number,
-                            episode_title=entry.episode_title,
-                        )
-                        observation = SourceObservation(
-                            placement_index=placement_index,
-                            media_type=item_type,
-                            observed_title=sanitized_text(title),
-                            normalized_series_name=(
-                                normalized_title(entry.show_name)
-                                if entry.show_name else None
-                            ),
-                            season_number=entry.season_number,
-                            episode_number=entry.episode_number,
-                            provider_entry_id=provider_entry_id,
-                            provider_entry_id_kind=provider_entry_id_kind,
-                            content_fingerprint=fingerprint,
-                            observed_catalog_item_id=internal_id,
-                            observed_parent_catalog_item_id=parent_id,
-                            observed_source_availability_id=availability_id,
-                            observed_at=datetime.utcnow().isoformat(),
-                        )
                         try:
+                            provider_entry_id, provider_entry_id_kind = (
+                                provider_entry_identity(entry.attrs)
+                            )
+                            fingerprint = content_fingerprint(
+                                item_type, title=title, attrs=entry.attrs,
+                                series_name=entry.show_name,
+                                season_number=entry.season_number,
+                                episode_number=entry.episode_number,
+                                episode_title=entry.episode_title,
+                            )
+                            observation = SourceObservation(
+                                placement_index=placement_index,
+                                media_type=item_type,
+                                observed_title=sanitized_text(title),
+                                normalized_series_name=(
+                                    normalized_title(entry.show_name)
+                                    if entry.show_name else None
+                                ),
+                                season_number=entry.season_number,
+                                episode_number=entry.episode_number,
+                                provider_entry_id=provider_entry_id,
+                                provider_entry_id_kind=provider_entry_id_kind,
+                                content_fingerprint=fingerprint,
+                                observed_catalog_item_id=internal_id,
+                                observed_parent_catalog_item_id=parent_id,
+                                observed_source_availability_id=availability_id,
+                                observed_at=datetime.utcnow().isoformat(),
+                            )
                             observation_spool.append(observation)
                         except Exception:
                             if observation_failed is not None:
@@ -771,16 +775,16 @@ def import_paths(
             paths, source_name, job_id, provider_id, account_id, media_type_hint,
         )
 
-    observation_failed = [False]
     try:
-        summary = _import_paths_authoritative(
-            paths, source_name, job_id, provider_id, account_id, media_type_hint,
-            observation_spool=spool, observation_failed=observation_failed,
-        )
-    except Exception:
-        mark_run_failed("catalog_import_failed", False)
-        raise
-    try:
+        observation_failed = [False]
+        try:
+            summary = _import_paths_authoritative(
+                paths, source_name, job_id, provider_id, account_id, media_type_hint,
+                observation_spool=spool, observation_failed=observation_failed,
+            )
+        except Exception:
+            mark_run_failed("catalog_import_failed", False)
+            raise
         if observation_failed[0]:
             mark_run_failed("spool_write_failed", True)
             return summary

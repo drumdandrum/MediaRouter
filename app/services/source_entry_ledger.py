@@ -24,6 +24,10 @@ _URI_RE = re.compile(r"(?i)(?:[a-z][a-z0-9+.-]{1,31}://\S+)")
 _OPAQUE_URI_RE = re.compile(
     r"(?i)\b(?:file|ftp|plugin|rtmp|rtsp|smb|udp):[^\s]+"
 )
+_USERINFO_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.+-])(?:[a-z][a-z0-9+.-]{1,31}:)?"
+    r"[^\s:@/]+:[^\s@/]+@[^\s/]+(?:/\S*)?"
+)
 _UNIX_PATH_RE = re.compile(r"(?<![A-Za-z0-9])/(?:[^\s/]+/)*[^\s/]*")
 _WINDOWS_PATH_RE = re.compile(r"(?i)(?:[A-Z]:[\\/]|\\\\)[^\s]+")
 _SECRET_RE = re.compile(
@@ -61,9 +65,14 @@ class ObservationSpool:
         descriptor, raw_path = tempfile.mkstemp(
             prefix=".source-entry-observations-", suffix=".jsonl", dir=directory,
         )
-        os.chmod(raw_path, 0o600)
-        self.path = Path(raw_path)
-        self._handle = os.fdopen(descriptor, "w", encoding="utf-8")
+        try:
+            os.chmod(raw_path, 0o600)
+            self.path = Path(raw_path)
+            self._handle = os.fdopen(descriptor, "w", encoding="utf-8")
+        except Exception:
+            os.close(descriptor)
+            Path(raw_path).unlink(missing_ok=True)
+            raise
 
     def append(self, observation: SourceObservation) -> None:
         self._handle.write(json.dumps(
@@ -83,8 +92,10 @@ class ObservationSpool:
                 yield SourceObservation(**payload)
 
     def cleanup(self) -> None:
-        self.close()
-        self.path.unlink(missing_ok=True)
+        try:
+            self.close()
+        finally:
+            self.path.unlink(missing_ok=True)
 
 
 def source_identity_from_feed_id(feed_id: str | None) -> str | None:
@@ -113,6 +124,7 @@ def _normalized_evidence(value: Any, *, casefold: bool = True) -> str:
 def sanitized_text(value: Any) -> str:
     text = _normalized_evidence(value, casefold=False)
     text = _SECRET_RE.sub("[redacted]", text)
+    text = _USERINFO_RE.sub("[redacted]", text)
     text = _URI_RE.sub("[redacted]", text)
     text = _OPAQUE_URI_RE.sub("[redacted]", text)
     text = _WINDOWS_PATH_RE.sub("[redacted]", text)
@@ -321,11 +333,28 @@ def finalize_import_run(
     occurrence_count = 0
     with closing(_ledger_connect(db_path)) as conn, conn:
         run = conn.execute(
-            "SELECT * FROM source_import_runs WHERE import_run_id=? AND status='started'",
+            """SELECT rowid AS run_sequence,* FROM source_import_runs
+               WHERE import_run_id=? AND status='started'""",
             (import_run_id,),
         ).fetchone()
         if run is None:
             raise RuntimeError("source import run is not active")
+        newer_completed = conn.execute(
+            """SELECT 1 FROM source_import_runs
+               WHERE source_identity=? AND status='completed' AND rowid>?
+               LIMIT 1""",
+            (source_identity, run["run_sequence"]),
+        ).fetchone()
+        if newer_completed is not None:
+            conn.execute(
+                """UPDATE source_import_runs
+                   SET status='failed',catalog_import_completed=1,
+                       error_category='superseded_by_newer_run',
+                       entry_count=0,occurrence_count=0,finished_at=?
+                   WHERE import_run_id=?""",
+                (finished_at, import_run_id),
+            )
+            return 0
         for observation in observations:
             source_entry_id, identity_state, create_entry = _matching_source_entry(
                 conn, source_identity=source_identity, observation=observation,
@@ -398,18 +427,11 @@ def finalize_import_run(
 
         overlap = conn.execute(
             """SELECT 1 FROM source_import_runs
-               WHERE source_identity=? AND import_run_id!=? AND status='started'
+               WHERE source_identity=? AND status='started' AND rowid>?
                LIMIT 1""",
-            (source_identity, import_run_id),
+            (source_identity, run["run_sequence"]),
         ).fetchone()
-        newer = conn.execute(
-            """SELECT 1 FROM source_import_runs
-               WHERE source_identity=? AND import_run_id!=?
-                 AND status='completed' AND started_at>?
-               LIMIT 1""",
-            (source_identity, import_run_id, run["started_at"]),
-        ).fetchone()
-        if overlap is None and newer is None:
+        if occurrence_count > 0 and overlap is None:
             conn.execute(
                 """UPDATE source_entries SET active=0,updated_at=?
                    WHERE source_identity=? AND active=1
@@ -541,7 +563,7 @@ def source_entry_diagnostics(db_path: Path, *, limit: int = 100) -> dict[str, An
             for row in conn.execute(
                 """SELECT import_run_id,source_identity,error_category
                    FROM source_import_runs WHERE status='failed'
-                   ORDER BY started_at DESC LIMIT ?""",
+                   ORDER BY started_at DESC,import_run_id DESC LIMIT ?""",
                 (bounded_limit,),
             ).fetchall()
         ]

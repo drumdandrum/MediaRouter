@@ -42,6 +42,10 @@ The ledger is diagnostic only:
 - URLs, paths, credentials, tokens, and raw `#EXTINF` records are not stored;
 - ledger finalization uses a separate post-import transaction, so ledger failure
   cannot roll back a successful catalog import;
+- zero-observation runs retain existing active-state because Phase A lacks positive
+  evidence that an empty or fully skipped input is a trustworthy empty snapshot;
+- newer same-feed runs supersede older late-finishing observations, while an older
+  stale `started` row cannot block a newer run from finalizing;
 - disabling the feature is the operational rollback.
 
 Occurrence retention and pruning are not implemented. Until a retention policy is

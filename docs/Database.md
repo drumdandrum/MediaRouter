@@ -243,6 +243,11 @@ prevent the authoritative catalog import.
 
 Ledger finalization occurs only after the complete existing import succeeds and uses
 a separate transaction. Failed or overlapping runs do not deactivate entries.
+Only a non-empty observation snapshot may deactivate missing entries. Empty or fully
+skipped inputs preserve active-state conservatively. Run insertion order determines
+same-feed snapshot precedence: a late-finishing older run is recorded as failed with
+the categorical reason `superseded_by_newer_run`, and stale older `started` rows do
+not block a newer run from finalizing.
 Operational rollback is to disable the feature; the additive tables have no runtime
 dependents. Occurrence retention/pruning is intentionally deferred.
 
