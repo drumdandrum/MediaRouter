@@ -11,7 +11,7 @@ import sqlite3
 import tempfile
 import unicodedata
 from typing import Any, Iterator
-from uuid import UUID
+from uuid import UUID, uuid4
 
 
 RUN_STATUSES = ("started", "completed", "failed")
@@ -165,6 +165,204 @@ def content_fingerprint(
         return None
     encoded = "\0".join(canonical).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _ledger_connect(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def start_import_run(
+    db_path: Path,
+    *,
+    source_identity: str,
+    job_id: str | None,
+    provider_id: str | None,
+    account_id: str | None,
+    media_scope: str,
+    started_at: str,
+) -> str:
+    import_run_id = uuid4().hex
+    with _ledger_connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO source_import_runs
+               (import_run_id,source_identity,job_id,provider_id,account_id,media_scope,
+                status,catalog_import_completed,entry_count,occurrence_count,started_at)
+               VALUES (?,?,?,?,?,?,'started',0,0,0,?)""",
+            (
+                import_run_id, source_identity, job_id, provider_id, account_id,
+                media_scope, started_at,
+            ),
+        )
+    return import_run_id
+
+
+def fail_import_run(
+    db_path: Path,
+    import_run_id: str,
+    *,
+    error_category: str,
+    catalog_import_completed: bool,
+    finished_at: str,
+) -> None:
+    category = re.sub(r"[^a-z0-9_]+", "_", error_category.casefold())[:64] or "error"
+    with _ledger_connect(db_path) as conn:
+        conn.execute(
+            """UPDATE source_import_runs
+               SET status='failed',catalog_import_completed=?,error_category=?,
+                   finished_at=?
+               WHERE import_run_id=? AND status='started'""",
+            (int(catalog_import_completed), category, finished_at, import_run_id),
+        )
+
+
+def _matching_source_entry(
+    conn: sqlite3.Connection,
+    *,
+    source_identity: str,
+    observation: SourceObservation,
+) -> tuple[str | None, str]:
+    if observation.provider_entry_id:
+        rows = conn.execute(
+            """SELECT source_entry_id FROM source_entries
+               WHERE source_identity=? AND media_type=? AND provider_entry_id=?""",
+            (
+                source_identity, observation.media_type,
+                observation.provider_entry_id,
+            ),
+        ).fetchall()
+        return (rows[0]["source_entry_id"] if len(rows) == 1 else None, "provider_id")
+    if observation.content_fingerprint:
+        rows = conn.execute(
+            """SELECT source_entry_id FROM source_entries
+               WHERE source_identity=? AND media_type=? AND content_fingerprint=?""",
+            (
+                source_identity, observation.media_type,
+                observation.content_fingerprint,
+            ),
+        ).fetchall()
+        return (rows[0]["source_entry_id"] if len(rows) == 1 else None, "fingerprint")
+    return None, "identity_poor"
+
+
+def finalize_import_run(
+    db_path: Path,
+    *,
+    import_run_id: str,
+    source_identity: str,
+    provider_id: str | None,
+    account_id: str | None,
+    observations: Iterator[SourceObservation],
+    finished_at: str,
+) -> int:
+    occurrence_count = 0
+    with _ledger_connect(db_path) as conn:
+        run = conn.execute(
+            "SELECT * FROM source_import_runs WHERE import_run_id=? AND status='started'",
+            (import_run_id,),
+        ).fetchone()
+        if run is None:
+            raise RuntimeError("source import run is not active")
+        for observation in observations:
+            source_entry_id, identity_state = _matching_source_entry(
+                conn, source_identity=source_identity, observation=observation,
+            )
+            if source_entry_id is None and identity_state != "identity_poor":
+                source_entry_id = uuid4().hex
+                conn.execute(
+                    """INSERT INTO source_entries
+                       (source_entry_id,source_identity,provider_id,account_id,
+                        provider_entry_id,provider_entry_id_kind,media_type,
+                        observed_catalog_item_id,observed_source_availability_id,
+                        content_fingerprint,normalized_title,first_seen_import_run_id,
+                        last_seen_import_run_id,active,created_at,updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)""",
+                    (
+                        source_entry_id, source_identity, provider_id, account_id,
+                        observation.provider_entry_id,
+                        observation.provider_entry_id_kind, observation.media_type,
+                        observation.observed_catalog_item_id,
+                        observation.observed_source_availability_id,
+                        observation.content_fingerprint,
+                        normalized_title(observation.observed_title), import_run_id,
+                        import_run_id, observation.observed_at,
+                        observation.observed_at,
+                    ),
+                )
+            elif source_entry_id is not None:
+                conn.execute(
+                    """UPDATE source_entries
+                       SET provider_id=?,account_id=?,provider_entry_id=?,
+                           provider_entry_id_kind=?,observed_catalog_item_id=?,
+                           observed_source_availability_id=?,content_fingerprint=?,
+                           normalized_title=?,last_seen_import_run_id=?,active=1,
+                           updated_at=?
+                       WHERE source_entry_id=?""",
+                    (
+                        provider_id, account_id, observation.provider_entry_id,
+                        observation.provider_entry_id_kind,
+                        observation.observed_catalog_item_id,
+                        observation.observed_source_availability_id,
+                        observation.content_fingerprint,
+                        normalized_title(observation.observed_title), import_run_id,
+                        observation.observed_at, source_entry_id,
+                    ),
+                )
+            conn.execute(
+                """INSERT INTO source_entry_occurrences
+                   (import_run_id,source_entry_id,source_identity,placement_index,
+                    media_type,identity_state,observed_title,normalized_series_name,
+                    season_number,episode_number,provider_entry_id,
+                    provider_entry_id_kind,content_fingerprint,
+                    observed_catalog_item_id,observed_parent_catalog_item_id,
+                    observed_source_availability_id,observed_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    import_run_id, source_entry_id, source_identity,
+                    observation.placement_index, observation.media_type,
+                    identity_state, observation.observed_title,
+                    observation.normalized_series_name, observation.season_number,
+                    observation.episode_number, observation.provider_entry_id,
+                    observation.provider_entry_id_kind,
+                    observation.content_fingerprint,
+                    observation.observed_catalog_item_id,
+                    observation.observed_parent_catalog_item_id,
+                    observation.observed_source_availability_id,
+                    observation.observed_at,
+                ),
+            )
+            occurrence_count += 1
+
+        overlap = conn.execute(
+            """SELECT 1 FROM source_import_runs
+               WHERE source_identity=? AND import_run_id!=? AND status='started'
+               LIMIT 1""",
+            (source_identity, import_run_id),
+        ).fetchone()
+        newer = conn.execute(
+            """SELECT 1 FROM source_import_runs
+               WHERE source_identity=? AND import_run_id!=?
+                 AND status='completed' AND started_at>?
+               LIMIT 1""",
+            (source_identity, import_run_id, run["started_at"]),
+        ).fetchone()
+        if overlap is None and newer is None:
+            conn.execute(
+                """UPDATE source_entries SET active=0,updated_at=?
+                   WHERE source_identity=? AND active=1
+                     AND last_seen_import_run_id!=?""",
+                (finished_at, source_identity, import_run_id),
+            )
+        conn.execute(
+            """UPDATE source_import_runs
+               SET status='completed',catalog_import_completed=1,
+                   entry_count=?,occurrence_count=?,finished_at=?
+               WHERE import_run_id=?""",
+            (occurrence_count, occurrence_count, finished_at, import_run_id),
+        )
+    return occurrence_count
 
 
 def ensure_source_entry_schema(conn: sqlite3.Connection) -> None:
