@@ -20,6 +20,8 @@ VOD_MEDIA_TYPES = ("movie", "episode")
 IDENTITY_STATES = ("provider_id", "fingerprint", "identity_poor")
 MAX_TEXT_INPUT = 4096
 MAX_OBSERVED_TEXT = 256
+MAX_FINALIZE_OBSERVATIONS = 10_000
+SHADOW_BUSY_TIMEOUT_MS = 100
 _URI_RE = re.compile(r"(?i)(?:[a-z][a-z0-9+.-]{1,31}://\S+)")
 _OPAQUE_URI_RE = re.compile(
     r"(?i)\b(?:file|ftp|plugin|rtmp|rtsp|smb|udp):[^\s]+"
@@ -189,9 +191,10 @@ def content_fingerprint(
 
 
 def _ledger_connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=SHADOW_BUSY_TIMEOUT_MS / 1000)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(f"PRAGMA busy_timeout = {SHADOW_BUSY_TIMEOUT_MS}")
     return conn
 
 
@@ -330,8 +333,15 @@ def finalize_import_run(
     observations: Iterator[SourceObservation],
     finished_at: str,
 ) -> int:
+    prepared: list[tuple[SourceObservation, str]] = []
+    for observation in observations:
+        if len(prepared) >= MAX_FINALIZE_OBSERVATIONS:
+            raise ValueError("source observation limit exceeded")
+        prepared.append((observation, normalized_title(observation.observed_title)))
+
     occurrence_count = 0
     with closing(_ledger_connect(db_path)) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
         run = conn.execute(
             """SELECT rowid AS run_sequence,* FROM source_import_runs
                WHERE import_run_id=? AND status='started'""",
@@ -355,7 +365,7 @@ def finalize_import_run(
                 (finished_at, import_run_id),
             )
             return 0
-        for observation in observations:
+        for observation, observation_title in prepared:
             source_entry_id, identity_state, create_entry = _matching_source_entry(
                 conn, source_identity=source_identity, observation=observation,
             )
@@ -376,7 +386,7 @@ def finalize_import_run(
                         observation.observed_catalog_item_id,
                         observation.observed_source_availability_id,
                         observation.content_fingerprint,
-                        normalized_title(observation.observed_title), import_run_id,
+                        observation_title, import_run_id,
                         import_run_id, observation.observed_at,
                         observation.observed_at,
                     ),
@@ -396,7 +406,7 @@ def finalize_import_run(
                         observation.observed_catalog_item_id,
                         observation.observed_source_availability_id,
                         observation.content_fingerprint,
-                        normalized_title(observation.observed_title), import_run_id,
+                        observation_title, import_run_id,
                         observation.observed_at, source_entry_id,
                     ),
                 )

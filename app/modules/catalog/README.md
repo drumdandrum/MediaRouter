@@ -42,6 +42,10 @@ The ledger is diagnostic only:
 - URLs, paths, credentials, tokens, and raw `#EXTINF` records are not stored;
 - ledger finalization uses a separate post-import transaction, so ledger failure
   cannot roll back a successful catalog import;
+- finalization parses and normalizes at most 10,000 sanitized observations before
+  opening its write transaction, then uses a 100 ms shadow-only writer-lock timeout;
+- `BEGIN IMMEDIATE` serializes precedence checks with shadow writes, so contention
+  abandons observation rather than allowing stale same-feed state;
 - zero-observation runs retain existing active-state because Phase A lacks positive
   evidence that an empty or fully skipped input is a trustworthy empty snapshot;
 - newer same-feed runs supersede older late-finishing observations, while an older

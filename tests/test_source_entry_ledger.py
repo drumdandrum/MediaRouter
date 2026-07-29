@@ -2,6 +2,8 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from dataclasses import replace
 from unittest.mock import patch
@@ -20,6 +22,8 @@ from app.services.source_entry_ledger import (
     ObservationSpool,
     SourceObservation,
     SourceFeedScopeConflict,
+    MAX_FINALIZE_OBSERVATIONS,
+    SHADOW_BUSY_TIMEOUT_MS,
     content_fingerprint,
     finalize_import_run,
     provider_entry_identity,
@@ -976,6 +980,279 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
             self.assertEqual(conn.execute(
                 "SELECT COUNT(*) FROM source_entries WHERE active=1"
             ).fetchone()[0], 1)
+
+    def test_finalization_prepares_observations_before_opening_write_connection(self):
+        self.enable_ledger()
+        feed_id = str(uuid4())
+        source_identity = source_identity_from_feed_id(feed_id)
+        path = self.playlist("prepare-before-write.m3u", [
+            ('cuid="one"', "One", "https://example.invalid/one"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        observation = self.observed("One")
+        db_path = get_settings().data_dir / "media_router.db"
+        run_id = start_import_run(
+            db_path, source_identity=source_identity, job_id=None,
+            provider_id=None, account_id=None, media_scope="movie",
+            started_at="2026-01-01T00:00:01",
+        )
+        consumed = []
+
+        def observations():
+            consumed.append(True)
+            yield observation
+
+        from app.services import source_entry_ledger as ledger_module
+        original_connect = ledger_module._ledger_connect
+
+        def checked_connect(path):
+            self.assertEqual(consumed, [True])
+            return original_connect(path)
+
+        with patch.object(ledger_module, "_ledger_connect", side_effect=checked_connect):
+            finalize_import_run(
+                db_path, import_run_id=run_id, source_identity=source_identity,
+                provider_id=None, account_id=None, observations=observations(),
+                finished_at="2026-01-01T00:00:02",
+            )
+
+    def test_finalization_limit_fails_before_opening_database(self):
+        self.enable_ledger()
+        feed_id = str(uuid4())
+        source_identity = source_identity_from_feed_id(feed_id)
+        path = self.playlist("observation-limit.m3u", [
+            ('cuid="one"', "One", "https://example.invalid/one"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        observation = self.observed("One")
+        db_path = get_settings().data_dir / "media_router.db"
+        run_id = start_import_run(
+            db_path, source_identity=source_identity, job_id=None,
+            provider_id=None, account_id=None, media_scope="movie",
+            started_at="2026-01-01T00:00:01",
+        )
+        with (
+            patch(
+                "app.services.source_entry_ledger._ledger_connect",
+                side_effect=AssertionError("database opened before limit validation"),
+            ),
+            self.assertRaisesRegex(ValueError, "observation limit"),
+        ):
+            finalize_import_run(
+                db_path, import_run_id=run_id, source_identity=source_identity,
+                provider_id=None, account_id=None,
+                observations=(
+                    observation for _ in range(MAX_FINALIZE_OBSERVATIONS + 1)
+                ),
+                finished_at="2026-01-01T00:00:02",
+            )
+
+    def test_shadow_writer_lock_timeout_is_short_and_rolls_back_cleanly(self):
+        self.enable_ledger()
+        feed_id = str(uuid4())
+        source_identity = source_identity_from_feed_id(feed_id)
+        path = self.playlist("writer-timeout.m3u", [
+            ('cuid="one"', "One", "https://example.invalid/one"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        observation = self.observed("One")
+        db_path = get_settings().data_dir / "media_router.db"
+        run_id = start_import_run(
+            db_path, source_identity=source_identity, job_id=None,
+            provider_id=None, account_id=None, media_scope="movie",
+            started_at="2026-01-01T00:00:01",
+        )
+        writer = sqlite3.connect(db_path)
+        writer.execute(
+            "UPDATE source_feeds SET updated_at=updated_at WHERE source_feed_id=?",
+            (source_identity,),
+        )
+        started = time.monotonic()
+        try:
+            with self.assertRaises(sqlite3.OperationalError):
+                finalize_import_run(
+                    db_path, import_run_id=run_id,
+                    source_identity=source_identity, provider_id=None,
+                    account_id=None, observations=iter([observation]),
+                    finished_at="2026-01-01T00:00:02",
+                )
+        finally:
+            writer.rollback()
+            writer.close()
+        elapsed = time.monotonic() - started
+        self.assertGreaterEqual(elapsed, SHADOW_BUSY_TIMEOUT_MS / 1000 * 0.75)
+        self.assertLess(elapsed, 0.5)
+        with self.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_entry_occurrences WHERE import_run_id=?",
+                (run_id,),
+            ).fetchone()[0], 0)
+            self.assertEqual(conn.execute(
+                "SELECT status FROM source_import_runs WHERE import_run_id=?",
+                (run_id,),
+            ).fetchone()[0], "started")
+
+    def test_failure_at_each_finalization_stage_rolls_back_entire_snapshot(self):
+        self.enable_ledger()
+        feed_id = str(uuid4())
+        source_identity = source_identity_from_feed_id(feed_id)
+        path = self.playlist("stage-failures.m3u", [
+            ('cuid="one"', "One", "https://example.invalid/one"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        observation = self.observed("One")
+        db_path = get_settings().data_dir / "media_router.db"
+        stages = (
+            "SELECT source_entry_id FROM source_entries",
+            "INSERT INTO source_entry_occurrences",
+            "UPDATE source_entries SET active=0",
+            "UPDATE source_import_runs SET status='completed'",
+            "COMMIT",
+        )
+        from app.services import source_entry_ledger as ledger_module
+
+        for sequence, stage in enumerate(stages, start=1):
+            with self.subTest(stage=stage):
+                run_id = start_import_run(
+                    db_path, source_identity=source_identity, job_id=None,
+                    provider_id=None, account_id=None, media_scope="movie",
+                    started_at=f"2026-01-01T00:00:{sequence + 1:02d}",
+                )
+
+                class FailingConnection:
+                    def __init__(self):
+                        self.connection = sqlite3.connect(db_path)
+                        self.connection.row_factory = sqlite3.Row
+                        self.connection.execute("PRAGMA foreign_keys=ON")
+                        self.connection.execute(
+                            f"PRAGMA busy_timeout={SHADOW_BUSY_TIMEOUT_MS}"
+                        )
+
+                    def execute(self, sql, parameters=()):
+                        normalized = " ".join(sql.split())
+                        if stage != "COMMIT" and stage in normalized:
+                            raise sqlite3.OperationalError(
+                                f"forced {stage} failure"
+                            )
+                        return self.connection.execute(sql, parameters)
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, exc_type, exc, traceback):
+                        if exc_type is not None:
+                            self.connection.rollback()
+                            return False
+                        if stage == "COMMIT":
+                            self.connection.rollback()
+                            raise sqlite3.OperationalError(
+                                "forced commit failure"
+                            )
+                        self.connection.commit()
+                        return False
+
+                    def close(self):
+                        self.connection.close()
+
+                with (
+                    patch.object(
+                        ledger_module, "_ledger_connect",
+                        side_effect=lambda path: FailingConnection(),
+                    ),
+                    self.assertRaises(sqlite3.OperationalError),
+                ):
+                    finalize_import_run(
+                        db_path, import_run_id=run_id,
+                        source_identity=source_identity, provider_id=None,
+                        account_id=None, observations=iter([observation]),
+                        finished_at="2026-01-01T00:01:00",
+                    )
+                with self.connect() as conn:
+                    self.assertEqual(conn.execute(
+                        """SELECT COUNT(*) FROM source_entry_occurrences
+                           WHERE import_run_id=?""",
+                        (run_id,),
+                    ).fetchone()[0], 0)
+                    self.assertEqual(conn.execute(
+                        "SELECT status FROM source_import_runs WHERE import_run_id=?",
+                        (run_id,),
+                    ).fetchone()[0], "started")
+                    conn.execute(
+                        """UPDATE source_import_runs
+                           SET status='failed',error_category='test_cleanup',
+                               finished_at=started_at
+                           WHERE import_run_id=?""",
+                        (run_id,),
+                    )
+
+    def test_concurrent_same_feed_finalizers_preserve_newest_snapshot(self):
+        self.enable_ledger()
+        feed_id = str(uuid4())
+        source_identity = source_identity_from_feed_id(feed_id)
+        path = self.playlist("concurrent-finalizers.m3u", [
+            ('cuid="baseline"', "Baseline", "https://example.invalid/baseline"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        baseline = self.observed("Baseline")
+        db_path = get_settings().data_dir / "media_router.db"
+        older = start_import_run(
+            db_path, source_identity=source_identity, job_id=None,
+            provider_id=None, account_id=None, media_scope="movie",
+            started_at="2026-01-01T00:00:01",
+        )
+        newer = start_import_run(
+            db_path, source_identity=source_identity, job_id=None,
+            provider_id=None, account_id=None, media_scope="movie",
+            started_at="2026-01-01T00:00:02",
+        )
+        older_observation = replace(
+            baseline, observed_title="Older",
+            provider_entry_id=f"cuid:{'1' * 64}", placement_index=0,
+        )
+        newer_observation = replace(
+            baseline, observed_title="Newer",
+            provider_entry_id=f"cuid:{'2' * 64}", placement_index=0,
+        )
+        barrier = threading.Barrier(2)
+        errors = []
+
+        def finish(run_id, observation, finished_at):
+            try:
+                barrier.wait()
+                finalize_import_run(
+                    db_path, import_run_id=run_id,
+                    source_identity=source_identity, provider_id=None,
+                    account_id=None, observations=iter([observation]),
+                    finished_at=finished_at,
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(
+                target=finish,
+                args=(older, older_observation, "2026-01-01T00:00:03"),
+            ),
+            threading.Thread(
+                target=finish,
+                args=(newer, newer_observation, "2026-01-01T00:00:04"),
+            ),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertFalse(errors)
+        with self.connect() as conn:
+            active = conn.execute(
+                "SELECT normalized_title FROM source_entries WHERE active=1"
+            ).fetchall()
+            self.assertEqual([row["normalized_title"] for row in active], ["newer"])
 
     def test_diagnostics_report_position_duplicates_changes_and_reappearance(self):
         self.enable_ledger()

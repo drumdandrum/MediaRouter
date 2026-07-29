@@ -243,6 +243,11 @@ prevent the authoritative catalog import.
 
 Ledger finalization occurs only after the complete existing import succeeds and uses
 a separate transaction. Failed or overlapping runs do not deactivate entries.
+Finalization parses and normalizes a maximum of 10,000 sanitized occurrences before
+opening the database transaction. It then uses `BEGIN IMMEDIATE` with a 100 ms
+shadow-only busy timeout so writer contention abandons observation quickly and
+same-feed precedence reads are serialized with shadow writes. The completed snapshot
+remains all-or-nothing; occurrence writes are not chunked.
 Only a non-empty observation snapshot may deactivate missing entries. Empty or fully
 skipped inputs preserve active-state conservatively. Run insertion order determines
 same-feed snapshot precedence: a late-finishing older run is recorded as failed with
