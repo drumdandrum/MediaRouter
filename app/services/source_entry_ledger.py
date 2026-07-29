@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import asdict, dataclass
 import hashlib
 import html
@@ -185,17 +186,18 @@ def start_import_run(
     started_at: str,
 ) -> str:
     import_run_id = uuid4().hex
-    with _ledger_connect(db_path) as conn:
-        conn.execute(
-            """INSERT INTO source_import_runs
-               (import_run_id,source_identity,job_id,provider_id,account_id,media_scope,
-                status,catalog_import_completed,entry_count,occurrence_count,started_at)
-               VALUES (?,?,?,?,?,?,'started',0,0,0,?)""",
-            (
-                import_run_id, source_identity, job_id, provider_id, account_id,
-                media_scope, started_at,
-            ),
-        )
+    with closing(_ledger_connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """INSERT INTO source_import_runs
+                   (import_run_id,source_identity,job_id,provider_id,account_id,media_scope,
+                    status,catalog_import_completed,entry_count,occurrence_count,started_at)
+                   VALUES (?,?,?,?,?,?,'started',0,0,0,?)""",
+                (
+                    import_run_id, source_identity, job_id, provider_id, account_id,
+                    media_scope, started_at,
+                ),
+            )
     return import_run_id
 
 
@@ -208,14 +210,15 @@ def fail_import_run(
     finished_at: str,
 ) -> None:
     category = re.sub(r"[^a-z0-9_]+", "_", error_category.casefold())[:64] or "error"
-    with _ledger_connect(db_path) as conn:
-        conn.execute(
-            """UPDATE source_import_runs
-               SET status='failed',catalog_import_completed=?,error_category=?,
-                   finished_at=?
-               WHERE import_run_id=? AND status='started'""",
-            (int(catalog_import_completed), category, finished_at, import_run_id),
-        )
+    with closing(_ledger_connect(db_path)) as conn:
+        with conn:
+            conn.execute(
+                """UPDATE source_import_runs
+                   SET status='failed',catalog_import_completed=?,error_category=?,
+                       finished_at=?
+                   WHERE import_run_id=? AND status='started'""",
+                (int(catalog_import_completed), category, finished_at, import_run_id),
+            )
 
 
 def _matching_source_entry(
@@ -258,7 +261,7 @@ def finalize_import_run(
     finished_at: str,
 ) -> int:
     occurrence_count = 0
-    with _ledger_connect(db_path) as conn:
+    with closing(_ledger_connect(db_path)) as conn, conn:
         run = conn.execute(
             "SELECT * FROM source_import_runs WHERE import_run_id=? AND status='started'",
             (import_run_id,),
@@ -446,7 +449,7 @@ def source_entry_diagnostics(db_path: Path, *, limit: int = 100) -> dict[str, An
             SELECT COUNT(*) FROM source_entry_occurrences
             WHERE identity_state='identity_poor'""",
     }
-    with _ledger_connect(db_path) as conn:
+    with closing(_ledger_connect(db_path)) as conn:
         counts = {
             name: int(conn.execute(query).fetchone()[0])
             for name, query in queries.items()
