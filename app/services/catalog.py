@@ -18,6 +18,7 @@ from app.schemas.catalog import CatalogItem, CatalogSource, CatalogSummary, Chan
 from app.services.jobs import update_job
 from app.services.logs import add_log
 from app.services.providers import ensure_provider_schema, get_account
+from app.services.source_entry_ledger import ensure_source_entry_schema
 
 
 EXTINF_RE = re.compile(r'^#EXTINF:[^,]*?(?P<attrs>(?:\s+[A-Za-z0-9_-]+="[^"]*")*)\s*,(?P<title>.*)$')
@@ -210,6 +211,7 @@ def ensure_schema(conn: sqlite3.Connection | None = None) -> None:
         WHERE media_type='channel' AND NOT EXISTS (
             SELECT 1 FROM channel_placements p WHERE p.catalog_item_id=c.internal_id)
     """, (now, now))
+    ensure_source_entry_schema(conn)
     conn.commit()
     if owns_conn:
         conn.close()
