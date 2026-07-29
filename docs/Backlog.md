@@ -53,6 +53,14 @@ This backlog is organized by product milestone. Completed implementation history
 - [ ] Document production and development environment separation.
 - [ ] Document local STRM output as the preferred same-host deployment model.
 
+### Emby mapping-audit hardening
+
+- [ ] Add resumable or cursor-based movie auditing beyond the 10,000-item cap without raising the per-run safety bound.
+- [ ] Replace full episode-detail retention with lower-memory streaming aggregation and a bounded detail window.
+- [ ] Add a reusable deterministic audit integrity-hash helper with complete stable ordering.
+- [ ] Consider an optional audit UI or downloadable, sanitized report after the operator API workflow is established.
+- [ ] Design durable movie, series, and episode crosswalks separately; VOD persistence and application remain explicitly deferred.
+
 ### Provider health
 
 - [ ] Define provider/account health scoring.

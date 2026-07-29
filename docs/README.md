@@ -10,6 +10,7 @@ Canonical docs:
 - [Installation](Installation.md)
 - [Roadmap](Roadmap.md)
 - [Backlog](Backlog.md)
+- [Emby mapping-audit operator runbook](EmbyAuditRunbook.md)
 - [Plugin SDK](PluginSDK.md)
 - [Decisions](Decisions.md)
 
