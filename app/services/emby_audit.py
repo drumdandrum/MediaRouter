@@ -49,7 +49,17 @@ def _normalize(value: Any) -> str:
 
 
 def _safe_text(value: Any, limit: int = 256) -> str:
-    text = re.sub(r"https?://\S+", "[redacted-url]", str(value or ""), flags=re.I)
+    text = re.sub(
+        r"\b[a-z][a-z0-9+.-]*://\S+",
+        "[redacted-url]",
+        str(value or ""),
+        flags=re.I,
+    )
+    text = re.sub(
+        r"(?<!\S)(?:/[^\s/]\S*|[A-Za-z]:[\\/]\S+|\\\\\S+)",
+        "[redacted-path]",
+        text,
+    )
     text = re.sub(
         r"(?i)\b(api[_-]?key|access[_-]?token|token|password|secret)"
         r"\s*([=:])\s*\S+",

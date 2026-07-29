@@ -675,7 +675,11 @@ class EmbyIntegrationTests(unittest.TestCase):
             }
         movie = {
             "Id": "opaque",
-            "Name": "Movie http://user:password@example/path?token=secret",
+            "Name": (
+                "Movie http://user:password@example/path?token=secret "
+                "rtsp://provider/private?access_token=secret "
+                "/private/provider/path"
+            ),
             "Type": "Movie",
             "Path": "http://provider/private?api_key=secret",
             "Overview": "token=secret",
@@ -692,7 +696,11 @@ class EmbyIntegrationTests(unittest.TestCase):
         self.assertEqual(before, after)
         serialized = result.model_dump_json()
         self.assertIn("[redacted-url]", serialized)
-        for secret in ("password", "token=secret", "api_key", "/private"):
+        self.assertIn("[redacted-path]", serialized)
+        for secret in (
+            "password", "token=secret", "access_token", "api_key",
+            "rtsp://", "/private",
+        ):
             self.assertNotIn(secret, serialized)
 
     def test_mapping_page_bounds_large_lineups(self):
