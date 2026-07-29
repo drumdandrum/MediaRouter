@@ -76,9 +76,31 @@ Media Router is middleware, not another full media server.
 - Emby Live TV and STRM movie playback are validated.
 - The 2026-07-28 production deployment of application commit `8b97d0c` validated the Emby provisional-reservation adoption path end to end: automatically and manually mapped sessions adopted and promoted the original provisional reservation, no duplicate capacity-consuming reservation remained, heartbeats continued, playback-end release completed, and unrelated provisional behavior remained functional.
 - Current Emby release timing remains unchanged. Media-type-aware abandoned-session cleanup may be optimized only in a later lifecycle phase after polling support and validation cover live channels, movies, and series episodes; that work is separate from the full-library mapping audit.
+- The 2026-07-28 production validation of the preview-only Emby mapping audit approved the endpoint for operator-driven, read-only audits. Operators must request one media type at a time, prefer lower-load periods for movie and episode scans, and treat `truncated=true` results as partial. The endpoint is not approved for frequent polling, unattended automation, or applying VOD mappings.
 - Channels DVR Live TV ingestion and playback are validated.
 - Jellyfin and VLC runtime playback have been exercised.
 - Kodi IPTV Simple playback works, but Kodi may apply its own channel ordering or duplicate-placement behavior. The same behavior with the original IPTV Boss playlist indicates a client-specific presentation issue rather than a core Media Router output defect.
+
+### Emby mapping-audit production validation
+
+Application commit `b52f2fc` was validated on `embyserver` with one request per media
+type. The API remained ready, the container identity and start time did not change,
+no application errors occurred, and mappings, reservations, Emby bindings, playback,
+and lifecycle state were unchanged. Returned diagnostics contained no sensitive URLs,
+paths, tokens, credentials, or raw Emby DTOs.
+
+| Media type | Scan result | Classification summary | Evidence and diagnostics | Observed cost |
+| --- | --- | --- | --- | --- |
+| Channel | 2,479; complete | 2,151 exact; 328 ambiguous | 2,151 persisted ItemId; 328 duplicate Emby names; 80 duplicate catalog titles; 80 placement collisions | Previously validated successfully |
+| Movie | 10,000; truncated | 6,795 exact; 3,205 ambiguous | 6,782 durable markers; 13 catalog external identities; 3,120 duplicate Emby names; 448 duplicate catalog titles; 3,197 conflicting exact evidence | 41.424 s; about 84% peak CPU; 177.5 MiB peak memory |
+| Series | 16; complete | 8 normalized-title; 8 unmatched | No ambiguity or collisions | 0.587 s |
+| Episode | 1,596; complete | 848 exact structural identity; 748 unmatched | 4 incomplete structures; 20 duplicate Emby names; 209 duplicate catalog titles; no duplicate structural identities | 5.362 s; about 101% peak CPU; 721.5 MiB peak memory, returning immediately to normal |
+
+Movie aggregates describe only the first 10,000 scanned items and must not be
+interpreted as full-library totals. Integrity hashes used around an audit must order
+rows by a complete stable key; an incomplete `ORDER BY` produced incomparable hashes
+during episode validation. The approved procedure is documented in the
+[Emby mapping-audit runbook](EmbyAuditRunbook.md).
 
 ### Catalog metrics
 
