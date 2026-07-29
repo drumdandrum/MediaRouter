@@ -349,6 +349,59 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
             ".source-entry-observations-*.jsonl"
         )))
 
+    def test_run_start_failure_does_not_affect_authoritative_import(self):
+        self.enable_ledger()
+        playlist = self.playlist("run-start-failure.m3u", [
+            ('cuid="survives"', "Survives", "https://example.invalid/survives"),
+        ])
+        with patch(
+            "app.services.catalog.start_import_run",
+            side_effect=sqlite3.OperationalError("forced run-start failure"),
+        ):
+            summary = import_paths(
+                [str(playlist)], "Test", media_type_hint="movie",
+                source_feed_id=str(uuid4()),
+            )
+        self.assertEqual(summary["entries"], 1)
+        with self.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM catalog_items WHERE media_type='movie'"
+            ).fetchone()[0], 1)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_import_runs"
+            ).fetchone()[0], 0)
+        self.assertFalse(list(get_settings().data_dir.glob(
+            ".source-entry-observations-*.jsonl"
+        )))
+
+    def test_failed_status_write_cannot_mask_successful_catalog_import(self):
+        self.enable_ledger()
+        playlist = self.playlist("status-failure.m3u", [
+            ('cuid="survives"', "Survives", "https://example.invalid/survives"),
+        ])
+        with (
+            patch(
+                "app.services.catalog.finalize_import_run",
+                side_effect=sqlite3.OperationalError("forced finalization failure"),
+            ),
+            patch(
+                "app.services.catalog.fail_import_run",
+                side_effect=sqlite3.OperationalError("forced status failure"),
+            ),
+        ):
+            summary = import_paths(
+                [str(playlist)], "Test", media_type_hint="movie",
+                source_feed_id=str(uuid4()),
+            )
+        self.assertEqual(summary["entries"], 1)
+        with self.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM catalog_items WHERE media_type='movie'"
+            ).fetchone()[0], 1)
+        self.assertFalse(list(get_settings().data_dir.glob(
+            ".source-entry-observations-*.jsonl"
+        )))
+
     def test_registered_feed_scope_conflict_skips_only_shadow_observation(self):
         self.enable_ledger()
         feed_id = str(uuid4())

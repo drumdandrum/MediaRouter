@@ -735,19 +735,38 @@ def import_paths(
         return _import_paths_authoritative(
             paths, source_name, job_id, provider_id, account_id, media_type_hint,
         )
-    import_run_id = start_import_run(
-        db_path, source_identity=source_identity, job_id=job_id,
-        provider_id=effective_provider_id, account_id=account_id,
-        media_scope=media_scope, started_at=started_at,
-    )
+    try:
+        import_run_id = start_import_run(
+            db_path, source_identity=source_identity, job_id=job_id,
+            provider_id=effective_provider_id, account_id=account_id,
+            media_scope=media_scope, started_at=started_at,
+        )
+    except Exception:
+        add_log(
+            "warning", "catalog",
+            "Source-entry observation skipped: import_run_start_failed",
+        )
+        return _import_paths_authoritative(
+            paths, source_name, job_id, provider_id, account_id, media_type_hint,
+        )
+
+    def mark_run_failed(error_category: str, catalog_completed: bool) -> None:
+        try:
+            fail_import_run(
+                db_path, import_run_id, error_category=error_category,
+                catalog_import_completed=catalog_completed,
+                finished_at=datetime.utcnow().isoformat(),
+            )
+        except Exception:
+            add_log(
+                "warning", "catalog",
+                "Source-entry observation status update failed",
+            )
+
     try:
         spool = ObservationSpool(settings.data_dir)
     except Exception:
-        fail_import_run(
-            db_path, import_run_id, error_category="spool_create_failed",
-            catalog_import_completed=False,
-            finished_at=datetime.utcnow().isoformat(),
-        )
+        mark_run_failed("spool_create_failed", False)
         return _import_paths_authoritative(
             paths, source_name, job_id, provider_id, account_id, media_type_hint,
         )
@@ -759,19 +778,11 @@ def import_paths(
             observation_spool=spool, observation_failed=observation_failed,
         )
     except Exception:
-        fail_import_run(
-            db_path, import_run_id, error_category="catalog_import_failed",
-            catalog_import_completed=False,
-            finished_at=datetime.utcnow().isoformat(),
-        )
+        mark_run_failed("catalog_import_failed", False)
         raise
     try:
         if observation_failed[0]:
-            fail_import_run(
-                db_path, import_run_id, error_category="spool_write_failed",
-                catalog_import_completed=True,
-                finished_at=datetime.utcnow().isoformat(),
-            )
+            mark_run_failed("spool_write_failed", True)
             return summary
         try:
             finalize_import_run(
@@ -781,14 +792,16 @@ def import_paths(
                 finished_at=datetime.utcnow().isoformat(),
             )
         except Exception:
-            fail_import_run(
-                db_path, import_run_id, error_category="ledger_write_failed",
-                catalog_import_completed=True,
-                finished_at=datetime.utcnow().isoformat(),
-            )
+            mark_run_failed("ledger_write_failed", True)
         return summary
     finally:
-        spool.cleanup()
+        try:
+            spool.cleanup()
+        except Exception:
+            add_log(
+                "warning", "catalog",
+                "Source-entry observation spool cleanup failed",
+            )
 
 
 def run_catalog_import_job(
