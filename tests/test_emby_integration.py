@@ -716,11 +716,16 @@ class EmbyIntegrationTests(unittest.TestCase):
             "PlUgIn:mixed-case-value",
             "customscheme:opaque_value",
             "plugin&#58;html-escaped-value",
+            "plugin&amp;#58;repeatedly-escaped-value",
             "http&#58;//provider/path?token=secret",
+            "http&amp;#58;//provider/path?token=secret",
             "/var/lib/emby/movie.mkv",
             "&#47;var&#47;lib&#47;emby&#47;encoded.mkv",
+            "Title (/var/lib/emby/embedded.mkv)",
             r"C:\Media\movie.mkv",
+            r"Title (C:\Media\embedded.mkv)",
             r"\\server\share\movie.mkv",
+            r"Title (\\server\share\embedded.mkv)",
         )
         for unsafe in unsafe_values:
             sanitized = _safe_text(f"Title {unsafe}")
