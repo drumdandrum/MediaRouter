@@ -56,6 +56,17 @@ def _safe_text(value: Any, limit: int = 256) -> str:
         flags=re.I,
     )
     text = re.sub(
+        r"\b(?:https?|rtsp|rtmp|smb|file|ftp|udp|plugin):\S+",
+        "[redacted-url]",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"(?<![A-Za-z0-9+.-])[a-z][a-z0-9+.-]*:[^\s/\\]\S*",
+        "[redacted-url]",
+        text,
+    )
+    text = re.sub(
         r"(?<!\S)(?:/[^\s/]\S*|[A-Za-z]:[\\/]\S+|\\\\\S+)",
         "[redacted-path]",
         text,

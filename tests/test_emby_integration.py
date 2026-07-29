@@ -665,6 +665,7 @@ class EmbyIntegrationTests(unittest.TestCase):
 
     def test_mapping_audit_is_read_only_and_sanitizes_diagnostics(self):
         from app.services.emby import refresh_emby_channel_mappings
+        from app.services.emby_audit import _safe_text
         with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
             before = {
                 table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -702,6 +703,37 @@ class EmbyIntegrationTests(unittest.TestCase):
             "rtsp://", "/private",
         ):
             self.assertNotIn(secret, serialized)
+        unsafe_values = (
+            "http://provider/path?token=secret",
+            "https://provider/path?api_key=secret",
+            "rtsp://provider/stream",
+            "rtmp://provider/stream",
+            "smb://server/share",
+            "file:///private/movie.mkv",
+            "ftp://provider/file",
+            "udp://239.0.0.1:1234",
+            "plugin:credential-bearing-value",
+            "customscheme:opaque-value",
+            "/var/lib/emby/movie.mkv",
+            r"C:\Media\movie.mkv",
+            r"\\server\share\movie.mkv",
+        )
+        for unsafe in unsafe_values:
+            sanitized = _safe_text(f"Title {unsafe}")
+            self.assertNotIn(unsafe, sanitized)
+            self.assertIn("[redacted-", sanitized)
+        safe_titles = (
+            "Alien: Resurrection",
+            "Face/Off",
+            "Schindler's List",
+            "Amélie 東京",
+            "Season 1: Episode 2",
+            "S01:E02",
+            "C: The Movie",
+            "The file stream server path",
+        )
+        for title in safe_titles:
+            self.assertEqual(_safe_text(title), title)
 
     def test_mapping_page_bounds_large_lineups(self):
         from app.services.emby import page_emby_channel_mappings
