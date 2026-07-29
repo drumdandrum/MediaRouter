@@ -230,7 +230,7 @@ def _matching_source_entry(
     *,
     source_identity: str,
     observation: SourceObservation,
-) -> tuple[str | None, str]:
+) -> tuple[str | None, str, bool]:
     if observation.provider_entry_id:
         rows = conn.execute(
             """SELECT source_entry_id FROM source_entries
@@ -240,7 +240,11 @@ def _matching_source_entry(
                 observation.provider_entry_id,
             ),
         ).fetchall()
-        return (rows[0]["source_entry_id"] if len(rows) == 1 else None, "provider_id")
+        return (
+            rows[0]["source_entry_id"] if len(rows) == 1 else None,
+            "provider_id",
+            len(rows) == 0,
+        )
     if observation.content_fingerprint:
         rows = conn.execute(
             """SELECT source_entry_id FROM source_entries
@@ -250,8 +254,12 @@ def _matching_source_entry(
                 observation.content_fingerprint,
             ),
         ).fetchall()
-        return (rows[0]["source_entry_id"] if len(rows) == 1 else None, "fingerprint")
-    return None, "identity_poor"
+        return (
+            rows[0]["source_entry_id"] if len(rows) == 1 else None,
+            "fingerprint",
+            len(rows) == 0,
+        )
+    return None, "identity_poor", False
 
 
 def finalize_import_run(
@@ -273,10 +281,10 @@ def finalize_import_run(
         if run is None:
             raise RuntimeError("source import run is not active")
         for observation in observations:
-            source_entry_id, identity_state = _matching_source_entry(
+            source_entry_id, identity_state, create_entry = _matching_source_entry(
                 conn, source_identity=source_identity, observation=observation,
             )
-            if source_entry_id is None and identity_state != "identity_poor":
+            if source_entry_id is None and create_entry:
                 source_entry_id = uuid4().hex
                 conn.execute(
                     """INSERT INTO source_entries

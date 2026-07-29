@@ -264,6 +264,40 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
                 "SELECT COUNT(DISTINCT source_entry_id) FROM source_entry_occurrences"
             ).fetchone()[0], 1)
 
+    def test_ambiguous_existing_provider_entries_do_not_create_another_entry(self):
+        self.enable_ledger()
+        feed_id = str(uuid4())
+        path = self.playlist("ambiguous-provider.m3u", [
+            ('cuid="duplicate"', "First", "https://example.invalid/one"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        with self.connect() as conn:
+            original = conn.execute("SELECT * FROM source_entries").fetchone()
+            columns = [row["name"] for row in conn.execute(
+                "PRAGMA table_info(source_entries)"
+            )]
+            values = [original[column] for column in columns]
+            values[columns.index("source_entry_id")] = uuid4().hex
+            conn.execute(
+                f"INSERT INTO source_entries ({','.join(columns)}) "
+                f"VALUES ({','.join('?' for _ in columns)})",
+                values,
+            )
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        with self.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_entries"
+            ).fetchone()[0], 2)
+            latest = conn.execute(
+                """SELECT o.* FROM source_entry_occurrences o
+                   JOIN source_import_runs r ON r.import_run_id=o.import_run_id
+                   ORDER BY r.started_at DESC LIMIT 1"""
+            ).fetchone()
+            self.assertEqual(latest["identity_state"], "provider_id")
+            self.assertIsNone(latest["source_entry_id"])
+
     def test_episode_structure_and_incomplete_episode_are_observed_safely(self):
         self.enable_ledger()
         path = self.playlist("episodes.m3u", [
