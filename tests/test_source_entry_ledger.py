@@ -18,8 +18,10 @@ from app.services.outputs import (
 from app.services.source_entry_ledger import (
     ObservationSpool,
     SourceObservation,
+    SourceFeedScopeConflict,
     content_fingerprint,
     provider_entry_identity,
+    register_or_validate_source_feed,
     sanitized_text,
     source_entry_diagnostics,
     source_identity_from_feed_id,
@@ -69,7 +71,8 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
                 )
             }
             self.assertTrue({
-                "source_import_runs", "source_entries", "source_entry_occurrences",
+                "source_feeds", "source_import_runs", "source_entries",
+                "source_entry_occurrences",
             }.issubset(tables))
             indexes = {
                 row["name"] for row in conn.execute(
@@ -79,6 +82,106 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
             self.assertIn("idx_source_occurrences_provider_entry", indexes)
             self.assertFalse(any(name.startswith("sqlite_autoindex_source_entries_2")
                                  for name in indexes))
+
+    def add_provider_account(self, provider_id: str, account_id: str) -> None:
+        ensure_schema()
+        now = "2026-01-01T00:00:00"
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO providers
+                   (id,friendly_name,provider_type,notes,enabled,health_status,
+                    created_at,updated_at)
+                   VALUES (?,?,'IPTV','',1,'Unknown',?,?)""",
+                (provider_id, provider_id, now, now),
+            )
+            conn.execute(
+                """INSERT INTO accounts
+                   (id,provider_id,friendly_name,created_at,updated_at)
+                   VALUES (?,?,?,?,?)""",
+                (account_id, provider_id, account_id, now, now),
+            )
+
+    def test_source_feed_schema_and_registration_are_idempotent(self):
+        ensure_schema()
+        ensure_schema()
+        feed = source_identity_from_feed_id(str(uuid4()))
+        db_path = get_settings().data_dir / "media_router.db"
+        first = register_or_validate_source_feed(
+            db_path, source_identity=feed, provider_id=None, account_id=None,
+            media_scope="movie", observed_at="2026-01-01T00:00:00",
+        )
+        second = register_or_validate_source_feed(
+            db_path, source_identity=feed, provider_id=None, account_id=None,
+            media_scope="movie", observed_at="2026-01-02T00:00:00",
+        )
+        self.assertEqual((first, second), ("registered", "existing"))
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM source_feeds").fetchone()
+            self.assertEqual(row["source_feed_id"], feed)
+            self.assertEqual(row["created_at"], "2026-01-01T00:00:00")
+            self.assertEqual(row["updated_at"], "2026-01-02T00:00:00")
+            columns = {
+                item["name"] for item in conn.execute("PRAGMA table_info(source_feeds)")
+            }
+            self.assertEqual(columns, {
+                "source_feed_id", "provider_id", "account_id", "media_scope",
+                "active", "created_at", "updated_at",
+            })
+
+    def test_feed_scope_conflicts_never_rebind_and_null_is_not_a_wildcard(self):
+        self.add_provider_account("provider-one", "account-one")
+        self.add_provider_account("provider-two", "account-two")
+        db_path = get_settings().data_dir / "media_router.db"
+
+        def assert_conflict(original, conflicting):
+            feed = source_identity_from_feed_id(str(uuid4()))
+            register_or_validate_source_feed(
+                db_path, source_identity=feed, observed_at="2026-01-01T00:00:00",
+                **original,
+            )
+            with self.assertRaises(SourceFeedScopeConflict):
+                register_or_validate_source_feed(
+                    db_path, source_identity=feed,
+                    observed_at="2026-01-02T00:00:00", **conflicting,
+                )
+            with self.connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM source_feeds WHERE source_feed_id=?", (feed,)
+                ).fetchone()
+                self.assertEqual(
+                    (row["provider_id"], row["account_id"], row["media_scope"]),
+                    (
+                        original["provider_id"], original["account_id"],
+                        original["media_scope"],
+                    ),
+                )
+
+        assert_conflict(
+            dict(provider_id="provider-one", account_id="account-one",
+                 media_scope="movie"),
+            dict(provider_id="provider-two", account_id="account-one",
+                 media_scope="movie"),
+        )
+        assert_conflict(
+            dict(provider_id="provider-one", account_id="account-one",
+                 media_scope="movie"),
+            dict(provider_id="provider-one", account_id="account-two",
+                 media_scope="movie"),
+        )
+        assert_conflict(
+            dict(provider_id="provider-one", account_id="account-one",
+                 media_scope="movie"),
+            dict(provider_id="provider-one", account_id="account-one",
+                 media_scope="episode"),
+        )
+        assert_conflict(
+            dict(provider_id=None, account_id=None, media_scope="movie"),
+            dict(provider_id="provider-one", account_id=None, media_scope="movie"),
+        )
+        assert_conflict(
+            dict(provider_id="provider-one", account_id=None, media_scope="movie"),
+            dict(provider_id=None, account_id=None, media_scope="movie"),
+        )
 
     def test_occurrence_identity_is_bounded_and_entry_is_nullable(self):
         ensure_schema()
@@ -166,11 +269,18 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
         playlist = self.playlist("disabled.m3u", [
             ('cuid="movie-1" year="2024"', "Movie One", "https://one.invalid/a"),
         ])
-        import_paths([str(playlist)], "Test", media_type_hint="movie",
-                     source_feed_id=str(uuid4()))
+        with patch(
+            "app.services.catalog.register_or_validate_source_feed",
+            side_effect=AssertionError("disabled imports must not access feed registry"),
+        ):
+            import_paths([str(playlist)], "Test", media_type_hint="movie",
+                         source_feed_id=str(uuid4()))
         with self.connect() as conn:
             self.assertEqual(conn.execute(
                 "SELECT COUNT(*) FROM source_import_runs"
+            ).fetchone()[0], 0)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_feeds"
             ).fetchone()[0], 0)
 
     def test_enabled_import_records_hashed_observations_and_cleans_spool(self):
@@ -198,7 +308,8 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
             self.assertIsNone(occurrences[2]["source_entry_id"])
             ledger_text = "\n".join(
                 str(tuple(row)) for table in (
-                    "source_import_runs", "source_entries", "source_entry_occurrences"
+                    "source_feeds", "source_import_runs", "source_entries",
+                    "source_entry_occurrences",
                 ) for row in conn.execute(f"SELECT * FROM {table}")
             )
             for forbidden in (
@@ -206,6 +317,61 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
                 str(playlist), "#EXTINF",
             ):
                 self.assertNotIn(forbidden, ledger_text)
+        self.assertFalse(list(get_settings().data_dir.glob(
+            ".source-entry-observations-*.jsonl"
+        )))
+
+    def test_registry_failure_isolated_before_run_or_spool_creation(self):
+        self.enable_ledger()
+        playlist = self.playlist("registry-failure.m3u", [
+            ('cuid="survives"', "Survives", "https://example.invalid/survives"),
+        ])
+        with patch(
+            "app.services.catalog.register_or_validate_source_feed",
+            side_effect=sqlite3.OperationalError("forced registry failure"),
+        ):
+            summary = import_paths(
+                [str(playlist)], "Test", media_type_hint="movie",
+                source_feed_id=str(uuid4()),
+            )
+        self.assertEqual(summary["entries"], 1)
+        with self.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM catalog_items WHERE media_type='movie'"
+            ).fetchone()[0], 1)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_feeds"
+            ).fetchone()[0], 0)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_import_runs"
+            ).fetchone()[0], 0)
+        self.assertFalse(list(get_settings().data_dir.glob(
+            ".source-entry-observations-*.jsonl"
+        )))
+
+    def test_registered_feed_scope_conflict_skips_only_shadow_observation(self):
+        self.enable_ledger()
+        feed_id = str(uuid4())
+        first = self.playlist("feed-movie.m3u", [
+            ('cuid="movie"', "Movie", "https://example.invalid/movie"),
+        ])
+        second = self.playlist("feed-episode.m3u", [
+            ("", "Show S01E02 Pilot", "https://example.invalid/episode"),
+        ])
+        import_paths([str(first)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        summary = import_paths([str(second)], "Test", media_type_hint="episode",
+                               source_feed_id=feed_id)
+        self.assertEqual(summary["entries"], 1)
+        with self.connect() as conn:
+            feed = conn.execute("SELECT * FROM source_feeds").fetchone()
+            self.assertEqual(feed["media_scope"], "movie")
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_import_runs"
+            ).fetchone()[0], 1)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM catalog_items WHERE media_type='episode'"
+            ).fetchone()[0], 1)
         self.assertFalse(list(get_settings().data_dir.glob(
             ".source-entry-observations-*.jsonl"
         )))
@@ -359,6 +525,9 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
             self.assertEqual(conn.execute(
                 "SELECT COUNT(*) FROM source_import_runs"
             ).fetchone()[0], 0)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_feeds"
+            ).fetchone()[0], 0)
 
     def test_token_rotation_keeps_entry_identity_and_exposes_availability_drift(self):
         self.enable_ledger()
@@ -376,6 +545,9 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
         import_paths([str(path)], "Test", media_type_hint="movie",
                      source_feed_id=feed_id)
         with self.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_feeds"
+            ).fetchone()[0], 1)
             self.assertEqual(conn.execute(
                 "SELECT COUNT(*) FROM source_entries"
             ).fetchone()[0], 1)
@@ -396,6 +568,9 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
             import_paths([str(path)], "Test", media_type_hint="movie",
                          source_feed_id=feed_id)
         with self.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_feeds"
+            ).fetchone()[0], 2)
             self.assertEqual(conn.execute(
                 "SELECT COUNT(*) FROM source_entries"
             ).fetchone()[0], 2)

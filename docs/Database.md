@@ -215,8 +215,11 @@ Large playlist imports stream M3U input line by line and batch commits periodica
 
 ### source-entry shadow ledger
 
-Three additive tables support optional, observation-only VOD import diagnostics:
+Four additive tables support optional, observation-only VOD import diagnostics:
 
+- `source_feeds` binds an opaque configured feed UUID to one exact provider,
+  account, and VOD media scope. `NULL` provider or account values are ordinary
+  scope values, not wildcards, and conflicts never rebind an existing feed.
 - `source_import_runs` records started, completed, and failed observation runs for
   an opaque configured feed UUID.
 - `source_entries` records reusable movie or episode source identity when a hashed
@@ -231,6 +234,12 @@ runtime authority. No catalog, source-availability, output, integration, Broker,
 playback path reads these tables. Provider identifiers are typed SHA-256 hashes; raw
 playlist records, source URLs, filesystem paths, credentials, and tokens are
 excluded.
+
+The feed registry stores no URL, path, locator, credential, token, catalog identity,
+or playlist position. Keeping the same configured feed UUID across locator or token
+changes preserves source identity; using distinct UUIDs keeps feeds under one
+account distinct. Registry validation or write failure skips observation and cannot
+prevent the authoritative catalog import.
 
 Ledger finalization occurs only after the complete existing import succeeds and uses
 a separate transaction. Failed or overlapping runs do not deactivate entries.

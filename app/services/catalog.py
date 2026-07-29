@@ -21,12 +21,14 @@ from app.services.providers import ensure_provider_schema, get_account
 from app.services.source_entry_ledger import (
     ObservationSpool,
     SourceObservation,
+    SourceFeedScopeConflict,
     content_fingerprint,
     ensure_source_entry_schema,
     fail_import_run,
     finalize_import_run,
     normalized_title,
     provider_entry_identity,
+    register_or_validate_source_feed,
     sanitized_text,
     source_identity_from_feed_id,
     start_import_run,
@@ -699,13 +701,43 @@ def import_paths(
             paths, source_name, job_id, provider_id, account_id, media_type_hint,
         )
 
-    ensure_schema()
     db_path = _db_path()
     started_at = datetime.utcnow().isoformat()
     media_scope = media_type_hint if media_type_hint in {"movie", "episode"} else "vod"
+    effective_provider_id = provider_id
+    if account_id:
+        account = get_account(account_id)
+        if account is None:
+            return _import_paths_authoritative(
+                paths, source_name, job_id, provider_id, account_id, media_type_hint,
+            )
+        effective_provider_id = account.provider_id
+    try:
+        ensure_schema()
+        register_or_validate_source_feed(
+            db_path, source_identity=source_identity,
+            provider_id=effective_provider_id, account_id=account_id,
+            media_scope=media_scope, observed_at=started_at,
+        )
+    except SourceFeedScopeConflict:
+        add_log(
+            "warning", "catalog",
+            "Source-entry observation skipped: source_feed_scope_conflict",
+        )
+        return _import_paths_authoritative(
+            paths, source_name, job_id, provider_id, account_id, media_type_hint,
+        )
+    except Exception:
+        add_log(
+            "warning", "catalog",
+            "Source-entry observation skipped: source_feed_registry_unavailable",
+        )
+        return _import_paths_authoritative(
+            paths, source_name, job_id, provider_id, account_id, media_type_hint,
+        )
     import_run_id = start_import_run(
         db_path, source_identity=source_identity, job_id=job_id,
-        provider_id=provider_id, account_id=account_id,
+        provider_id=effective_provider_id, account_id=account_id,
         media_scope=media_scope, started_at=started_at,
     )
     try:
@@ -744,7 +776,7 @@ def import_paths(
         try:
             finalize_import_run(
                 db_path, import_run_id=import_run_id,
-                source_identity=source_identity, provider_id=provider_id,
+                source_identity=source_identity, provider_id=effective_provider_id,
                 account_id=account_id, observations=spool.observations(),
                 finished_at=datetime.utcnow().isoformat(),
             )

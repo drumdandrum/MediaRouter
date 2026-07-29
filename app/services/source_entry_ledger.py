@@ -32,6 +32,10 @@ _SECRET_RE = re.compile(
 )
 
 
+class SourceFeedScopeConflict(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class SourceObservation:
     placement_index: int
@@ -177,6 +181,48 @@ def _ledger_connect(db_path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def register_or_validate_source_feed(
+    db_path: Path,
+    *,
+    source_identity: str,
+    provider_id: str | None,
+    account_id: str | None,
+    media_scope: str,
+    observed_at: str,
+) -> str:
+    """Register a feed once or require exact, NULL-sensitive scope equality."""
+    if media_scope not in {"movie", "episode", "vod"}:
+        raise ValueError("unsupported source feed media scope")
+    expected = (provider_id, account_id, media_scope)
+    with closing(_ledger_connect(db_path)) as conn:
+        with conn:
+            row = conn.execute(
+                """SELECT provider_id,account_id,media_scope
+                   FROM source_feeds WHERE source_feed_id=?""",
+                (source_identity,),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    """INSERT INTO source_feeds
+                       (source_feed_id,provider_id,account_id,media_scope,active,
+                        created_at,updated_at)
+                       VALUES (?,?,?,?,1,?,?)""",
+                    (
+                        source_identity, provider_id, account_id, media_scope,
+                        observed_at, observed_at,
+                    ),
+                )
+                return "registered"
+            actual = (row["provider_id"], row["account_id"], row["media_scope"])
+            if actual != expected:
+                raise SourceFeedScopeConflict("source feed scope conflict")
+            conn.execute(
+                "UPDATE source_feeds SET active=1,updated_at=? WHERE source_feed_id=?",
+                (observed_at, source_identity),
+            )
+            return "existing"
 
 
 def start_import_run(
@@ -510,6 +556,24 @@ def ensure_source_entry_schema(conn: sqlite3.Connection) -> None:
     """Create the additive, observation-only source-entry ledger schema."""
     conn.executescript(
         """
+        CREATE TABLE IF NOT EXISTS source_feeds (
+            source_feed_id TEXT PRIMARY KEY,
+            provider_id TEXT,
+            account_id TEXT,
+            media_scope TEXT NOT NULL
+                CHECK(media_scope IN ('movie', 'episode', 'vod')),
+            active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE SET NULL,
+            FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_source_feeds_account_scope
+            ON source_feeds(account_id, media_scope, active);
+        CREATE INDEX IF NOT EXISTS idx_source_feeds_provider
+            ON source_feeds(provider_id, active);
+
         CREATE TABLE IF NOT EXISTS source_import_runs (
             import_run_id TEXT PRIMARY KEY,
             source_identity TEXT NOT NULL,
@@ -528,6 +592,7 @@ def ensure_source_entry_schema(conn: sqlite3.Connection) -> None:
             error_category TEXT,
             started_at TEXT NOT NULL,
             finished_at TEXT,
+            FOREIGN KEY(source_identity) REFERENCES source_feeds(source_feed_id),
             FOREIGN KEY(catalog_import_id) REFERENCES catalog_imports(id) ON DELETE SET NULL,
             FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE SET NULL,
             FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE SET NULL
