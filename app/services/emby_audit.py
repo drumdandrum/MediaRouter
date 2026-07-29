@@ -49,10 +49,11 @@ def _normalize(value: Any) -> str:
 
 
 def _safe_text(value: Any, limit: int = 256) -> str:
+    text = unescape(str(value or ""))
     text = re.sub(
         r"\b[a-z][a-z0-9+.-]*://\S+",
         "[redacted-url]",
-        str(value or ""),
+        text,
         flags=re.I,
     )
     text = re.sub(
@@ -62,7 +63,8 @@ def _safe_text(value: Any, limit: int = 256) -> str:
         flags=re.I,
     )
     text = re.sub(
-        r"(?<![A-Za-z0-9+.-])[a-z][a-z0-9+.-]*:[^\s/\\]\S*",
+        r"(?<![A-Za-z0-9+.-])[a-z][a-z0-9+.-]*:"
+        r"(?=\S*[/\\?#[\]@%=&_.])\S+",
         "[redacted-url]",
         text,
     )

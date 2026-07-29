@@ -713,8 +713,12 @@ class EmbyIntegrationTests(unittest.TestCase):
             "ftp://provider/file",
             "udp://239.0.0.1:1234",
             "plugin:credential-bearing-value",
-            "customscheme:opaque-value",
+            "PlUgIn:mixed-case-value",
+            "customscheme:opaque_value",
+            "plugin&#58;html-escaped-value",
+            "http&#58;//provider/path?token=secret",
             "/var/lib/emby/movie.mkv",
+            "&#47;var&#47;lib&#47;emby&#47;encoded.mkv",
             r"C:\Media\movie.mkv",
             r"\\server\share\movie.mkv",
         )
@@ -729,8 +733,15 @@ class EmbyIntegrationTests(unittest.TestCase):
             "Amélie 東京",
             "Season 1: Episode 2",
             "S01:E02",
+            "10:30",
+            "16:9",
+            "John 3:16",
+            "john:3",
+            "go:home",
+            "to:be",
+            "URL: The Movie",
             "C: The Movie",
-            "The file stream server path",
+            "The file stream server plugin path URL",
         )
         for title in safe_titles:
             self.assertEqual(_safe_text(title), title)
