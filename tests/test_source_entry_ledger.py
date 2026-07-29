@@ -8,13 +8,22 @@ from uuid import uuid4
 
 from app.core.config import get_settings
 from app.services.catalog import ensure_schema, import_paths
+from app.schemas.outputs import LiveM3uSettingsUpdate, StrmSettingsUpdate
+from app.services.outputs import (
+    generate_live_m3u_output,
+    generate_strm_outputs,
+    update_live_m3u_settings,
+    update_strm_settings,
+)
 from app.services.source_entry_ledger import (
     ObservationSpool,
     SourceObservation,
     content_fingerprint,
     provider_entry_identity,
     sanitized_text,
+    source_entry_diagnostics,
     source_identity_from_feed_id,
+    start_import_run,
 )
 
 
@@ -313,6 +322,312 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
             self.assertEqual(conn.execute(
                 "SELECT COUNT(*) FROM source_import_runs"
             ).fetchone()[0], 0)
+
+    def test_token_rotation_keeps_entry_identity_and_exposes_availability_drift(self):
+        self.enable_ledger()
+        feed_id = str(uuid4())
+        path = self.playlist("tokens.m3u", [
+            ('cuid="stable" year="2024"', "Stable",
+             "https://example.invalid/movie?token=one"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        path = self.playlist("tokens.m3u", [
+            ('cuid="stable" year="2024"', "Stable",
+             "https://example.invalid/movie?token=two"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        with self.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_entries"
+            ).fetchone()[0], 1)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_availability"
+            ).fetchone()[0], 2)
+        diagnostics = source_entry_diagnostics(
+            get_settings().data_dir / "media_router.db"
+        )
+        self.assertEqual(diagnostics["counts"]["availability_drift"], 1)
+
+    def test_multiple_feeds_keep_distinct_logical_entries(self):
+        self.enable_ledger()
+        path = self.playlist("multi-feed.m3u", [
+            ('cuid="same"', "Same", "https://example.invalid/same"),
+        ])
+        for feed_id in (str(uuid4()), str(uuid4())):
+            import_paths([str(path)], "Test", media_type_hint="movie",
+                         source_feed_id=feed_id)
+        with self.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_entries"
+            ).fetchone()[0], 2)
+        diagnostics = source_entry_diagnostics(
+            get_settings().data_dir / "media_router.db"
+        )
+        self.assertEqual(
+            diagnostics["counts"]["catalog_multi_source_entries"], 1,
+        )
+
+    def test_failed_and_overlapping_runs_do_not_deactivate_entries(self):
+        self.enable_ledger()
+        feed_id = str(uuid4())
+        source_identity = source_identity_from_feed_id(feed_id)
+        path = self.playlist("overlap.m3u", [
+            ('cuid="one"', "One", "https://example.invalid/one"),
+            ('cuid="two"', "Two", "https://example.invalid/two"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        with patch(
+            "app.services.catalog._import_paths_authoritative",
+            side_effect=ValueError("forced parser failure"),
+        ):
+            with self.assertRaises(ValueError):
+                import_paths([str(path)], "Test", media_type_hint="movie",
+                             source_feed_id=feed_id)
+        with self.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_entries WHERE active=1"
+            ).fetchone()[0], 2)
+            failed = conn.execute(
+                "SELECT * FROM source_import_runs WHERE status='failed'"
+            ).fetchone()
+            self.assertEqual(failed["catalog_import_completed"], 0)
+        overlapping_run = start_import_run(
+            get_settings().data_dir / "media_router.db",
+            source_identity=source_identity, job_id=None, provider_id=None,
+            account_id=None, media_scope="movie",
+            started_at="9999-01-01T00:00:00",
+        )
+        path = self.playlist("overlap.m3u", [
+            ('cuid="two"', "Two", "https://example.invalid/two"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        with self.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_entries WHERE active=1"
+            ).fetchone()[0], 2)
+            conn.execute(
+                """UPDATE source_import_runs SET status='failed',finished_at=started_at,
+                   error_category='test_cleanup' WHERE import_run_id=?""",
+                (overlapping_run,),
+            )
+
+    def test_diagnostics_report_position_duplicates_changes_and_reappearance(self):
+        self.enable_ledger()
+        feed_id = str(uuid4())
+        path = self.playlist("diagnostics.m3u", [
+            ('cuid="one" year="2024"', "Original", "https://example.invalid/one"),
+            ('cuid="duplicate" year="2024"', "Duplicate", "https://example.invalid/d1"),
+            ('cuid="duplicate" year="2024"', "Duplicate", "https://example.invalid/d2"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        path = self.playlist("diagnostics.m3u", [
+            ('cuid="replacement" year="2024"', "Replacement", "https://example.invalid/r"),
+            ('cuid="one" year="2025"', "Changed", "https://example.invalid/one"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        path = self.playlist("diagnostics.m3u", [
+            ('cuid="one" year="2025"', "Changed", "https://example.invalid/one"),
+            ('cuid="duplicate" year="2024"', "Duplicate", "https://example.invalid/d1"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        diagnostics = source_entry_diagnostics(
+            get_settings().data_dir / "media_router.db", limit=10,
+        )
+        counts = diagnostics["counts"]
+        self.assertGreaterEqual(counts["moved_entries"], 1)
+        self.assertGreaterEqual(counts["reused_positions"], 1)
+        self.assertGreaterEqual(counts["duplicate_provider_identifiers"], 1)
+        self.assertGreaterEqual(counts["fingerprint_changes_under_provider_id"], 1)
+        self.assertGreaterEqual(counts["reappearances"], 1)
+        self.assertLessEqual(diagnostics["limit"], 500)
+
+    def test_provider_id_change_under_stable_fingerprint_and_duplicate_fingerprint(self):
+        self.enable_ledger()
+        feed_id = str(uuid4())
+        path = self.playlist("fingerprints.m3u", [
+            ('cuid="old" year="2024"', "Same", "https://example.invalid/old"),
+            ('year="2024"', "Duplicate Fingerprint", "https://example.invalid/a"),
+            ('year="2024"', "Duplicate Fingerprint", "https://example.invalid/b"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        path = self.playlist("fingerprints.m3u", [
+            ('cuid="new" year="2024"', "Same", "https://example.invalid/new"),
+        ])
+        import_paths([str(path)], "Test", media_type_hint="movie",
+                     source_feed_id=feed_id)
+        counts = source_entry_diagnostics(
+            get_settings().data_dir / "media_router.db"
+        )["counts"]
+        self.assertGreaterEqual(counts["duplicate_fingerprints"], 1)
+        self.assertGreaterEqual(counts["provider_id_changes_under_fingerprint"], 1)
+
+    def test_spool_write_failure_is_isolated_and_cleaned(self):
+        self.enable_ledger()
+        path = self.playlist("spool-failure.m3u", [
+            ('cuid="safe"', "Safe", "https://example.invalid/safe"),
+        ])
+        with patch(
+            "app.services.source_entry_ledger.ObservationSpool.append",
+            side_effect=OSError("forced spool failure"),
+        ):
+            summary = import_paths(
+                [str(path)], "Test", media_type_hint="movie",
+                source_feed_id=str(uuid4()),
+            )
+        self.assertEqual(summary["entries"], 1)
+        with self.connect() as conn:
+            run = conn.execute("SELECT * FROM source_import_runs").fetchone()
+            self.assertEqual(run["status"], "failed")
+            self.assertEqual(run["error_category"], "spool_write_failed")
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM catalog_items WHERE media_type='movie'"
+            ).fetchone()[0], 1)
+        self.assertFalse(list(get_settings().data_dir.glob(
+            ".source-entry-observations-*.jsonl"
+        )))
+
+    def test_catalog_import_and_output_behavior_are_unchanged(self):
+        path = self.playlist("parity.m3u", [
+            ('cuid="parity" year="2024"', "Parity Movie",
+             "https://example.invalid/parity"),
+        ])
+        disabled_summary = import_paths(
+            [str(path)], "Test", media_type_hint="movie",
+            source_feed_id=str(uuid4()),
+        )
+        output = Path(self.temp.name) / "outputs"
+        movies = output / "movies"
+        series = output / "series"
+        movies.mkdir(parents=True)
+        series.mkdir()
+        update_strm_settings(StrmSettingsUpdate(
+            movies_output_directory=str(movies),
+            series_output_directory=str(series),
+            generation_mode="Custom", maximum_movies=10, maximum_episodes=10,
+        ))
+        generate_strm_outputs("http://localhost:8088")
+        before = {
+            file.relative_to(output): file.read_bytes()
+            for file in output.rglob("*.strm")
+        }
+        self.enable_ledger()
+        enabled_summary = import_paths(
+            [str(path)], "Test", media_type_hint="movie",
+            source_feed_id=str(uuid4()),
+        )
+        generate_strm_outputs("http://localhost:8088")
+        after = {
+            file.relative_to(output): file.read_bytes()
+            for file in output.rglob("*.strm")
+        }
+        self.assertEqual(before, after)
+        self.assertEqual(
+            set(disabled_summary), set(enabled_summary),
+        )
+        with self.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM catalog_items WHERE media_type='movie'"
+            ).fetchone()[0], 1)
+
+    def test_enabled_and_disabled_authoritative_table_projections_match(self):
+        path = self.playlist("table-parity.m3u", [
+            ('cuid="parity" year="2024"', "Parity Movie",
+             "https://example.invalid/parity"),
+        ])
+        original_data_dir = os.environ["MEDIA_ROUTER_DATA_DIR"]
+
+        def capture(enabled: bool):
+            isolated = Path(self.temp.name) / ("enabled-db" if enabled else "disabled-db")
+            os.environ["MEDIA_ROUTER_DATA_DIR"] = str(isolated)
+            os.environ["MEDIA_ROUTER_SOURCE_ENTRY_SHADOW_LEDGER_ENABLED"] = (
+                "true" if enabled else "false"
+            )
+            get_settings.cache_clear()
+            summary = import_paths(
+                [str(path)], "Test", media_type_hint="movie",
+                source_feed_id=str(uuid4()),
+            )
+            with sqlite3.connect(isolated / "media_router.db") as conn:
+                projections = {
+                    "catalog_items": conn.execute(
+                        """SELECT internal_id,media_type,title,normalized_title,
+                                  group_title,tvg_id,tvg_name,tvg_logo,tvg_chno,cuid,
+                                  show_name,season_number,episode_number,episode_title,
+                                  parent_internal_id,confidence,raw_title
+                           FROM catalog_items ORDER BY internal_id"""
+                    ).fetchall(),
+                    "source_availability": conn.execute(
+                        """SELECT catalog_internal_id,provider_id,account_id,external_id,
+                                  location_ref,media_type,enabled,metadata_confidence,
+                                  notes,raw_extinf
+                           FROM source_availability ORDER BY catalog_internal_id,location_ref"""
+                    ).fetchall(),
+                    "catalog_sources": conn.execute(
+                        """SELECT catalog_internal_id,media_type,source_name,source_url,
+                                  cuid,tvg_id,raw_extinf
+                           FROM catalog_sources ORDER BY catalog_internal_id,source_url"""
+                    ).fetchall(),
+                    "catalog_imports": conn.execute(
+                        """SELECT job_id,source_name,file_path,status,summary_json
+                           FROM catalog_imports ORDER BY id"""
+                    ).fetchall(),
+                }
+            summary = {
+                key: value for key, value in summary.items()
+                if key not in {"duration_seconds", "last_import_time"}
+            }
+            return summary, projections
+
+        try:
+            disabled = capture(False)
+            enabled = capture(True)
+            self.assertEqual(disabled, enabled)
+        finally:
+            os.environ["MEDIA_ROUTER_DATA_DIR"] = original_data_dir
+            os.environ.pop("MEDIA_ROUTER_SOURCE_ENTRY_SHADOW_LEDGER_ENABLED", None)
+            get_settings.cache_clear()
+
+    def test_live_m3u_is_unchanged_and_live_is_not_ledgered(self):
+        live = self.playlist("live.m3u", [
+            ('cuid="live-one" tvg-id="live.one"', "Live One",
+             "https://example.invalid/live"),
+        ])
+        import_paths([str(live)], "Live", media_type_hint="live")
+        output = Path(self.temp.name) / "live-output" / "live.m3u"
+        update_live_m3u_settings(LiveM3uSettingsUpdate(
+            output_file_path=str(output), generation_mode="Unlimited",
+        ))
+        generate_live_m3u_output("http://localhost:8088")
+        before = output.read_bytes()
+        self.enable_ledger()
+        import_paths(
+            [str(live)], "Live", media_type_hint="live",
+            source_feed_id=str(uuid4()),
+        )
+        generate_live_m3u_output("http://localhost:8088")
+        self.assertEqual(before, output.read_bytes())
+        with self.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM source_import_runs"
+            ).fetchone()[0], 0)
+
+    def test_runtime_and_integration_modules_do_not_reference_ledger(self):
+        root = Path(__file__).resolve().parents[1]
+        for relative in (
+            "app/services/broker.py", "app/services/runtime.py",
+            "app/services/emby.py", "app/api/runtime.py",
+        ):
+            text = (root / relative).read_text()
+            self.assertNotIn("source_entries", text)
+            self.assertNotIn("source_entry_occurrences", text)
 
 
 if __name__ == "__main__":

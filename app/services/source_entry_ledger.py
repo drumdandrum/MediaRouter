@@ -365,6 +365,132 @@ def finalize_import_run(
     return occurrence_count
 
 
+def source_entry_diagnostics(db_path: Path, *, limit: int = 100) -> dict[str, Any]:
+    """Return bounded, aggregate-only diagnostics from completed observations."""
+    bounded_limit = max(1, min(int(limit), 500))
+    queries = {
+        "moved_entries": """
+            SELECT COUNT(*) FROM (
+              SELECT source_entry_id FROM source_entry_occurrences
+              WHERE source_entry_id IS NOT NULL
+              GROUP BY source_entry_id HAVING COUNT(DISTINCT placement_index)>1
+            )""",
+        "reused_positions": """
+            SELECT COUNT(*) FROM (
+              SELECT source_identity,placement_index FROM source_entry_occurrences
+              WHERE source_entry_id IS NOT NULL
+              GROUP BY source_identity,placement_index
+              HAVING COUNT(DISTINCT source_entry_id)>1
+            )""",
+        "duplicate_provider_identifiers": """
+            SELECT COUNT(*) FROM (
+              SELECT import_run_id,provider_entry_id FROM source_entry_occurrences
+              WHERE provider_entry_id IS NOT NULL
+              GROUP BY import_run_id,provider_entry_id HAVING COUNT(*)>1
+            )""",
+        "duplicate_fingerprints": """
+            SELECT COUNT(*) FROM (
+              SELECT import_run_id,content_fingerprint FROM source_entry_occurrences
+              WHERE content_fingerprint IS NOT NULL
+              GROUP BY import_run_id,content_fingerprint HAVING COUNT(*)>1
+            )""",
+        "source_entry_catalog_drift": """
+            SELECT COUNT(*) FROM (
+              SELECT source_entry_id FROM source_entry_occurrences
+              WHERE source_entry_id IS NOT NULL AND observed_catalog_item_id IS NOT NULL
+              GROUP BY source_entry_id
+              HAVING COUNT(DISTINCT observed_catalog_item_id)>1
+            )""",
+        "catalog_multi_source_entries": """
+            SELECT COUNT(*) FROM (
+              SELECT observed_catalog_item_id FROM source_entry_occurrences
+              WHERE source_entry_id IS NOT NULL AND observed_catalog_item_id IS NOT NULL
+              GROUP BY observed_catalog_item_id
+              HAVING COUNT(DISTINCT source_entry_id)>1
+            )""",
+        "inactive_entries": "SELECT COUNT(*) FROM source_entries WHERE active=0",
+        "fingerprint_changes_under_provider_id": """
+            SELECT COUNT(*) FROM (
+              SELECT source_entry_id FROM source_entry_occurrences
+              WHERE source_entry_id IS NOT NULL AND provider_entry_id IS NOT NULL
+                AND content_fingerprint IS NOT NULL
+              GROUP BY source_entry_id
+              HAVING COUNT(DISTINCT content_fingerprint)>1
+            )""",
+        "provider_id_changes_under_fingerprint": """
+            SELECT COUNT(*) FROM (
+              SELECT source_identity,content_fingerprint FROM source_entry_occurrences
+              WHERE content_fingerprint IS NOT NULL AND provider_entry_id IS NOT NULL
+              GROUP BY source_identity,content_fingerprint
+              HAVING COUNT(DISTINCT provider_entry_id)>1
+            )""",
+        "availability_drift": """
+            SELECT COUNT(*) FROM (
+              SELECT source_entry_id FROM source_entry_occurrences
+              WHERE source_entry_id IS NOT NULL
+                AND observed_source_availability_id IS NOT NULL
+              GROUP BY source_entry_id
+              HAVING COUNT(DISTINCT observed_source_availability_id)>1
+            )""",
+        "structural_episode_conflicts": """
+            SELECT COUNT(*) FROM (
+              SELECT source_identity,normalized_series_name,season_number,episode_number
+              FROM source_entry_occurrences
+              WHERE media_type='episode' AND normalized_series_name IS NOT NULL
+                AND season_number IS NOT NULL AND episode_number IS NOT NULL
+                AND observed_catalog_item_id IS NOT NULL
+              GROUP BY source_identity,normalized_series_name,season_number,episode_number
+              HAVING COUNT(DISTINCT observed_catalog_item_id)>1
+            )""",
+        "identity_poor_occurrences": """
+            SELECT COUNT(*) FROM source_entry_occurrences
+            WHERE identity_state='identity_poor'""",
+    }
+    with _ledger_connect(db_path) as conn:
+        counts = {
+            name: int(conn.execute(query).fetchone()[0])
+            for name, query in queries.items()
+        }
+        reappearances = conn.execute(
+            """WITH completed AS (
+                 SELECT import_run_id,source_identity,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY source_identity ORDER BY started_at,import_run_id
+                   ) AS run_number
+                 FROM source_import_runs WHERE status='completed'
+               ), seen AS (
+                 SELECT o.source_entry_id,c.source_identity,c.run_number,
+                   LAG(c.run_number) OVER (
+                     PARTITION BY o.source_entry_id ORDER BY c.run_number
+                   ) AS prior_run
+                 FROM source_entry_occurrences o
+                 JOIN completed c ON c.import_run_id=o.import_run_id
+                 WHERE o.source_entry_id IS NOT NULL
+               )
+               SELECT COUNT(DISTINCT source_entry_id) FROM seen
+               WHERE prior_run IS NOT NULL AND run_number-prior_run>1"""
+        ).fetchone()[0]
+        counts["reappearances"] = int(reappearances)
+        recent_failed = [
+            {
+                "import_run_id": row["import_run_id"],
+                "source_identity": row["source_identity"],
+                "error_category": row["error_category"],
+            }
+            for row in conn.execute(
+                """SELECT import_run_id,source_identity,error_category
+                   FROM source_import_runs WHERE status='failed'
+                   ORDER BY started_at DESC LIMIT ?""",
+                (bounded_limit,),
+            ).fetchall()
+        ]
+    return {
+        "counts": counts,
+        "recent_failed_runs": recent_failed,
+        "limit": bounded_limit,
+    }
+
+
 def ensure_source_entry_schema(conn: sqlite3.Connection) -> None:
     """Create the additive, observation-only source-entry ledger schema."""
     conn.executescript(
