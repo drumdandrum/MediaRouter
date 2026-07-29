@@ -139,7 +139,8 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
             mode = spool.path.stat().st_mode & 0o777
             self.assertEqual(mode, 0o600)
             title = sanitized_text(
-                "Movie https://user:secret@example.test/a?token=bad /private/file"
+                "Movie https://user:secret@example.test/a?token=bad /private/file "
+                "plugin:value token=standalone"
             )
             spool.append(SourceObservation(
                 placement_index=0, media_type="movie", observed_title=title,
@@ -153,6 +154,8 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
             self.assertNotIn("example.test", raw)
             self.assertNotIn("/private/file", raw)
             self.assertNotIn("secret", raw)
+            self.assertNotIn("plugin:value", raw)
+            self.assertNotIn("standalone", raw)
             self.assertEqual(len(list(spool.observations())), 1)
         finally:
             path = spool.path

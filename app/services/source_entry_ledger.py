@@ -21,10 +21,13 @@ IDENTITY_STATES = ("provider_id", "fingerprint", "identity_poor")
 MAX_TEXT_INPUT = 4096
 MAX_OBSERVED_TEXT = 256
 _URI_RE = re.compile(r"(?i)(?:[a-z][a-z0-9+.-]{1,31}://\S+)")
+_OPAQUE_URI_RE = re.compile(
+    r"(?i)\b(?:file|ftp|plugin|rtmp|rtsp|smb|udp):[^\s]+"
+)
 _UNIX_PATH_RE = re.compile(r"(?<![A-Za-z0-9])/(?:[^\s/]+/)*[^\s/]*")
 _WINDOWS_PATH_RE = re.compile(r"(?i)(?:[A-Z]:[\\/]|\\\\)[^\s]+")
 _SECRET_RE = re.compile(
-    r"(?i)(?:api[_-]?key|access[_-]?token|auth(?:orization)?|password|passwd|secret)"
+    r"(?i)(?:api[_-]?key|access[_-]?token|token|auth(?:orization)?|password|passwd|secret)"
     r"\s*[=:]\s*[^\s,;]+"
 )
 
@@ -107,6 +110,7 @@ def sanitized_text(value: Any) -> str:
     text = _normalized_evidence(value, casefold=False)
     text = _SECRET_RE.sub("[redacted]", text)
     text = _URI_RE.sub("[redacted]", text)
+    text = _OPAQUE_URI_RE.sub("[redacted]", text)
     text = _WINDOWS_PATH_RE.sub("[redacted]", text)
     text = _UNIX_PATH_RE.sub("[redacted]", text)
     return text[:MAX_OBSERVED_TEXT] or "Untitled"
