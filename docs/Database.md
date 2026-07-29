@@ -213,6 +213,30 @@ This table answers "where is this catalog item available?" only. The Broker deci
 
 Large playlist imports stream M3U input line by line and batch commits periodically to avoid loading entire playlists into memory.
 
+### source-entry shadow ledger
+
+Three additive tables support optional, observation-only VOD import diagnostics:
+
+- `source_import_runs` records started, completed, and failed observation runs for
+  an opaque configured feed UUID.
+- `source_entries` records reusable movie or episode source identity when a hashed
+  provider identifier or safe diagnostic fingerprint exists.
+- `source_entry_occurrences` records sanitized playlist-row observations. Its
+  `source_entry_id` is nullable for identity-poor rows, and playlist position is
+  occurrence metadata rather than identity.
+
+The feature defaults off under
+`MEDIA_ROUTER_SOURCE_ENTRY_SHADOW_LEDGER_ENABLED`. It performs no backfill and has no
+runtime authority. No catalog, source-availability, output, integration, Broker, or
+playback path reads these tables. Provider identifiers are typed SHA-256 hashes; raw
+playlist records, source URLs, filesystem paths, credentials, and tokens are
+excluded.
+
+Ledger finalization occurs only after the complete existing import succeeds and uses
+a separate transaction. Failed or overlapping runs do not deactivate entries.
+Operational rollback is to disable the feature; the additive tables have no runtime
+dependents. Occurrence retention/pruning is intentionally deferred.
+
 ### broker_reservations
 
 Tracks Sprint 4 broker decisions and temporary account reservations. Sprint 5 runtime resolve routes also write reservations here before redirecting. This table does not represent active playback or proxy sessions.
