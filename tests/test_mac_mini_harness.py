@@ -27,6 +27,7 @@ from mac_mini_harness import (  # noqa: E402
     validate_archive,
     validate_compose,
     validate_emby_target,
+    validate_local_root,
     validate_secret_permissions,
 )
 
@@ -85,6 +86,10 @@ class MacMiniHarnessTests(unittest.TestCase):
         ] = "true"
         with self.assertRaisesRegex(HarnessError, "shadow ledger"):
             validate_compose(config, ROOT)
+        config = self.rendered_config()
+        config["services"]["unexpected"] = {"image": "busybox"}
+        with self.assertRaisesRegex(HarnessError, "only the media-router"):
+            validate_compose(config, ROOT)
 
     def test_shell_scripts_have_portable_syntax(self):
         for script in ("mac-mini-test",):
@@ -107,10 +112,27 @@ class MacMiniHarnessTests(unittest.TestCase):
     def test_safe_deletion_boundaries_reject_other_paths(self):
         with tempfile.TemporaryDirectory() as temp:
             unrelated = Path(temp)
-            with self.assertRaisesRegex(HarnessError, "unexpected directory"):
+            with self.assertRaisesRegex(HarnessError, "unexpected local test root"):
                 safe_reset(unrelated, ROOT)
-            with self.assertRaisesRegex(HarnessError, "unexpected directory"):
+            with self.assertRaisesRegex(HarnessError, "unexpected local test root"):
                 safe_destroy(unrelated, ROOT)
+
+    def test_symlinked_local_root_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            outside = Path(temp) / "outside"
+            repo.mkdir()
+            outside.mkdir()
+            (repo / ".local").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(HarnessError, "symlinks"):
+                validate_local_root(repo / ".local/mac-mini", repo)
+            self.assertTrue(outside.exists())
+            (repo / ".local").unlink()
+            local = repo / ".local/mac-mini"
+            local.mkdir(parents=True)
+            (local / "outputs").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(HarnessError, "managed"):
+                validate_local_root(local, repo)
 
     def test_feed_uuid_is_created_restrictively_and_persists(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -119,6 +141,30 @@ class MacMiniHarnessTests(unittest.TestCase):
             second = ensure_feed_id(path)
             self.assertEqual(first, second)
             self.assertEqual(0o600, stat.S_IMODE(path.stat().st_mode))
+
+    def test_malformed_feed_uuid_fails_without_replacement(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "feed-id"
+            path.write_text("not-a-uuid\n")
+            with self.assertRaises(ValueError):
+                ensure_feed_id(path)
+            self.assertEqual("not-a-uuid\n", path.read_text())
+
+    def test_feed_id_and_secrets_may_not_be_symlinks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            target = root / "target"
+            target.write_text("outside\n")
+            feed = root / "feed-id"
+            feed.symlink_to(target)
+            with self.assertRaisesRegex(HarnessError, "symlink"):
+                ensure_feed_id(feed)
+            secret = root / "secrets.env"
+            secret.symlink_to(target)
+            os.chmod(target, 0o600)
+            with self.assertRaisesRegex(HarnessError, "regular file"):
+                validate_secret_permissions(secret)
+            self.assertEqual("outside\n", target.read_text())
 
     def test_secret_permissions(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -146,6 +192,7 @@ class MacMiniHarnessTests(unittest.TestCase):
             "http://embyserver:8096",
             "https://example.com",
             "http://host.docker.internal:8096",
+            "http://host.docker.internal:8597/",
             "http://user:secret@host.docker.internal:8597",
             "",
         )
@@ -191,6 +238,58 @@ class MacMiniHarnessTests(unittest.TestCase):
                 validate_archive(archive)
             with self.assertRaises(HarnessError):
                 restore_archive(archive, Path(temp) / "local")
+
+    def test_archive_links_special_members_and_unexpected_roots_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            for kind in ("symlink", "hardlink", "fifo", "unexpected"):
+                archive = temp_path / f"{kind}.tar.gz"
+                with tarfile.open(archive, "w:gz") as bundle:
+                    info = tarfile.TarInfo(
+                        "data/link" if kind != "unexpected" else "secrets.env"
+                    )
+                    if kind in {"symlink", "hardlink"}:
+                        info.type = (
+                            tarfile.SYMTYPE if kind == "symlink" else tarfile.LNKTYPE
+                        )
+                        info.linkname = "data/target"
+                    elif kind == "fifo":
+                        info.type = tarfile.FIFOTYPE
+                    else:
+                        info.size = 0
+                    bundle.addfile(info)
+                with self.subTest(kind=kind), self.assertRaises(HarnessError):
+                    validate_archive(archive)
+
+    def test_snapshot_names_cannot_traverse_or_be_options(self):
+        for name in ("../outside", "-option", ".", ".."):
+            result = subprocess.run(
+                [str(SCRIPTS / "mac-mini-test"), "snapshot", name],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(2, result.returncode)
+            self.assertIn("Snapshot name", result.stderr)
+
+    def test_compose_render_failure_prevents_start(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake_bin = Path(temp)
+            log = fake_bin / "docker.log"
+            fake = fake_bin / "docker"
+            fake.write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >>'{log}'\n"
+                "case \" $* \" in *' config --format json '*) exit 42;; esac\n"
+            )
+            fake.chmod(0o755)
+            env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+            result = subprocess.run(
+                [str(SCRIPTS / "mac-mini-test"), "start"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode)
+            commands = log.read_text()
+            self.assertIn("config --format json", commands)
+            self.assertNotIn(" up ", f" {commands} ")
 
     def test_snapshot_manifest_excludes_secret_contents_and_no_deployment_runs(self):
         config = self.rendered_config()

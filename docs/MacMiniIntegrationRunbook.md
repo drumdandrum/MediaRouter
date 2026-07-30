@@ -78,6 +78,10 @@ read-only fixtures, a disabled shadow ledger, and the Docker-internal runtime UR
 It rejects production paths/hosts, public bindings, reverse proxies, and unexpected
 services or mounts.
 
+Initialization and destructive commands also reject a symlinked `.local` parent or
+`.local/mac-mini` root, so an operator-created link cannot redirect reset or destroy
+outside the repository.
+
 The override uses Compose `!override` for ports and volumes. Docker Compose
 v2.24.4 or newer is therefore required.
 
@@ -138,7 +142,8 @@ scripts/mac-mini-test restore before-stage-1 --confirm mac-mini-test
 Restore validates archive member paths, creates a pre-restore snapshot, preserves
 `secrets.env` and `feed-id`, restores only test data/outputs, checks SQLite
 integrity, and restarts only if the service was previously running. It never
-configures or contacts Emby.
+configures or contacts Emby. Absolute paths, traversal, links, special filesystem
+members, and top-level content other than `data` and `outputs` are rejected.
 
 Tag the current test image for rollback:
 
@@ -196,6 +201,11 @@ The runner validates Compose isolation and fixture integrity, then reads:
 - recent logs for `database is locked`;
 - container identity/start time and descriptor count where available.
 
+The runner is operator-read-only: it issues only GET requests and opens SQLite with
+`mode=ro`. Some existing nominal GET service paths initialize schema or perform
+Broker expiry maintenance internally; that pre-existing application behavior is
+not changed or expanded by this harness.
+
 Repeated mode performs bounded status reads and permits at most minor descriptor
 noise. Lack of `/proc`-style descriptor data is reported as unavailable rather than
 treated as failure on Docker Desktop.
@@ -209,6 +219,7 @@ The reusable validator accepts a target only when:
 
 - the environment label is exactly `mac-mini-test`;
 - the credential-free HTTP authority is present in the local allowlist;
+- the port is exactly `8597`;
 - the hostname is `host.docker.internal`, `localhost`, or `127.0.0.1`;
 - no path, query, fragment, userinfo, or production hostname is present.
 

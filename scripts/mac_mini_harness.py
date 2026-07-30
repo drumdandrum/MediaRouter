@@ -50,6 +50,29 @@ def _within(path: Path, root: Path) -> bool:
     return True
 
 
+def validate_local_root(local_root: Path, repo_root: Path) -> None:
+    expected = repo_root / ".local" / "mac-mini"
+    if os.path.abspath(local_root) != os.path.abspath(expected):
+        raise HarnessError("refusing to operate on an unexpected local test root")
+    for component in (repo_root / ".local", expected):
+        if component.is_symlink():
+            raise HarnessError("local test root and its parent may not be symlinks")
+    if expected.exists() and not expected.is_dir():
+        raise HarnessError("local test root must be a directory")
+    managed_children = (
+        expected / "data",
+        expected / "outputs",
+        expected / "outputs/movies",
+        expected / "outputs/series",
+        expected / "outputs/live",
+        expected / "logs",
+        expected / "snapshots",
+        expected / "evidence",
+    )
+    if any(component.is_symlink() for component in managed_children):
+        raise HarnessError("managed local test directories may not be symlinks")
+
+
 def validate_compose(config: dict, repo_root: Path) -> None:
     if config.get("name") != PROJECT:
         raise HarnessError(f"unsafe Compose project: {config.get('name')!r}")
@@ -105,7 +128,7 @@ def validate_compose(config: dict, repo_root: Path) -> None:
 def validate_secret_permissions(path: Path) -> None:
     if not path.exists():
         return
-    if not path.is_file() or stat.S_IMODE(path.stat().st_mode) != 0o600:
+    if path.is_symlink() or not path.is_file() or stat.S_IMODE(path.stat().st_mode) != 0o600:
         raise HarnessError(f"{path} must be a regular file with mode 0600")
 
 
@@ -115,7 +138,9 @@ def validate_emby_target(url: str, environment: str, allowed_hosts: str) -> str:
     parsed = urlsplit(url.strip())
     if parsed.scheme != "http" or not parsed.hostname or parsed.username or parsed.password:
         raise HarnessError("test Emby URL must be an explicit credential-free HTTP URL")
-    if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+    if parsed.port != 8597:
+        raise HarnessError("test Emby URL must use the approved port 8597")
+    if parsed.path or parsed.query or parsed.fragment:
         raise HarnessError("test Emby URL must not contain a path, query, or fragment")
     authority = parsed.netloc.lower()
     if "embyserver" in authority:
@@ -130,6 +155,8 @@ def validate_emby_target(url: str, environment: str, allowed_hosts: str) -> str:
 
 def ensure_feed_id(path: Path) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        raise HarnessError("feed-id may not be a symlink")
     if path.exists():
         value = path.read_text(encoding="utf-8").strip()
         parsed = UUID(value)
@@ -161,34 +188,49 @@ def sqlite_integrity(path: Path) -> str:
     return "ok"
 
 
+def _validate_archive_members(bundle: tarfile.TarFile) -> None:
+    for member in bundle.getmembers():
+        path = PurePosixPath(member.name)
+        if path.is_absolute() or ".." in path.parts:
+            raise HarnessError("snapshot archive contains an unsafe path")
+        if member.issym() or member.islnk():
+            raise HarnessError("snapshot archive may not contain links")
+        if not (member.isfile() or member.isdir()):
+            raise HarnessError("snapshot archive may contain only files and directories")
+        if not path.parts or path.parts[0] not in {"data", "outputs"}:
+            raise HarnessError("snapshot archive contains an unexpected top-level path")
+
+
 def validate_archive(archive: Path) -> None:
     with tarfile.open(archive, "r:gz") as bundle:
-        for member in bundle.getmembers():
-            path = PurePosixPath(member.name)
-            if path.is_absolute() or ".." in path.parts:
-                raise HarnessError("snapshot archive contains an unsafe path")
-            if member.issym() or member.islnk():
-                raise HarnessError("snapshot archive may not contain links")
+        _validate_archive_members(bundle)
 
 
 def create_archive(source: Path, archive: Path) -> None:
     archive.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(archive, "w:gz") as bundle:
-        for name in ("data", "outputs"):
-            item = source / name
-            if item.exists():
-                bundle.add(item, arcname=name, recursive=True)
+    try:
+        with tarfile.open(archive, "w:gz") as bundle:
+            for name in ("data", "outputs"):
+                item = source / name
+                if item.exists():
+                    bundle.add(item, arcname=name, recursive=True)
+        validate_archive(archive)
+    except BaseException:
+        archive.unlink(missing_ok=True)
+        raise
 
 
 def restore_archive(archive: Path, local_root: Path) -> None:
-    validate_archive(archive)
     staging = local_root.parent / f".{local_root.name}-restore"
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(mode=0o700)
     try:
         with tarfile.open(archive, "r:gz") as bundle:
-            # validate_archive rejects absolute/traversal paths and all links first.
+            # Validate and extract from the same open archive to avoid a
+            # replacement race between separate validation and extraction opens.
+            _validate_archive_members(bundle)
+            # The member validator rejects traversal, links, and special files.
             # Avoid the newer tarfile filter argument so the operator helper remains
             # usable with the Python versions commonly installed on macOS.
             bundle.extractall(staging)
@@ -206,9 +248,7 @@ def restore_archive(archive: Path, local_root: Path) -> None:
 
 
 def safe_reset(local_root: Path, repo_root: Path) -> None:
-    expected = repo_root / ".local" / "mac-mini"
-    if local_root.resolve() != expected.resolve():
-        raise HarnessError("refusing to reset an unexpected directory")
+    validate_local_root(local_root, repo_root)
     for name in ("data", "outputs", "logs", "evidence"):
         target = local_root / name
         if target.exists():
@@ -217,9 +257,7 @@ def safe_reset(local_root: Path, repo_root: Path) -> None:
 
 
 def safe_destroy(local_root: Path, repo_root: Path) -> None:
-    expected = repo_root / ".local" / "mac-mini"
-    if local_root.resolve() != expected.resolve():
-        raise HarnessError("refusing to destroy an unexpected directory")
+    validate_local_root(local_root, repo_root)
     if local_root.exists():
         shutil.rmtree(local_root)
 
@@ -232,6 +270,9 @@ def _main() -> int:
     compose.add_argument("repo")
     secret = sub.add_parser("validate-secret")
     secret.add_argument("path")
+    local = sub.add_parser("validate-local-root")
+    local.add_argument("local_root")
+    local.add_argument("repo")
     target = sub.add_parser("validate-emby-target")
     target.add_argument("url")
     target.add_argument("environment")
@@ -262,6 +303,8 @@ def _main() -> int:
         validate_compose(json.loads(Path(args.config).read_text()), Path(args.repo))
     elif args.command == "validate-secret":
         validate_secret_permissions(Path(args.path))
+    elif args.command == "validate-local-root":
+        validate_local_root(Path(args.local_root), Path(args.repo))
     elif args.command == "validate-emby-target":
         print(validate_emby_target(args.url, args.environment, args.allowed_hosts))
     elif args.command == "feed-id":

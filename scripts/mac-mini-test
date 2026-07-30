@@ -30,6 +30,11 @@ compose() {
 }
 
 ensure_initialized() {
+  python3 "$HELPER" validate-local-root "$LOCAL_ROOT" "$REPO_ROOT"
+  [ ! -L "$ENV_FILE" ] || {
+    echo "The test environment file may not be a symlink." >&2
+    exit 1
+  }
   [ -f "$ENV_FILE" ] || {
     echo "Run scripts/mac-mini-test init first." >&2
     exit 1
@@ -59,7 +64,7 @@ confirm_exact() {
 
 safe_name() {
   case "$1" in
-    ""|*[!A-Za-z0-9._-]*) echo "Snapshot name may contain only letters, digits, dot, underscore, and hyphen." >&2; exit 2 ;;
+    ""|-*|"."|".."|*[!A-Za-z0-9._-]*) echo "Snapshot name must not begin with a dash and may contain only letters, digits, dot, underscore, and hyphen." >&2; exit 2 ;;
   esac
 }
 
@@ -117,6 +122,11 @@ shift || true
 
 case "$command" in
   init)
+    python3 "$HELPER" validate-local-root "$LOCAL_ROOT" "$REPO_ROOT"
+    [ ! -L "$ENV_FILE" ] || {
+      echo "The test environment file may not be a symlink." >&2
+      exit 1
+    }
     mkdir -p "$LOCAL_ROOT/data" "$LOCAL_ROOT/outputs/movies" "$LOCAL_ROOT/outputs/series" \
       "$LOCAL_ROOT/outputs/live" "$LOCAL_ROOT/logs" "$LOCAL_ROOT/snapshots" "$LOCAL_ROOT/evidence"
     if [ ! -f "$ENV_FILE" ]; then
