@@ -93,8 +93,8 @@ class SQLiteConnectionLifecycleTests(unittest.TestCase):
 
     def test_cleanup_failure_does_not_mask_initialization_failure(self):
         connection = MagicMock()
-        connection.rollback.side_effect = RuntimeError("rollback cleanup failed")
-        connection.close.side_effect = RuntimeError("close cleanup failed")
+        connection.rollback.side_effect = KeyboardInterrupt("rollback cleanup interrupted")
+        connection.close.side_effect = SystemExit("close cleanup interrupted")
         primary = ValueError("primary initialization failure")
         with (
             patch.object(catalog.sqlite3, "connect", return_value=connection),

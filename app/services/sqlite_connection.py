@@ -9,11 +9,11 @@ def rollback_and_close(conn: sqlite3.Connection) -> None:
     """Best-effort cleanup when an open connection cannot transfer ownership."""
     try:
         conn.rollback()
-    except Exception:
+    except BaseException:
         pass
     try:
         conn.close()
-    except Exception:
+    except BaseException:
         pass
 
 
@@ -26,7 +26,7 @@ def connection_scope(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     except BaseException:
         try:
             conn.close()
-        except Exception:
+        except BaseException:
             pass
         raise
     else:
