@@ -12,8 +12,12 @@ import re
 import shutil
 import sqlite3
 import stat
+import subprocess
+import sys
 import tarfile
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
+from urllib.request import urlopen
 from uuid import UUID
 
 
@@ -36,6 +40,27 @@ EXPECTED_TARGETS = {
     "/outputs/live": ".local/mac-mini/outputs/live",
 }
 FIXTURE_TARGETS = {"/fixtures", "/iptvboss/outputs"}
+SMOKE_BASE_URL = "http://127.0.0.1:18088"
+SMOKE_READ_ONLY_ENDPOINTS = (
+    "/api/health",
+    "/api/system",
+    "/api/catalog/summary",
+    "/api/integrations/emby/status",
+    "/api/broker/status",
+    "/api/broker/reservations",
+    "/api/outputs/strm/settings",
+    "/api/outputs/live-m3u/settings",
+)
+SMOKE_REPEATED_ENDPOINTS = (
+    "/api/catalog/summary",
+    "/api/integrations/emby/status",
+    "/api/broker/status",
+)
+SMOKE_SECRET_PATTERN = re.compile(
+    r"(?i)(authorization\s*[:=]|api[_-]?key\s*[:=]\s*[^\[\s]|"
+    r"password\s*[:=]\s*[^\[\s]|token\s*[:=]\s*[^\[\s]|"
+    r"https?://[^/\s:@]+:[^@\s/]+@)"
+)
 
 
 class HarnessError(ValueError):
@@ -262,6 +287,146 @@ def safe_destroy(local_root: Path, repo_root: Path) -> None:
         shutil.rmtree(local_root)
 
 
+def _smoke_compose_command(repo_root: Path, *args: str) -> list[str]:
+    return [
+        "docker", "compose", "-p", PROJECT,
+        "-f", str(repo_root / "docker-compose.yml"),
+        "-f", str(repo_root / "deploy/mac-mini/compose.test.yml"),
+        "--env-file", str(repo_root / "deploy/mac-mini/.env.test"),
+        *args,
+    ]
+
+
+def _smoke_run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, capture_output=True, text=True, check=check)
+
+
+def _smoke_fetch(path: str) -> tuple[int, str]:
+    try:
+        with urlopen(f"{SMOKE_BASE_URL}{path}", timeout=10) as response:
+            return response.status, response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", errors="replace")
+    except URLError as exc:
+        raise HarnessError(f"{path} unavailable: {exc.reason}") from exc
+
+
+def _smoke_assert_sanitized(text: str) -> None:
+    if "embyserver" in text.lower():
+        raise HarnessError("production host reference appeared in smoke output")
+    if SMOKE_SECRET_PATTERN.search(text):
+        raise HarnessError("credential-shaped content appeared in smoke output")
+
+
+def _smoke_render_and_validate(repo_root: Path) -> None:
+    rendered = _smoke_run(
+        _smoke_compose_command(repo_root, "config", "--format", "json")
+    ).stdout
+    validate_compose(json.loads(rendered), repo_root)
+
+
+def _smoke_verify_fixture(repo_root: Path) -> None:
+    manifest_path = repo_root / "tests/fixtures/mac-mini/expected/fixture-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    fixture = repo_root / "tests/fixtures/mac-mini" / manifest["fixture"]
+    if file_sha256(fixture) != manifest["sha256"]:
+        raise HarnessError("fixture digest does not match its manifest")
+
+
+def _smoke_container_identity() -> dict:
+    state_result = _smoke_run([
+        "docker", "inspect", "mediarouter-mac-test-app",
+        "--format", "{{json .State}}",
+    ])
+    state = json.loads(state_result.stdout)
+    container_id = _smoke_run([
+        "docker", "inspect", "-f", "{{.Id}}", "mediarouter-mac-test-app",
+    ]).stdout.strip()
+    return {
+        "id": container_id,
+        "started_at": state.get("StartedAt"),
+        "status": state.get("Status"),
+    }
+
+
+def _smoke_sqlite_checks() -> None:
+    code = (
+        "import sqlite3;"
+        "c=sqlite3.connect('file:/data/media_router.db?mode=ro',uri=True);"
+        "print(c.execute('PRAGMA integrity_check').fetchone()[0]);"
+        "names={'source_import_runs','source_entries','source_entry_occurrences'};"
+        "existing={r[0] for r in c.execute(\"SELECT name FROM sqlite_master WHERE type='table'\")};"
+        "print(sum(c.execute('SELECT COUNT(*) FROM '+n).fetchone()[0] for n in names if n in existing));"
+        "c.close()"
+    )
+    result = _smoke_run([
+        "docker", "exec", "mediarouter-mac-test-app", "python", "-c", code,
+    ])
+    lines = result.stdout.splitlines()
+    if lines != ["ok", "0"]:
+        raise HarnessError(f"unexpected SQLite/ledger state: {lines}")
+
+
+def _smoke_descriptor_count() -> int | None:
+    result = _smoke_run([
+        "docker", "exec", "mediarouter-mac-test-app", "sh", "-c",
+        "ls /proc/1/fd 2>/dev/null | wc -l",
+    ], check=False)
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
+
+
+def run_smoke(repeat: int) -> None:
+    repo_root = Path(__file__).resolve().parent.parent
+    _smoke_render_and_validate(repo_root)
+    _smoke_verify_fixture(repo_root)
+    before = _smoke_container_identity()
+    before_fd = _smoke_descriptor_count()
+    for endpoint in SMOKE_READ_ONLY_ENDPOINTS:
+        status, body = _smoke_fetch(endpoint)
+        if status != 200:
+            raise HarnessError(f"{endpoint} returned HTTP {status}")
+        json.loads(body)
+        _smoke_assert_sanitized(body)
+    for _ in range(repeat):
+        for endpoint in SMOKE_REPEATED_ENDPOINTS:
+            status, body = _smoke_fetch(endpoint)
+            if status != 200:
+                raise HarnessError(f"repeated {endpoint} returned HTTP {status}")
+            _smoke_assert_sanitized(body)
+    _smoke_sqlite_checks()
+    logs = _smoke_run(
+        _smoke_compose_command(repo_root, "logs", "--tail", "500", "media-router"),
+        check=False,
+    )
+    combined_logs = f"{logs.stdout}\n{logs.stderr}"
+    if "database is locked" in combined_logs.lower():
+        raise HarnessError("database is locked appeared in recent test logs")
+    _smoke_assert_sanitized(combined_logs)
+    after = _smoke_container_identity()
+    after_fd = _smoke_descriptor_count()
+    if before["id"] != after["id"] or before["started_at"] != after["started_at"]:
+        raise HarnessError("test container restarted during smoke checks")
+    if before_fd is not None and after_fd is not None and after_fd > before_fd + 2:
+        raise HarnessError(
+            f"descriptor count grew unexpectedly: {before_fd} -> {after_fd}"
+        )
+    print(json.dumps({
+        "status": "passed",
+        "project": PROJECT,
+        "read_only": True,
+        "endpoints": len(SMOKE_READ_ONLY_ENDPOINTS),
+        "repeated_calls": repeat * len(SMOKE_REPEATED_ENDPOINTS),
+        "container_id": after["id"],
+        "descriptor_count_before": before_fd,
+        "descriptor_count_after": after_fd,
+    }, indent=2, sort_keys=True))
+
+
 def _main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -297,6 +462,11 @@ def _main() -> int:
     destroy.add_argument("repo")
     digest = sub.add_parser("sha256")
     digest.add_argument("path")
+    smoke = sub.add_parser("smoke")
+    smoke.add_argument("--repeat", type=int, default=10)
+    smoke.add_argument("--allow-import", action="store_true")
+    smoke.add_argument("--allow-output-generation", action="store_true")
+    smoke.add_argument("--allow-playback", action="store_true")
     args = parser.parse_args()
 
     if args.command == "validate-compose":
@@ -323,8 +493,20 @@ def _main() -> int:
         safe_destroy(Path(args.local_root), Path(args.repo))
     elif args.command == "sha256":
         print(file_sha256(Path(args.path)))
+    elif args.command == "smoke":
+        if args.allow_import or args.allow_output_generation or args.allow_playback:
+            parser.error(
+                "mutation flags are reserved but not implemented in this read-only harness"
+            )
+        if not 1 <= args.repeat <= 50:
+            parser.error("--repeat must be between 1 and 50")
+        run_smoke(args.repeat)
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(_main())
+    try:
+        raise SystemExit(_main())
+    except (HarnessError, json.JSONDecodeError) as exc:
+        print(f"harness failed safely: {exc}", file=sys.stderr)
+        raise SystemExit(1)

@@ -92,7 +92,7 @@ class MacMiniHarnessTests(unittest.TestCase):
             validate_compose(config, ROOT)
 
     def test_shell_scripts_have_portable_syntax(self):
-        for script in ("mac-mini-test",):
+        for script in ("mac-mini-test", "mac-mini-smoke"):
             result = subprocess.run(["sh", "-n", str(SCRIPTS / script)],
                                     capture_output=True, text=True)
             self.assertEqual(0, result.returncode, result.stderr)
@@ -333,7 +333,10 @@ class MacMiniHarnessTests(unittest.TestCase):
             secret.unlink()
 
     def test_smoke_runner_is_read_only_and_rejects_mutation_flags(self):
-        source = (SCRIPTS / "mac-mini-smoke").read_text()
+        source = (
+            (SCRIPTS / "mac-mini-smoke").read_text()
+            + (SCRIPTS / "mac_mini_harness.py").read_text()
+        )
         for endpoint in (
             "/api/health", "/api/system", "/api/catalog/summary",
             "/api/integrations/emby/status", "/api/broker/status",
