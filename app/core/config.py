@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
     playback_ticket_secret: str = ""
     playback_ticket_ttl_seconds: int = 60
+    source_entry_shadow_ledger_enabled: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="MEDIA_ROUTER_")
 

@@ -98,6 +98,7 @@ class CatalogImportRequest(BaseModel):
     provider_id: str | None = None
     account_id: str | None = None
     media_type: str | None = None
+    source_feed_id: str | None = None
 
 
 class CatalogImportAccepted(BaseModel):

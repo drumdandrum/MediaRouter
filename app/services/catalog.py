@@ -18,6 +18,21 @@ from app.schemas.catalog import CatalogItem, CatalogSource, CatalogSummary, Chan
 from app.services.jobs import update_job
 from app.services.logs import add_log
 from app.services.providers import ensure_provider_schema, get_account
+from app.services.source_entry_ledger import (
+    ObservationSpool,
+    SourceObservation,
+    SourceFeedScopeConflict,
+    content_fingerprint,
+    ensure_source_entry_schema,
+    fail_import_run,
+    finalize_import_run,
+    normalized_title,
+    provider_entry_identity,
+    register_or_validate_source_feed,
+    sanitized_text,
+    source_identity_from_feed_id,
+    start_import_run,
+)
 
 
 EXTINF_RE = re.compile(r'^#EXTINF:[^,]*?(?P<attrs>(?:\s+[A-Za-z0-9_-]+="[^"]*")*)\s*,(?P<title>.*)$')
@@ -210,6 +225,11 @@ def ensure_schema(conn: sqlite3.Connection | None = None) -> None:
         WHERE media_type='channel' AND NOT EXISTS (
             SELECT 1 FROM channel_placements p WHERE p.catalog_item_id=c.internal_id)
     """, (now, now))
+    try:
+        ensure_source_entry_schema(conn)
+    except Exception:
+        # The shadow schema has no authority over catalog initialization/imports.
+        pass
     conn.commit()
     if owns_conn:
         conn.close()
@@ -432,7 +452,7 @@ def _upsert_availability(
     entry: ParsedEntry,
     provider_id: str | None,
     account_id: str | None,
-) -> str:
+) -> tuple[str, int]:
     now = datetime.utcnow().isoformat()
     external_id = entry.attrs.get("cuid") or entry.attrs.get("tvg-id") or entry.attrs.get("tvg-name")
     existing = conn.execute(
@@ -454,8 +474,8 @@ def _upsert_availability(
             """,
             (provider_id, account_id, external_id, media_type, now, entry.confidence, entry.raw_extinf, now, existing["id"]),
         )
-        return "updated"
-    conn.execute(
+        return "updated", int(existing["id"])
+    cursor = conn.execute(
         """
         INSERT INTO source_availability (
             catalog_internal_id, provider_id, account_id, external_id, location_ref, media_type,
@@ -464,7 +484,7 @@ def _upsert_availability(
         """,
         (internal_id, provider_id, account_id, external_id, entry.url, media_type, now, entry.confidence, entry.raw_extinf, now, now),
     )
-    return "new"
+    return "new", int(cursor.lastrowid)
 
 
 def _upsert_channel_placement(
@@ -500,13 +520,15 @@ def _upsert_channel_placement(
     return "updated" if existing else "new"
 
 
-def import_paths(
+def _import_paths_authoritative(
     paths: list[str],
     source_name: str,
     job_id: str | None = None,
     provider_id: str | None = None,
     account_id: str | None = None,
     media_type_hint: str | None = None,
+    observation_spool: ObservationSpool | None = None,
+    observation_failed: list[bool] | None = None,
 ) -> dict[str, Any]:
     ensure_schema()
     paths = list(dict.fromkeys(paths))
@@ -568,7 +590,10 @@ def import_paths(
                         series_result = _upsert_item(conn, internal_id=parent_id, media_type="series", title=series_title, entry=series_entry)
                         summary["new_catalog_items" if series_result == "new" else "updated_catalog_items"] += 1
                     item_result = _upsert_item(conn, internal_id=internal_id, media_type=item_type, title=title, entry=entry, parent_internal_id=parent_id)
-                    source_result = _upsert_availability(conn, internal_id=internal_id, media_type=item_type, entry=entry, provider_id=provider_id, account_id=account_id)
+                    source_result, availability_id = _upsert_availability(
+                        conn, internal_id=internal_id, media_type=item_type,
+                        entry=entry, provider_id=provider_id, account_id=account_id,
+                    )
                     summary["new_catalog_items" if item_result == "new" else "updated_catalog_items"] += 1
                     summary["new_source_availability" if source_result == "new" else "updated_source_availability"] += 1
                     if account_id is None:
@@ -581,6 +606,40 @@ def import_paths(
                             placement_index=placement_index, import_run_id=import_run_id,
                         )
                         summary[f"{placement_result}_channel_placements"] += 1
+                    elif observation_spool is not None:
+                        try:
+                            provider_entry_id, provider_entry_id_kind = (
+                                provider_entry_identity(entry.attrs)
+                            )
+                            fingerprint = content_fingerprint(
+                                item_type, title=title, attrs=entry.attrs,
+                                series_name=entry.show_name,
+                                season_number=entry.season_number,
+                                episode_number=entry.episode_number,
+                                episode_title=entry.episode_title,
+                            )
+                            observation = SourceObservation(
+                                placement_index=placement_index,
+                                media_type=item_type,
+                                observed_title=sanitized_text(title),
+                                normalized_series_name=(
+                                    normalized_title(entry.show_name)
+                                    if entry.show_name else None
+                                ),
+                                season_number=entry.season_number,
+                                episode_number=entry.episode_number,
+                                provider_entry_id=provider_entry_id,
+                                provider_entry_id_kind=provider_entry_id_kind,
+                                content_fingerprint=fingerprint,
+                                observed_catalog_item_id=internal_id,
+                                observed_parent_catalog_item_id=parent_id,
+                                observed_source_availability_id=availability_id,
+                                observed_at=datetime.utcnow().isoformat(),
+                            )
+                            observation_spool.append(observation)
+                        except Exception:
+                            if observation_failed is not None:
+                                observation_failed[0] = True
                     if summary["entries"] % 750 == 0:
                         conn.commit()
                         if job_id:
@@ -618,10 +677,148 @@ def import_paths(
     return summary
 
 
-def run_catalog_import_job(job_id: str, paths: list[str], source_name: str, provider_id: str | None = None, account_id: str | None = None, media_type_hint: str | None = None) -> None:
+def import_paths(
+    paths: list[str],
+    source_name: str,
+    job_id: str | None = None,
+    provider_id: str | None = None,
+    account_id: str | None = None,
+    media_type_hint: str | None = None,
+    source_feed_id: str | None = None,
+) -> dict[str, Any]:
+    settings = get_settings()
+    if not settings.source_entry_shadow_ledger_enabled:
+        return _import_paths_authoritative(
+            paths, source_name, job_id, provider_id, account_id, media_type_hint,
+        )
+    source_identity = source_identity_from_feed_id(source_feed_id)
+    if (
+        source_identity is None
+        or len(list(dict.fromkeys(paths))) != 1
+        or media_type_hint in {"live", "channel"}
+    ):
+        add_log(
+            "warning", "catalog",
+            "Source-entry observation skipped: safe_single_vod_feed_identity_unavailable",
+        )
+        return _import_paths_authoritative(
+            paths, source_name, job_id, provider_id, account_id, media_type_hint,
+        )
+
+    db_path = _db_path()
+    started_at = datetime.utcnow().isoformat()
+    media_scope = media_type_hint if media_type_hint in {"movie", "episode"} else "vod"
+    effective_provider_id = provider_id
+    if account_id:
+        account = get_account(account_id)
+        if account is None:
+            return _import_paths_authoritative(
+                paths, source_name, job_id, provider_id, account_id, media_type_hint,
+            )
+        effective_provider_id = account.provider_id
+    try:
+        ensure_schema()
+        register_or_validate_source_feed(
+            db_path, source_identity=source_identity,
+            provider_id=effective_provider_id, account_id=account_id,
+            media_scope=media_scope, observed_at=started_at,
+        )
+    except SourceFeedScopeConflict:
+        add_log(
+            "warning", "catalog",
+            "Source-entry observation skipped: source_feed_scope_conflict",
+        )
+        return _import_paths_authoritative(
+            paths, source_name, job_id, provider_id, account_id, media_type_hint,
+        )
+    except Exception:
+        add_log(
+            "warning", "catalog",
+            "Source-entry observation skipped: source_feed_registry_unavailable",
+        )
+        return _import_paths_authoritative(
+            paths, source_name, job_id, provider_id, account_id, media_type_hint,
+        )
+    try:
+        import_run_id = start_import_run(
+            db_path, source_identity=source_identity, job_id=job_id,
+            provider_id=effective_provider_id, account_id=account_id,
+            media_scope=media_scope, started_at=started_at,
+        )
+    except Exception:
+        add_log(
+            "warning", "catalog",
+            "Source-entry observation skipped: import_run_start_failed",
+        )
+        return _import_paths_authoritative(
+            paths, source_name, job_id, provider_id, account_id, media_type_hint,
+        )
+
+    def mark_run_failed(error_category: str, catalog_completed: bool) -> None:
+        try:
+            fail_import_run(
+                db_path, import_run_id, error_category=error_category,
+                catalog_import_completed=catalog_completed,
+                finished_at=datetime.utcnow().isoformat(),
+            )
+        except Exception:
+            add_log(
+                "warning", "catalog",
+                "Source-entry observation status update failed",
+            )
+
+    try:
+        spool = ObservationSpool(settings.data_dir)
+    except Exception:
+        mark_run_failed("spool_create_failed", False)
+        return _import_paths_authoritative(
+            paths, source_name, job_id, provider_id, account_id, media_type_hint,
+        )
+
+    try:
+        observation_failed = [False]
+        try:
+            summary = _import_paths_authoritative(
+                paths, source_name, job_id, provider_id, account_id, media_type_hint,
+                observation_spool=spool, observation_failed=observation_failed,
+            )
+        except Exception:
+            mark_run_failed("catalog_import_failed", False)
+            raise
+        if observation_failed[0]:
+            mark_run_failed("spool_write_failed", True)
+            return summary
+        try:
+            finalize_import_run(
+                db_path, import_run_id=import_run_id,
+                source_identity=source_identity, provider_id=effective_provider_id,
+                account_id=account_id, observations=spool.observations(),
+                finished_at=datetime.utcnow().isoformat(),
+            )
+        except Exception:
+            mark_run_failed("ledger_write_failed", True)
+        return summary
+    finally:
+        try:
+            spool.cleanup()
+        except Exception:
+            add_log(
+                "warning", "catalog",
+                "Source-entry observation spool cleanup failed",
+            )
+
+
+def run_catalog_import_job(
+    job_id: str, paths: list[str], source_name: str,
+    provider_id: str | None = None, account_id: str | None = None,
+    media_type_hint: str | None = None, source_feed_id: str | None = None,
+) -> None:
     try:
         update_job(job_id, status="running", progress=5, message="Starting catalog import")
-        summary = import_paths(paths, source_name, job_id, provider_id, account_id, media_type_hint)
+        summary = import_paths(
+            paths, source_name, job_id, provider_id, account_id, media_type_hint,
+            source_feed_id,
+        )
         message = (
             f"Catalog import complete in {summary['duration_seconds']}s: {summary['entries']} processed, "
             f"{summary['new_catalog_items']} new items, "

@@ -91,7 +91,11 @@ def import_catalog(payload: CatalogImportRequest, background_tasks: BackgroundTa
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     job = create_job("catalog_import")
-    background_tasks.add_task(run_catalog_import_job, job.id, paths, payload.source_name, payload.provider_id, payload.account_id, payload.media_type)
+    background_tasks.add_task(
+        run_catalog_import_job, job.id, paths, payload.source_name,
+        payload.provider_id, payload.account_id, payload.media_type,
+        payload.source_feed_id,
+    )
     return CatalogImportAccepted(job_id=job.id, status=job.status, message="Catalog import queued")
 
 
