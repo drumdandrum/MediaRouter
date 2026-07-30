@@ -1,0 +1,20 @@
+{
+  "entry_count": 9,
+  "expected_media_type_counts": {
+    "episode": 4,
+    "movie": 5,
+    "synthesized_series": 1
+  },
+  "fixture": "catalog/vod-small.m3u",
+  "fixture_version": 1,
+  "sha256": "9a9b2d32942aa25fd81ab3b1c7c4d4d598be13f7a33417516abfda3b53c31eb5",
+  "structural_characteristics": {
+    "complete_structural_episodes": 3,
+    "duplicate_episode_title_different_structure": 1,
+    "identity_poor_movies": 1,
+    "incomplete_structural_episodes": 1,
+    "normalized_title_variations": 1,
+    "remake_like_movie_pairs": 1,
+    "unique_movies": 1
+  }
+}

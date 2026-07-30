@@ -1,0 +1,19 @@
+#EXTM3U
+#EXTINF:-1 CUID="lab-movie-unique-001" tvg-id="lab-movie-001" tvg-name="Harbor Signal (2024)" group-title="LAB MOVIES",Harbor Signal (2024)
+http://media.invalid/movie/lab/harbor-signal.mp4
+#EXTINF:-1 CUID="lab-movie-normalized-002" tvg-id="lab-movie-002" tvg-name="The   Paper &amp; Moon" group-title="LAB MOVIES",The   Paper &amp; Moon
+http://media.invalid/movie/lab/paper-moon.mp4
+#EXTINF:-1 CUID="lab-movie-remake-003" tvg-id="lab-movie-003" tvg-name="Second Sunrise (1984)" group-title="LAB MOVIES",Second Sunrise (1984)
+http://media.invalid/movie/lab/second-sunrise-1984.mp4
+#EXTINF:-1 CUID="lab-movie-remake-004" tvg-id="lab-movie-004" tvg-name="Second Sunrise (2024)" group-title="LAB MOVIES",Second Sunrise (2024)
+http://media.invalid/movie/lab/second-sunrise-2024.mp4
+#EXTINF:-1 group-title="LAB MOVIES",Untethered Test Feature
+http://media.invalid/movie/lab/identity-poor.mp4
+#EXTINF:-1 CUID="lab-episode-001" tvg-id="lab-episode-001" tvg-name="Signal House - S01E01 - Arrival" group-title="LAB SERIES",Signal House - S01E01 - Arrival
+http://media.invalid/series/lab/signal-house-s01e01.mp4
+#EXTINF:-1 CUID="lab-episode-002" tvg-id="lab-episode-002" tvg-name="Signal House - S01E02 - Echo" group-title="LAB SERIES",Signal House - S01E02 - Echo
+http://media.invalid/series/lab/signal-house-s01e02.mp4
+#EXTINF:-1 CUID="lab-episode-003" tvg-id="lab-episode-003" tvg-name="Signal House - S02E01 - Arrival" group-title="LAB SERIES",Signal House - S02E01 - Arrival
+http://media.invalid/series/lab/signal-house-s02e01.mp4
+#EXTINF:-1 CUID="lab-episode-incomplete-004" tvg-id="lab-episode-004" tvg-name="Signal House - Lost Fragment" group-title="LAB SERIES",Signal House - Lost Fragment
+http://media.invalid/series/lab/signal-house-incomplete.mp4
