@@ -106,6 +106,26 @@ class SQLiteConnectionLifecycleTests(unittest.TestCase):
         connection.rollback.assert_called_once_with()
         connection.close.assert_called_once_with()
 
+    def test_primary_base_exceptions_are_preserved_unchanged(self):
+        failures = (
+            RuntimeError("ordinary initialization failure"),
+            sqlite3.OperationalError("database is locked"),
+            KeyboardInterrupt("initialization interrupted"),
+            SystemExit("initialization exited"),
+        )
+        for primary in failures:
+            with self.subTest(primary=type(primary).__name__):
+                connection = MagicMock()
+                with (
+                    patch.object(catalog.sqlite3, "connect", return_value=connection),
+                    patch.object(catalog, "ensure_schema", side_effect=primary),
+                ):
+                    with self.assertRaises(type(primary)) as raised:
+                        catalog._connect()
+                self.assertIs(raised.exception, primary)
+                connection.rollback.assert_called_once_with()
+                connection.close.assert_called_once_with()
+
     def test_rollback_and_close_attempts_both_cleanup_operations(self):
         connection = MagicMock()
         connection.rollback.side_effect = RuntimeError("rollback failed")
@@ -232,8 +252,13 @@ class SQLiteConnectionLifecycleTests(unittest.TestCase):
         try:
             third.execute("INSERT INTO probe(value) VALUES (2)")
             third.commit()
+            self.assertEqual(
+                [(2,)],
+                third.execute("SELECT value FROM probe ORDER BY value").fetchall(),
+            )
         finally:
             third.close()
+        self.assertFalse(Path(f"{db_path}-journal").exists())
 
     def test_representative_read_paths_close_every_connection(self):
         real_connect = sqlite3.connect
