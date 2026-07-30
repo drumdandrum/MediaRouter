@@ -1,0 +1,26 @@
+services:
+  media-router:
+    container_name: mediarouter-mac-test-app
+    restart: "no"
+    ports: !override
+      - "127.0.0.1:${MAC_TEST_API_PORT:-18088}:8088"
+    environment:
+      MEDIA_ROUTER_APP_PORT: "8088"
+      MEDIA_ROUTER_PUBLIC_BASE_URL: "${MAC_TEST_PUBLIC_URL:-http://host.docker.internal:18088}"
+      MEDIA_ROUTER_DATA_DIR: "/data"
+      MEDIA_ROUTER_SOURCE_ENTRY_SHADOW_LEDGER_ENABLED: "false"
+      MEDIA_ROUTER_GIT_BRANCH: "${MEDIA_ROUTER_GIT_BRANCH:-test/mac-mini-integration-harness}"
+      MEDIA_ROUTER_GIT_COMMIT: "${MEDIA_ROUTER_GIT_COMMIT:-Unavailable}"
+    volumes: !override
+      - ./.local/mac-mini/data:/data
+      - ./tests/fixtures/mac-mini:/fixtures:ro
+      - ./.local/mac-mini/outputs/movies:/outputs/movies
+      - ./.local/mac-mini/outputs/series:/outputs/series
+      - ./.local/mac-mini/outputs/live:/outputs/live
+      - ./tests/fixtures/mac-mini:/iptvboss/outputs:ro
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8088/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s

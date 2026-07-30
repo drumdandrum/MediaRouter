@@ -11,3 +11,9 @@ build/
 .DS_Store
 data/
 logs/
+.local/mac-mini/
+deploy/mac-mini/.env.test
+deploy/mac-mini/secrets.env
+tests/fixtures/mac-mini/media/generated/
+tests/fixtures/mac-mini/evidence/
+tests/fixtures/mac-mini/snapshots/
