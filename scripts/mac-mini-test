@@ -1,0 +1,223 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+PROJECT=mediarouter-mac-test
+CONFIRMATION=mac-mini-test
+SERVICE=media-router
+CONTAINER=mediarouter-mac-test-app
+LOCAL_ROOT="$REPO_ROOT/.local/mac-mini"
+ENV_FILE="$REPO_ROOT/deploy/mac-mini/.env.test"
+ENV_EXAMPLE="$REPO_ROOT/deploy/mac-mini/env.test.example"
+SECRETS_FILE="$LOCAL_ROOT/secrets.env"
+HELPER="$SCRIPT_DIR/mac_mini_harness.py"
+COMPOSE_FILES="-f $REPO_ROOT/docker-compose.yml -f $REPO_ROOT/deploy/mac-mini/compose.test.yml"
+
+usage() {
+  echo "usage: scripts/mac-mini-test {init|config|start|stop|restart|status|health|logs|snapshot NAME|restore NAME --confirm mac-mini-test|reset --confirm mac-mini-test|rollback-tag|smoke|destroy --confirm mac-mini-test}" >&2
+  exit 2
+}
+
+compose() {
+  if [ "${MAC_MINI_TEST_DRY_RUN:-0}" = "1" ]; then
+    printf '%s\n' "docker compose -p $PROJECT $COMPOSE_FILES --env-file $ENV_FILE $*"
+    return 0
+  fi
+  # Deliberate word splitting: COMPOSE_FILES contains fixed repository-owned arguments.
+  # shellcheck disable=SC2086
+  docker compose -p "$PROJECT" $COMPOSE_FILES --env-file "$ENV_FILE" "$@"
+}
+
+ensure_initialized() {
+  [ -f "$ENV_FILE" ] || {
+    echo "Run scripts/mac-mini-test init first." >&2
+    exit 1
+  }
+  python3 "$HELPER" validate-secret "$SECRETS_FILE"
+}
+
+render_config() {
+  ensure_initialized
+  output=${1:-"$LOCAL_ROOT/evidence/compose.effective.json"}
+  mkdir -p "$(dirname "$output")"
+  if [ "${MAC_MINI_TEST_DRY_RUN:-0}" = "1" ]; then
+    echo "dry-run cannot render Compose configuration" >&2
+    exit 1
+  fi
+  compose config --format json >"$output"
+  python3 "$HELPER" validate-compose "$output" "$REPO_ROOT"
+  printf '%s\n' "$output"
+}
+
+confirm_exact() {
+  [ "${1:-}" = "--confirm" ] && [ "${2:-}" = "$CONFIRMATION" ] || {
+    echo "This operation requires: --confirm $CONFIRMATION" >&2
+    exit 2
+  }
+}
+
+safe_name() {
+  case "$1" in
+    ""|*[!A-Za-z0-9._-]*) echo "Snapshot name may contain only letters, digits, dot, underscore, and hyphen." >&2; exit 2 ;;
+  esac
+}
+
+is_running() {
+  [ -n "$(compose ps --status running -q "$SERVICE" 2>/dev/null || true)" ]
+}
+
+snapshot() {
+  name=$1
+  safe_name "$name"
+  ensure_initialized
+  snapshot_dir="$LOCAL_ROOT/snapshots/$name"
+  [ ! -e "$snapshot_dir" ] || {
+    echo "Snapshot already exists: $name" >&2
+    exit 1
+  }
+  was_running=false
+  if is_running; then
+    was_running=true
+    compose stop "$SERVICE"
+  fi
+  mkdir -p "$snapshot_dir"
+  trap 'if [ "$was_running" = true ]; then compose start "$SERVICE"; fi' EXIT HUP INT TERM
+  rendered="$snapshot_dir/compose.effective.json"
+  render_config "$rendered" >/dev/null
+  python3 "$HELPER" create-archive "$LOCAL_ROOT" "$snapshot_dir/state.tar.gz"
+  integrity=$(python3 "$HELPER" integrity "$LOCAL_ROOT/data/media_router.db")
+  fixture_digest=$(python3 "$HELPER" sha256 "$REPO_ROOT/tests/fixtures/mac-mini/catalog/vod-small.m3u")
+  image_id=$(compose images -q "$SERVICE" 2>/dev/null | head -n 1 || true)
+  branch=$(git -C "$REPO_ROOT" branch --show-current)
+  commit=$(git -C "$REPO_ROOT" rev-parse HEAD)
+  secrets_present=false
+  [ -f "$SECRETS_FILE" ] && secrets_present=true
+  python3 - "$snapshot_dir/manifest.json" "$name" "$was_running" "$integrity" "$fixture_digest" "$image_id" "$branch" "$commit" "$secrets_present" <<'PY'
+import json,sys
+keys=("name","service_was_running","sqlite_integrity","fixture_sha256","image_id","git_branch","git_commit","secrets_file_existed")
+values=sys.argv[2:]
+values[1]=values[1]=="true"
+values[-1]=values[-1]=="true"
+with open(sys.argv[1],"w",encoding="utf-8") as handle:
+    json.dump(dict(zip(keys,values)),handle,indent=2,sort_keys=True)
+    handle.write("\n")
+PY
+  if [ "$was_running" = true ]; then
+    compose start "$SERVICE"
+    was_running=false
+  fi
+  trap - EXIT HUP INT TERM
+  echo "Created test-only snapshot: $name"
+}
+
+command=${1:-}
+[ -n "$command" ] || usage
+shift || true
+
+case "$command" in
+  init)
+    mkdir -p "$LOCAL_ROOT/data" "$LOCAL_ROOT/outputs/movies" "$LOCAL_ROOT/outputs/series" \
+      "$LOCAL_ROOT/outputs/live" "$LOCAL_ROOT/logs" "$LOCAL_ROOT/snapshots" "$LOCAL_ROOT/evidence"
+    if [ ! -f "$ENV_FILE" ]; then
+      cp "$ENV_EXAMPLE" "$ENV_FILE"
+    fi
+    chmod 600 "$ENV_FILE"
+    feed_id=$(python3 "$HELPER" feed-id "$LOCAL_ROOT/feed-id")
+    python3 "$HELPER" validate-secret "$SECRETS_FILE"
+    echo "Initialized isolated project $PROJECT"
+    echo "Lab-only feed UUID: $feed_id"
+    ;;
+  config)
+    path=$(render_config)
+    cat "$path"
+    ;;
+  start)
+    render_config >/dev/null
+    compose up --build -d "$SERVICE"
+    ;;
+  stop)
+    ensure_initialized
+    compose stop "$SERVICE"
+    ;;
+  restart)
+    render_config >/dev/null
+    compose restart "$SERVICE"
+    ;;
+  status)
+    ensure_initialized
+    compose ps
+    ;;
+  health)
+    ensure_initialized
+    curl --fail --silent --show-error http://127.0.0.1:18088/api/health
+    printf '\n'
+    ;;
+  logs)
+    ensure_initialized
+    compose logs --tail 200 "$SERVICE"
+    ;;
+  snapshot)
+    [ "$#" -eq 1 ] || usage
+    snapshot "$1"
+    ;;
+  restore)
+    [ "$#" -eq 3 ] || usage
+    name=$1
+    confirm_exact "$2" "$3"
+    safe_name "$name"
+    ensure_initialized
+    archive="$LOCAL_ROOT/snapshots/$name/state.tar.gz"
+    [ -f "$archive" ] || { echo "Unknown snapshot: $name" >&2; exit 1; }
+    python3 "$HELPER" validate-archive "$archive"
+    was_running=false
+    if is_running; then
+      was_running=true
+      compose stop "$SERVICE"
+    fi
+    pre_name="pre-restore-$(date -u +%Y%m%dT%H%M%SZ)"
+    snapshot "$pre_name"
+    if is_running; then
+      compose stop "$SERVICE"
+    fi
+    python3 "$HELPER" restore-archive "$archive" "$LOCAL_ROOT"
+    python3 "$HELPER" integrity "$LOCAL_ROOT/data/media_router.db" >/dev/null
+    if [ "$was_running" = true ]; then compose start "$SERVICE"; fi
+    echo "Restored test-only snapshot: $name"
+    ;;
+  reset)
+    [ "$#" -eq 2 ] || usage
+    confirm_exact "$1" "$2"
+    ensure_initialized
+    compose stop "$SERVICE"
+    python3 "$HELPER" reset "$LOCAL_ROOT" "$REPO_ROOT"
+    echo "Reset isolated data and outputs; retained feed-id, snapshots, and secrets."
+    ;;
+  rollback-tag)
+    ensure_initialized
+    image_id=$(compose images -q "$SERVICE" | head -n 1)
+    [ -n "$image_id" ] || { echo "No test image is available." >&2; exit 1; }
+    tag="mediarouter:mac-test-rollback-$(date -u +%Y%m%dT%H%M%SZ)"
+    docker tag "$image_id" "$tag"
+    echo "$tag"
+    ;;
+  smoke)
+    ensure_initialized
+    "$SCRIPT_DIR/mac-mini-smoke" "$@"
+    ;;
+  destroy)
+    [ "$#" -eq 2 ] || usage
+    confirm_exact "$1" "$2"
+    ensure_initialized
+    compose down --remove-orphans
+    python3 "$HELPER" destroy "$LOCAL_ROOT" "$REPO_ROOT"
+    echo "Destroyed only the $PROJECT environment."
+    ;;
+  validate-emby-target)
+    [ "$#" -eq 3 ] || usage
+    python3 "$HELPER" validate-emby-target "$1" "$2" "$3"
+    ;;
+  *)
+    usage
+    ;;
+esac
