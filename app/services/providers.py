@@ -10,6 +10,7 @@ from uuid import uuid4
 from app.core.config import get_settings
 from app.schemas.providers import AccountCreate, AccountRead, AccountUpdate, ConnectionTestResult, ProviderCreate, ProviderRead, ProviderUpdate
 from app.services.logs import add_log
+from app.services.sqlite_connection import connection_scope, rollback_and_close
 
 
 HEALTH_STATUSES = {"Unknown", "Healthy", "Degraded", "Authentication Failed", "Playlist Failed", "Offline", "Disabled"}
@@ -25,18 +26,32 @@ def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    ensure_provider_schema(conn)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        ensure_provider_schema(conn)
+    except BaseException:
+        rollback_and_close(conn)
+        raise
     return conn
 
 
 def ensure_provider_schema(conn: sqlite3.Connection | None = None) -> None:
-    owns_conn = conn is None
-    if conn is None:
-        path = _db_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(path)
+    if conn is not None:
+        _ensure_provider_schema(conn)
+        return
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    owned_conn = sqlite3.connect(path)
+    try:
+        _ensure_provider_schema(owned_conn)
+    except BaseException:
+        rollback_and_close(owned_conn)
+        raise
+    owned_conn.close()
+
+
+def _ensure_provider_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS providers (
@@ -75,8 +90,6 @@ def ensure_provider_schema(conn: sqlite3.Connection | None = None) -> None:
         """
     )
     conn.commit()
-    if owns_conn:
-        conn.close()
 
 
 def _now() -> str:
@@ -128,13 +141,13 @@ def _account_from_row(row: sqlite3.Row) -> AccountRead:
 
 
 def list_providers() -> list[ProviderRead]:
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         rows = conn.execute("SELECT * FROM providers ORDER BY friendly_name").fetchall()
     return [_provider_from_row(row) for row in rows]
 
 
 def get_provider(provider_id: str) -> ProviderRead | None:
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         row = conn.execute("SELECT * FROM providers WHERE id = ?", (provider_id,)).fetchone()
     return _provider_from_row(row) if row else None
 
@@ -142,7 +155,7 @@ def get_provider(provider_id: str) -> ProviderRead | None:
 def create_provider(payload: ProviderCreate) -> ProviderRead:
     now = _now()
     provider_id = uuid4().hex
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         conn.execute(
             """
             INSERT INTO providers (id, friendly_name, provider_type, notes, enabled, health_status, created_at, updated_at)
@@ -169,21 +182,21 @@ def update_provider(provider_id: str, payload: ProviderUpdate) -> ProviderRead |
             data["health_status"] = "Disabled"
     assignments = ", ".join(f"{key} = :{key}" for key in data)
     data["id"] = provider_id
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         conn.execute(f"UPDATE providers SET {assignments} WHERE id = :id", data)
         conn.commit()
     return get_provider(provider_id)
 
 
 def delete_provider(provider_id: str) -> bool:
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         result = conn.execute("DELETE FROM providers WHERE id = ?", (provider_id,))
         conn.commit()
     return result.rowcount > 0
 
 
 def list_accounts() -> list[AccountRead]:
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         rows = conn.execute(
             """
             SELECT accounts.*, providers.friendly_name AS provider_name, providers.provider_type AS provider_type
@@ -196,7 +209,7 @@ def list_accounts() -> list[AccountRead]:
 
 
 def get_account(account_id: str) -> AccountRead | None:
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         row = conn.execute(
             """
             SELECT accounts.*, providers.friendly_name AS provider_name, providers.provider_type AS provider_type
@@ -214,7 +227,7 @@ def create_account(payload: AccountCreate) -> AccountRead | None:
         return None
     now = _now()
     account_id = uuid4().hex
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         conn.execute(
             """
             INSERT INTO accounts (
@@ -267,14 +280,14 @@ def update_account(account_id: str, payload: AccountUpdate) -> AccountRead | Non
     data["updated_at"] = _now()
     assignments = ", ".join(f"{key} = :{key}" for key in data)
     data["id"] = account_id
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         conn.execute(f"UPDATE accounts SET {assignments} WHERE id = :id", data)
         conn.commit()
     return get_account(account_id)
 
 
 def delete_account(account_id: str) -> bool:
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         result = conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
         conn.commit()
     return result.rowcount > 0
@@ -296,7 +309,7 @@ def test_account(account_id: str) -> ConnectionTestResult | None:
             ok, status, message = _check_target(target)
             if not ok:
                 break
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         conn.execute(
             """
             UPDATE accounts
@@ -332,7 +345,7 @@ def _check_target(target: str) -> tuple[bool, str, str]:
 
 
 def provider_account_summary() -> dict[str, float | int]:
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         providers = conn.execute("SELECT COUNT(*) AS count FROM providers").fetchone()["count"]
         accounts = conn.execute("SELECT COUNT(*) AS count FROM accounts").fetchone()["count"]
         healthy = conn.execute("SELECT COUNT(*) AS count FROM accounts WHERE health_status = 'Healthy' AND enabled = 1").fetchone()["count"]

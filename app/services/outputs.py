@@ -39,6 +39,7 @@ from app.services.jobs import clear_job_cancel_request, is_job_cancel_requested,
 from app.services.logs import add_log
 from app.services.runtime import public_runtime_base_url, route_for_media_type
 from app.services.settings import get_app_settings
+from app.services.sqlite_connection import connection_scope, rollback_and_close
 
 
 OUTPUT_TYPE = "strm"
@@ -87,17 +88,31 @@ def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    ensure_schema(conn)
-    ensure_outputs_schema(conn)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        ensure_schema(conn)
+        ensure_outputs_schema(conn)
+    except BaseException:
+        rollback_and_close(conn)
+        raise
     return conn
 
 
 def ensure_outputs_schema(conn: sqlite3.Connection | None = None) -> None:
-    owns_conn = conn is None
-    if conn is None:
-        conn = sqlite3.connect(_db_path())
+    if conn is not None:
+        _ensure_outputs_schema(conn)
+        return
+    owned_conn = sqlite3.connect(_db_path())
+    try:
+        _ensure_outputs_schema(owned_conn)
+    except BaseException:
+        rollback_and_close(owned_conn)
+        raise
+    owned_conn.close()
+
+
+def _ensure_outputs_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS output_generated_files (
@@ -134,8 +149,6 @@ def ensure_outputs_schema(conn: sqlite3.Connection | None = None) -> None:
     if "generation_run_id" not in columns:
         conn.execute("ALTER TABLE output_generated_files ADD COLUMN generation_run_id TEXT")
     conn.commit()
-    if owns_conn:
-        conn.close()
 
 
 def _settings_store() -> JsonStore:
@@ -480,7 +493,7 @@ def _enabled_source_counts(catalog_item_ids: list[str]) -> dict[str, int]:
     if not catalog_item_ids:
         return {}
     placeholders = ",".join("?" for _ in catalog_item_ids)
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         rows = conn.execute(
             f"""
             SELECT catalog_internal_id, COUNT(*) AS count
@@ -497,7 +510,7 @@ def _enabled_source_counts(catalog_item_ids: list[str]) -> dict[str, int]:
 
 def get_live_m3u_estimate() -> LiveM3uEstimate:
     settings = get_live_m3u_settings()
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         placement_filter = """p.active=1 AND (
             p.source_identity != 'legacy-canonical' OR NOT EXISTS (
                 SELECT 1 FROM channel_placements real WHERE real.catalog_item_id=p.catalog_item_id
@@ -799,7 +812,7 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
     cancelled = False
     batch_number = 0
 
-    with _connect() as conn, ThreadPoolExecutor(max_workers=settings.worker_count, thread_name_prefix="strm-write") as executor:
+    with connection_scope(_connect()) as conn, ThreadPoolExecutor(max_workers=settings.worker_count, thread_name_prefix="strm-write") as executor:
         conn.execute("CREATE TEMP TABLE strm_desired_paths (output_path TEXT PRIMARY KEY, catalog_item_id TEXT NOT NULL)")
         conn.execute("CREATE TEMP TABLE strm_selected_ids (catalog_item_id TEXT PRIMARY KEY)")
         for media_type in ("movie", "episode"):
@@ -1148,7 +1161,7 @@ def build_live_m3u_output(request_base_url: str | None = None, dry_run: bool = T
 
     status = "complete" if summary.failed_count == 0 else "failed"
     finished_at = datetime.utcnow().isoformat()
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         _record_live_m3u_run(conn, mode, status, summary, started_at, finished_at)
         if not effective_dry_run and summary.failed_count == 0 and first_catalog_item_id:
             conn.execute(
@@ -1255,7 +1268,7 @@ def run_live_m3u_generate_job(job_id: str, request_base_url: str | None = None) 
 def list_generated_files(limit: int = 100, offset: int = 0) -> list[GeneratedOutputFile]:
     limit = min(max(limit, 1), 200)
     offset = max(offset, 0)
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         rows = conn.execute("""SELECT * FROM output_generated_files WHERE output_type = ?
             ORDER BY last_generated_at DESC, output_path LIMIT ? OFFSET ?""", (OUTPUT_TYPE, limit, offset)).fetchall()
     return [_generated_from_row(row) for row in rows]
@@ -1276,7 +1289,7 @@ def _history_from_row(row: sqlite3.Row) -> OutputRunHistory:
 
 def list_output_history(limit: int = 25) -> list[OutputRunHistory]:
     limit = min(max(limit, 1), 100)
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         rows = conn.execute(
             """
             SELECT *
@@ -1305,7 +1318,7 @@ def _live_m3u_history_from_row(row: sqlite3.Row) -> LiveM3uRunHistory:
 
 def list_live_m3u_history(limit: int = 25) -> list[LiveM3uRunHistory]:
     limit = min(max(limit, 1), 100)
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         rows = conn.execute(
             """
             SELECT *
