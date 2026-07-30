@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""Read-only smoke checks for the isolated Mac mini MediaRouter project."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import time
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+sys.path.insert(0, str(SCRIPT_DIR))
+from mac_mini_harness import (  # noqa: E402
+    HarnessError,
+    PROJECT,
+    file_sha256,
+    validate_compose,
+)
+
+BASE_URL = "http://127.0.0.1:18088"
+READ_ONLY_ENDPOINTS = (
+    "/api/health",
+    "/api/system",
+    "/api/catalog/summary",
+    "/api/integrations/emby/status",
+    "/api/broker/status",
+    "/api/broker/reservations",
+    "/api/outputs/strm/settings",
+    "/api/outputs/live-m3u/settings",
+)
+REPEATED_ENDPOINTS = (
+    "/api/catalog/summary",
+    "/api/integrations/emby/status",
+    "/api/broker/status",
+)
+SECRET_PATTERN = re.compile(
+    r"(?i)(authorization\s*[:=]|api[_-]?key\s*[:=]\s*[^\[\s]|"
+    r"password\s*[:=]\s*[^\[\s]|token\s*[:=]\s*[^\[\s]|"
+    r"https?://[^/\s:@]+:[^@\s/]+@)"
+)
+
+
+def compose_command(*args: str) -> list[str]:
+    return [
+        "docker", "compose", "-p", PROJECT,
+        "-f", str(REPO_ROOT / "docker-compose.yml"),
+        "-f", str(REPO_ROOT / "deploy/mac-mini/compose.test.yml"),
+        "--env-file", str(REPO_ROOT / "deploy/mac-mini/.env.test"),
+        *args,
+    ]
+
+
+def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, capture_output=True, text=True, check=check)
+
+
+def fetch(path: str) -> tuple[int, str]:
+    try:
+        with urlopen(f"{BASE_URL}{path}", timeout=10) as response:
+            return response.status, response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", errors="replace")
+    except URLError as exc:
+        raise HarnessError(f"{path} unavailable: {exc.reason}") from exc
+
+
+def assert_sanitized(text: str) -> None:
+    lowered = text.lower()
+    if "embyserver" in lowered:
+        raise HarnessError("production host reference appeared in smoke output")
+    if SECRET_PATTERN.search(text):
+        raise HarnessError("credential-shaped content appeared in smoke output")
+
+
+def render_and_validate() -> None:
+    rendered = run(compose_command("config", "--format", "json")).stdout
+    config = json.loads(rendered)
+    validate_compose(config, REPO_ROOT)
+
+
+def verify_fixture() -> None:
+    manifest_path = REPO_ROOT / "tests/fixtures/mac-mini/expected/fixture-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    fixture = REPO_ROOT / "tests/fixtures/mac-mini" / manifest["fixture"]
+    if file_sha256(fixture) != manifest["sha256"]:
+        raise HarnessError("fixture digest does not match its manifest")
+
+
+def container_identity() -> dict:
+    result = run([
+        "docker", "inspect", "mediarouter-mac-test-app",
+        "--format", "{{json .State}}",
+    ])
+    state = json.loads(result.stdout)
+    return {"id": run(["docker", "inspect", "-f", "{{.Id}}", "mediarouter-mac-test-app"]).stdout.strip(),
+            "started_at": state.get("StartedAt"), "status": state.get("Status")}
+
+
+def sqlite_checks() -> None:
+    code = (
+        "import sqlite3;"
+        "c=sqlite3.connect('file:/data/media_router.db?mode=ro',uri=True);"
+        "print(c.execute('PRAGMA integrity_check').fetchone()[0]);"
+        "names={'source_import_runs','source_entries','source_entry_occurrences'};"
+        "existing={r[0] for r in c.execute(\"SELECT name FROM sqlite_master WHERE type='table'\")};"
+        "print(sum(c.execute('SELECT COUNT(*) FROM '+n).fetchone()[0] for n in names if n in existing));"
+        "c.close()"
+    )
+    result = run(["docker", "exec", "mediarouter-mac-test-app", "python", "-c", code])
+    lines = result.stdout.splitlines()
+    if lines != ["ok", "0"]:
+        raise HarnessError(f"unexpected SQLite/ledger state: {lines}")
+
+
+def descriptor_count() -> int | None:
+    result = run(
+        ["docker", "exec", "mediarouter-mac-test-app", "sh", "-c", "ls /proc/1/fd 2>/dev/null | wc -l"],
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
+
+
+def _main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repeat", type=int, default=10)
+    parser.add_argument("--allow-import", action="store_true")
+    parser.add_argument("--allow-output-generation", action="store_true")
+    parser.add_argument("--allow-playback", action="store_true")
+    args = parser.parse_args()
+    if args.allow_import or args.allow_output_generation or args.allow_playback:
+        parser.error("mutation flags are reserved but not implemented in this read-only harness")
+    if not 1 <= args.repeat <= 50:
+        parser.error("--repeat must be between 1 and 50")
+
+    render_and_validate()
+    verify_fixture()
+    before = container_identity()
+    before_fd = descriptor_count()
+    collected: list[str] = []
+    for endpoint in READ_ONLY_ENDPOINTS:
+        status, body = fetch(endpoint)
+        if status != 200:
+            raise HarnessError(f"{endpoint} returned HTTP {status}")
+        json.loads(body)
+        assert_sanitized(body)
+        collected.append(body)
+    for _ in range(args.repeat):
+        for endpoint in REPEATED_ENDPOINTS:
+            status, body = fetch(endpoint)
+            if status != 200:
+                raise HarnessError(f"repeated {endpoint} returned HTTP {status}")
+            assert_sanitized(body)
+
+    sqlite_checks()
+    logs = run(compose_command("logs", "--tail", "500", "media-router"), check=False)
+    combined_logs = f"{logs.stdout}\n{logs.stderr}"
+    if "database is locked" in combined_logs.lower():
+        raise HarnessError("database is locked appeared in recent test logs")
+    assert_sanitized(combined_logs)
+    after = container_identity()
+    after_fd = descriptor_count()
+    if before["id"] != after["id"] or before["started_at"] != after["started_at"]:
+        raise HarnessError("test container restarted during smoke checks")
+    if before_fd is not None and after_fd is not None and after_fd > before_fd + 2:
+        raise HarnessError(f"descriptor count grew unexpectedly: {before_fd} -> {after_fd}")
+    print(json.dumps({
+        "status": "passed",
+        "project": PROJECT,
+        "read_only": True,
+        "endpoints": len(READ_ONLY_ENDPOINTS),
+        "repeated_calls": args.repeat * len(REPEATED_ENDPOINTS),
+        "container_id": after["id"],
+        "descriptor_count_before": before_fd,
+        "descriptor_count_after": after_fd,
+    }, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(_main())
+    except (HarnessError, json.JSONDecodeError) as exc:
+        print(f"smoke failed safely: {exc}", file=sys.stderr)
+        raise SystemExit(1)
