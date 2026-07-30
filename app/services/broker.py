@@ -22,6 +22,7 @@ from app.schemas.broker import (
     BrokerStatus,
 )
 from app.services.logs import add_log
+from app.services.sqlite_connection import rollback_and_close
 
 
 DEFAULT_RESERVATION_TTL_SECONDS = 60
@@ -62,20 +63,34 @@ def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 5000")
-    ensure_schema(conn)
-    ensure_broker_schema(conn)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")
+        ensure_schema(conn)
+        ensure_broker_schema(conn)
+    except BaseException:
+        rollback_and_close(conn)
+        raise
     return conn
 
 
 def ensure_broker_schema(conn: sqlite3.Connection | None = None) -> None:
-    owns_conn = conn is None
-    if conn is None:
-        path = _db_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(path)
+    if conn is not None:
+        _ensure_broker_schema(conn)
+        return
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    owned_conn = sqlite3.connect(path)
+    try:
+        _ensure_broker_schema(owned_conn)
+    except BaseException:
+        rollback_and_close(owned_conn)
+        raise
+    owned_conn.close()
+
+
+def _ensure_broker_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS broker_reservations (
@@ -253,8 +268,6 @@ def ensure_broker_schema(conn: sqlite3.Connection | None = None) -> None:
     conn.commit()
     if applied:
         add_log("info", "broker", f"Applied broker reservation schema migration: {', '.join(applied)}")
-    if owns_conn:
-        conn.close()
 
 
 def _now() -> datetime:
@@ -315,9 +328,19 @@ def _sync_legacy_expiry(conn: sqlite3.Connection, reservation_id: str) -> None:
 
 
 def expire_reservations(conn: sqlite3.Connection | None = None, *, commit: bool = True) -> int:
-    owns_conn = conn is None
-    if conn is None:
-        conn = _connect()
+    if conn is not None:
+        return _expire_reservations(conn, commit=commit)
+    owned_conn = _connect()
+    try:
+        result = _expire_reservations(owned_conn, commit=commit)
+    except BaseException:
+        rollback_and_close(owned_conn)
+        raise
+    owned_conn.close()
+    return result
+
+
+def _expire_reservations(conn: sqlite3.Connection, *, commit: bool) -> int:
     now = _now().isoformat()
     due = conn.execute("""SELECT reservation_id,catalog_item_id,media_type,account_id,lifecycle_state
         FROM broker_reservations WHERE lifecycle_state IN ('provisional','active')
@@ -345,8 +368,6 @@ def expire_reservations(conn: sqlite3.Connection | None = None, *, commit: bool 
     expired = result.rowcount
     for row in due:
         add_log("info", "broker", f"reservation_expired reservation={row['reservation_id']} catalog_item={row['catalog_item_id']} media_type={row['media_type']} lifecycle_state={row['lifecycle_state']} reason={'provisional_ttl_elapsed' if row['lifecycle_state']=='provisional' else 'active_ttl_elapsed'}")
-    if owns_conn:
-        conn.close()
     return expired
 
 

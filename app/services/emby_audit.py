@@ -17,6 +17,7 @@ from app.schemas.integrations import (
     EmbyMappingAuditResponse,
 )
 from app.services import emby
+from app.services.sqlite_connection import rollback_and_close
 
 
 EMBY_AUDIT_PAGE_SIZE = 200
@@ -101,7 +102,11 @@ def _audit_media_type(item: dict[str, Any]) -> str | None:
 
 def _read_only_connect() -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{emby._db_path()}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
+    try:
+        conn.row_factory = sqlite3.Row
+    except BaseException:
+        rollback_and_close(conn)
+        raise
     return conn
 
 

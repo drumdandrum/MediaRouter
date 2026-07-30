@@ -29,6 +29,7 @@ from app.services.broker import (
     heartbeat_reservation, release_reservation, resolve_source,
 )
 from app.services.logs import add_log
+from app.services.sqlite_connection import rollback_and_close
 
 
 RUNTIME_RE = re.compile(r"/r/(live|movie|episode)/([A-Za-z0-9_.:-]+)", re.IGNORECASE)
@@ -97,16 +98,30 @@ def _db_path() -> Path:
 def _connect() -> sqlite3.Connection:
     from app.services.broker import _connect as broker_connect
     conn = broker_connect()
-    ensure_emby_schema(conn)
+    try:
+        ensure_emby_schema(conn)
+    except BaseException:
+        rollback_and_close(conn)
+        raise
     return conn
 
 
 def ensure_emby_schema(conn: sqlite3.Connection | None = None) -> None:
-    owns = conn is None
-    if conn is None:
-        conn = sqlite3.connect(_db_path())
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys=ON")
+    if conn is not None:
+        _ensure_emby_schema(conn)
+        return
+    owned_conn = sqlite3.connect(_db_path())
+    try:
+        owned_conn.row_factory = sqlite3.Row
+        owned_conn.execute("PRAGMA foreign_keys=ON")
+        _ensure_emby_schema(owned_conn)
+    except BaseException:
+        rollback_and_close(owned_conn)
+        raise
+    owned_conn.close()
+
+
+def _ensure_emby_schema(conn: sqlite3.Connection) -> None:
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS emby_playback_bindings (
             id TEXT PRIMARY KEY,
@@ -213,8 +228,6 @@ def ensure_emby_schema(conn: sqlite3.Connection | None = None) -> None:
     conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS uq_emby_active_binding_key
         ON emby_playback_bindings(binding_key) WHERE released_at IS NULL""")
     conn.commit()
-    if owns:
-        conn.close()
 
 
 def record_runtime_correlation_observation(

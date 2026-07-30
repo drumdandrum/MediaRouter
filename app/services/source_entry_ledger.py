@@ -14,6 +14,8 @@ import unicodedata
 from typing import Any, Iterator
 from uuid import UUID, uuid4
 
+from app.services.sqlite_connection import rollback_and_close
+
 
 RUN_STATUSES = ("started", "completed", "failed")
 VOD_MEDIA_TYPES = ("movie", "episode")
@@ -192,9 +194,13 @@ def content_fingerprint(
 
 def _ledger_connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=SHADOW_BUSY_TIMEOUT_MS / 1000)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute(f"PRAGMA busy_timeout = {SHADOW_BUSY_TIMEOUT_MS}")
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(f"PRAGMA busy_timeout = {SHADOW_BUSY_TIMEOUT_MS}")
+    except BaseException:
+        rollback_and_close(conn)
+        raise
     return conn
 
 

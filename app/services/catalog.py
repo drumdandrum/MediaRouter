@@ -33,6 +33,7 @@ from app.services.source_entry_ledger import (
     source_identity_from_feed_id,
     start_import_run,
 )
+from app.services.sqlite_connection import connection_scope, rollback_and_close
 
 
 EXTINF_RE = re.compile(r'^#EXTINF:[^,]*?(?P<attrs>(?:\s+[A-Za-z0-9_-]+="[^"]*")*)\s*,(?P<title>.*)$')
@@ -64,18 +65,32 @@ def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    ensure_schema(conn)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        ensure_schema(conn)
+    except BaseException:
+        rollback_and_close(conn)
+        raise
     return conn
 
 
 def ensure_schema(conn: sqlite3.Connection | None = None) -> None:
-    owns_conn = conn is None
-    if conn is None:
-        path = _db_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(path)
+    if conn is not None:
+        _ensure_schema(conn)
+        return
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    owned_conn = sqlite3.connect(path)
+    try:
+        _ensure_schema(owned_conn)
+    except BaseException:
+        rollback_and_close(owned_conn)
+        raise
+    owned_conn.close()
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
     ensure_provider_schema(conn)
     conn.executescript(
         """
@@ -231,8 +246,6 @@ def ensure_schema(conn: sqlite3.Connection | None = None) -> None:
         # The shadow schema has no authority over catalog initialization/imports.
         pass
     conn.commit()
-    if owns_conn:
-        conn.close()
 
 
 def normalize(value: str) -> str:
@@ -559,7 +572,7 @@ def _import_paths_authoritative(
         "updated_channel_placements": 0,
         "stale_channel_placements": 0,
     }
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         for index, raw_path in enumerate(paths):
             is_remote = raw_path.startswith(("http://", "https://"))
             path = Path(raw_path)
@@ -834,11 +847,8 @@ def run_catalog_import_job(
 
 
 def _rows(query: str, params: tuple = ()) -> list[sqlite3.Row]:
-    conn = _connect()
-    try:
+    with connection_scope(_connect()) as conn:
         return conn.execute(query, params).fetchall()
-    finally:
-        conn.close()
 
 
 def _item_from_row(row: sqlite3.Row) -> CatalogItem:
@@ -903,7 +913,7 @@ def _availability_from_row(row: sqlite3.Row) -> SourceAvailability:
 
 def get_summary() -> CatalogSummary:
     ensure_schema()
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         counts = {
             row["media_type"]: row["count"]
             for row in conn.execute("SELECT media_type, COUNT(*) AS count FROM catalog_items GROUP BY media_type").fetchall()
@@ -1020,7 +1030,7 @@ def update_source_availability(source_id: int, payload: SourceAvailabilityUpdate
         data["updated_at"] = datetime.utcnow().isoformat()
         assignments = ", ".join(f"{key} = :{key}" for key in data)
         data["id"] = source_id
-        with _connect() as conn:
+        with connection_scope(_connect()) as conn:
             conn.execute(f"UPDATE source_availability SET {assignments} WHERE id = :id", data)
             conn.commit()
     row = list_source_availability_by_id(source_id)
@@ -1053,7 +1063,7 @@ def list_source_availability_by_id(source_id: int) -> SourceAvailability | None:
 
 def delete_source_availability(source_id: int) -> bool:
     ensure_schema()
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         result = conn.execute("DELETE FROM source_availability WHERE id = ?", (source_id,))
         conn.commit()
     return result.rowcount > 0
@@ -1061,7 +1071,7 @@ def delete_source_availability(source_id: int) -> bool:
 
 def source_availability_summary() -> dict[str, float | int]:
     ensure_schema()
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         sources = conn.execute("SELECT COUNT(*) AS count FROM source_availability").fetchone()["count"]
         items = conn.execute("SELECT COUNT(*) AS count FROM catalog_items WHERE media_type IN ('channel', 'movie', 'episode')").fetchone()["count"]
     return {"source_availability": sources, "average_sources_per_item": round(sources / items, 2) if items else 0}
@@ -1069,7 +1079,7 @@ def source_availability_summary() -> dict[str, float | int]:
 
 def count_enabled_source_availability(catalog_internal_id: str) -> int:
     ensure_schema()
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         row = conn.execute(
             "SELECT COUNT(*) AS count FROM source_availability WHERE catalog_internal_id = ? AND enabled = 1",
             (catalog_internal_id,),
@@ -1079,7 +1089,7 @@ def count_enabled_source_availability(catalog_internal_id: str) -> int:
 
 def clear_test_data() -> CatalogSummary:
     ensure_schema()
-    with _connect() as conn:
+    with connection_scope(_connect()) as conn:
         conn.execute("DELETE FROM source_availability")
         conn.execute("DELETE FROM catalog_sources")
         conn.execute("DELETE FROM catalog_items")
