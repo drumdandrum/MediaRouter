@@ -520,6 +520,8 @@ def _main() -> int:
     secret.add_argument("path")
     credential = sub.add_parser("credential-status")
     credential.add_argument("path")
+    credential.add_argument("local_root")
+    credential.add_argument("repo")
     local = sub.add_parser("validate-local-root")
     local.add_argument("local_root")
     local.add_argument("repo")
@@ -559,7 +561,14 @@ def _main() -> int:
     elif args.command == "validate-secret":
         validate_secret_permissions(Path(args.path))
     elif args.command == "credential-status":
-        state = credential_file_state(Path(args.path))
+        local_root = Path(args.local_root)
+        credential_path = Path(args.path)
+        validate_local_root(local_root, Path(args.repo))
+        if os.path.abspath(credential_path) != os.path.abspath(
+            local_root / "secrets.env"
+        ):
+            raise HarnessError("refusing to inspect an unexpected credential path")
+        state = credential_file_state(credential_path)
         print(state)
         if state != "valid":
             return 1

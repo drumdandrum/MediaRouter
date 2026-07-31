@@ -63,8 +63,9 @@ Blank lines and lines whose first non-whitespace character is `#` are allowed.
 No other variables, duplicate assignments, quoting, expansion, command
 substitution, or shell metacharacters are supported. The value must be nonempty,
 at most 1,024 characters, and consist only of letters, digits, `.`, `_`, `~`, or
-`-`. Do not put an Emby URL, production credential, or environment label in this
-file.
+`-`. Spaces around the assignment or value are rejected. LF and CRLF line
+endings are accepted. Do not put an Emby URL, production credential, or
+environment label in this file.
 
 Provision the dedicated test key without putting it in shell history, command
 arguments, documentation, or chat:
@@ -79,7 +80,8 @@ scripts/mac-mini-test credential-status
 
 The final command prints only `valid` or a sanitized state such as
 `missing_file`, `unsafe_mode`, `missing_key`, `duplicate_key`,
-`unknown_variable`, or `invalid_format`. Never commit or print the key.
+`unknown_variable`, or `invalid_format`. It exits zero only for `valid` and
+nonzero for every other state. Never commit or print the key.
 
 ## Initialization
 

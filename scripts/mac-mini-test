@@ -164,7 +164,7 @@ case "$command" in
     printf '\n'
     ;;
   credential-status)
-    python3 "$HELPER" credential-status "$SECRETS_FILE"
+    python3 "$HELPER" credential-status "$SECRETS_FILE" "$LOCAL_ROOT" "$REPO_ROOT"
     ;;
   logs)
     ensure_initialized
