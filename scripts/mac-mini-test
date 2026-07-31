@@ -15,7 +15,7 @@ HELPER="$SCRIPT_DIR/mac_mini_harness.py"
 COMPOSE_FILES="-f $REPO_ROOT/docker-compose.yml -f $REPO_ROOT/deploy/mac-mini/compose.test.yml"
 
 usage() {
-  echo "usage: scripts/mac-mini-test {init|config|start|stop|restart|status|health|logs|snapshot NAME|restore NAME --confirm mac-mini-test|reset --confirm mac-mini-test|rollback-tag|smoke|destroy --confirm mac-mini-test}" >&2
+  echo "usage: scripts/mac-mini-test {init|config|start|stop|restart|status|health|logs|credential-status|snapshot NAME|restore NAME --confirm mac-mini-test|reset --confirm mac-mini-test|rollback-tag|smoke|destroy --confirm mac-mini-test}" >&2
   exit 2
 }
 
@@ -162,6 +162,9 @@ case "$command" in
     ensure_initialized
     curl --fail --silent --show-error http://127.0.0.1:18088/api/health
     printf '\n'
+    ;;
+  credential-status)
+    python3 "$HELPER" credential-status "$SECRETS_FILE"
     ;;
   logs)
     ensure_initialized

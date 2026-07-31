@@ -61,6 +61,10 @@ SMOKE_SECRET_PATTERN = re.compile(
     r"password\s*[:=]\s*[^\[\s]|token\s*[:=]\s*[^\[\s]|"
     r"https?://[^/\s:@]+:[^@\s/]+@)"
 )
+TEST_EMBY_API_KEY_VARIABLE = "MEDIA_ROUTER_TEST_EMBY_API_KEY"
+MAX_SECRET_FILE_BYTES = 4096
+MAX_TEST_EMBY_API_KEY_LENGTH = 1024
+SAFE_SECRET_VALUE_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
 
 
 class HarnessError(ValueError):
@@ -150,11 +154,90 @@ def validate_compose(config: dict, repo_root: Path) -> None:
         raise HarnessError("container healthcheck is required")
 
 
+def _parse_credential_file(path: Path) -> tuple[str, str | None]:
+    """Read and validate once so callers never use different, unvalidated bytes."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return "missing_file", None
+    except OSError:
+        return "invalid_format", None
+    if not stat.S_ISREG(metadata.st_mode):
+        return "invalid_format", None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+        try:
+            opened_metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened_metadata.st_mode)
+                or stat.S_IMODE(opened_metadata.st_mode) != 0o600
+            ):
+                state = (
+                    "unsafe_mode"
+                    if stat.S_ISREG(opened_metadata.st_mode)
+                    else "invalid_format"
+                )
+                return state, None
+            with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                raw = handle.read(MAX_SECRET_FILE_BYTES + 1)
+        finally:
+            os.close(descriptor)
+    except OSError:
+        return "invalid_format", None
+    if len(raw) > MAX_SECRET_FILE_BYTES or b"\x00" in raw:
+        return "invalid_format", None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return "invalid_format", None
+
+    value: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "=" not in line:
+            return "invalid_format", None
+        name, candidate = line.split("=", 1)
+        if name != name.strip() or candidate != candidate.strip():
+            return "invalid_format", None
+        if name != TEST_EMBY_API_KEY_VARIABLE:
+            return "unknown_variable", None
+        if value is not None:
+            return "duplicate_key", None
+        if (
+            not candidate
+            or len(candidate) > MAX_TEST_EMBY_API_KEY_LENGTH
+            or not SAFE_SECRET_VALUE_RE.fullmatch(candidate)
+            or "embyserver" in candidate.casefold()
+            or "production" in candidate.casefold()
+        ):
+            return "invalid_format", None
+        value = candidate
+    return ("valid", value) if value is not None else ("missing_key", None)
+
+
+def credential_file_state(path: Path) -> str:
+    """Validate the local Stage 2 credential file without exposing its value."""
+    return _parse_credential_file(path)[0]
+
+
 def validate_secret_permissions(path: Path) -> None:
-    if not path.exists():
+    """Keep general harness commands permissive when no Stage 2 file exists."""
+    state = credential_file_state(path)
+    if state == "missing_file":
         return
-    if path.is_symlink() or not path.is_file() or stat.S_IMODE(path.stat().st_mode) != 0o600:
-        raise HarnessError(f"{path} must be a regular file with mode 0600")
+    if state != "valid":
+        raise HarnessError(f"test credential file is invalid: {state}")
+
+
+def load_test_emby_api_key(path: Path) -> str:
+    """Return the validated key only to an in-process caller; never print it."""
+    state, value = _parse_credential_file(path)
+    if state != "valid" or value is None:
+        raise HarnessError(f"test credential file is invalid: {state}")
+    return value
 
 
 def validate_emby_target(url: str, environment: str, allowed_hosts: str) -> str:
@@ -435,6 +518,8 @@ def _main() -> int:
     compose.add_argument("repo")
     secret = sub.add_parser("validate-secret")
     secret.add_argument("path")
+    credential = sub.add_parser("credential-status")
+    credential.add_argument("path")
     local = sub.add_parser("validate-local-root")
     local.add_argument("local_root")
     local.add_argument("repo")
@@ -473,6 +558,11 @@ def _main() -> int:
         validate_compose(json.loads(Path(args.config).read_text()), Path(args.repo))
     elif args.command == "validate-secret":
         validate_secret_permissions(Path(args.path))
+    elif args.command == "credential-status":
+        state = credential_file_state(Path(args.path))
+        print(state)
+        if state != "valid":
+            return 1
     elif args.command == "validate-local-root":
         validate_local_root(Path(args.local_root), Path(args.repo))
     elif args.command == "validate-emby-target":
