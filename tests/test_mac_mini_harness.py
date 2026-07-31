@@ -9,6 +9,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 from app.services.catalog import parse_m3u_entries
 
@@ -20,7 +21,9 @@ from mac_mini_harness import (  # noqa: E402
     CONTAINER,
     HarnessError,
     PROJECT,
+    credential_file_state,
     ensure_feed_id,
+    load_test_emby_api_key,
     restore_archive,
     safe_destroy,
     safe_reset,
@@ -51,6 +54,7 @@ class MacMiniHarnessTests(unittest.TestCase):
     def test_effective_compose_is_isolated_and_replaces_base_mounts(self):
         config = self.rendered_config()
         validate_compose(config, ROOT)
+        self.assertNotIn("MEDIA_ROUTER_TEST_EMBY_API_KEY", json.dumps(config))
         self.assertEqual(PROJECT, config["name"])
         service = config["services"]["media-router"]
         self.assertEqual(CONTAINER, service["container_name"])
@@ -162,19 +166,179 @@ class MacMiniHarnessTests(unittest.TestCase):
             secret = root / "secrets.env"
             secret.symlink_to(target)
             os.chmod(target, 0o600)
-            with self.assertRaisesRegex(HarnessError, "regular file"):
+            with self.assertRaisesRegex(HarnessError, "invalid_format"):
                 validate_secret_permissions(secret)
             self.assertEqual("outside\n", target.read_text())
 
     def test_secret_permissions(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "secrets.env"
-            path.write_text("MAC_TEST_EMBY_API_KEY=[test-only]\n")
-            os.chmod(path, 0o644)
-            with self.assertRaisesRegex(HarnessError, "0600"):
-                validate_secret_permissions(path)
+            path.write_text("MEDIA_ROUTER_TEST_EMBY_API_KEY=test-only\n")
+            for mode in (0o644, 0o660, 0o604):
+                with self.subTest(mode=oct(mode)):
+                    os.chmod(path, mode)
+                    self.assertEqual("unsafe_mode", credential_file_state(path))
+                    with self.assertRaisesRegex(HarnessError, "unsafe_mode"):
+                        validate_secret_permissions(path)
             os.chmod(path, 0o600)
             validate_secret_permissions(path)
+            self.assertEqual("valid", credential_file_state(path))
+
+    def test_credential_file_contract(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / "secrets.env"
+            self.assertEqual("missing_file", credential_file_state(path))
+
+            cases = (
+                ("# lab only\n\n", "missing_key"),
+                ("MEDIA_ROUTER_TEST_EMBY_API_KEY=\n", "invalid_format"),
+                (
+                    "MEDIA_ROUTER_TEST_EMBY_API_KEY=first\n"
+                    "MEDIA_ROUTER_TEST_EMBY_API_KEY=second\n",
+                    "duplicate_key",
+                ),
+                ("OTHER_KEY=value\n", "unknown_variable"),
+                ("MEDIA_ROUTER_TEST_EMBY_API_KEY=$(id)\n", "invalid_format"),
+                ("MEDIA_ROUTER_TEST_EMBY_API_KEY=`id`\n", "invalid_format"),
+                ("MEDIA_ROUTER_TEST_EMBY_API_KEY=value;id\n", "invalid_format"),
+                ('MEDIA_ROUTER_TEST_EMBY_API_KEY="quoted"\n', "invalid_format"),
+                (" MEDIA_ROUTER_TEST_EMBY_API_KEY=value\n", "invalid_format"),
+                ("MEDIA_ROUTER_TEST_EMBY_API_KEY=value \n", "invalid_format"),
+                ("MEDIA_ROUTER_TEST_EMBY_API_KEY=" + "a" * 1025 + "\n", "invalid_format"),
+                ("MEDIA_ROUTER_TEST_EMBY_API_KEY=production\n", "invalid_format"),
+                ("MEDIA_ROUTER_TEST_EMBY_API_KEY=embyserver\n", "invalid_format"),
+            )
+            for content, expected in cases:
+                with self.subTest(expected=expected, content_length=len(content)):
+                    path.write_text(content)
+                    path.chmod(0o600)
+                    self.assertEqual(expected, credential_file_state(path))
+
+            path.write_text(
+                "# dedicated Mac mini test credential\n"
+                "\n"
+                "MEDIA_ROUTER_TEST_EMBY_API_KEY=test_key-123.~\r\n"
+            )
+            path.chmod(0o600)
+            self.assertEqual("valid", credential_file_state(path))
+            self.assertEqual("test_key-123.~", load_test_emby_api_key(path))
+
+    def test_credential_symlink_and_nul_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            target = root / "target"
+            target.write_text("MEDIA_ROUTER_TEST_EMBY_API_KEY=test-only\n")
+            target.chmod(0o600)
+            link = root / "secrets.env"
+            link.symlink_to(target)
+            self.assertEqual("invalid_format", credential_file_state(link))
+            link.unlink()
+            link.write_bytes(b"MEDIA_ROUTER_TEST_EMBY_API_KEY=test\x00key\n")
+            link.chmod(0o600)
+            self.assertEqual("invalid_format", credential_file_state(link))
+            link.write_bytes(b"MEDIA_ROUTER_TEST_EMBY_API_KEY=\xff\n")
+            self.assertEqual("invalid_format", credential_file_state(link))
+
+    def test_credential_validation_is_sanitized_and_offline(self):
+        secret = "do-not-print-this-key"
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            local = repo / ".local" / "mac-mini"
+            local.mkdir(parents=True)
+            path = local / "secrets.env"
+            path.write_text(f"MEDIA_ROUTER_TEST_EMBY_API_KEY={secret};bad\n")
+            path.chmod(0o600)
+            with mock.patch("mac_mini_harness.urlopen") as network:
+                state = credential_file_state(path)
+                with self.assertRaises(HarnessError) as caught:
+                    load_test_emby_api_key(path)
+            network.assert_not_called()
+            self.assertEqual("invalid_format", state)
+            self.assertNotIn(secret, str(caught.exception))
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "mac_mini_harness.py"),
+                    "credential-status",
+                    str(path),
+                    str(local),
+                    str(repo),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertNotIn(secret, result.stdout + result.stderr)
+            path.write_text("MEDIA_ROUTER_TEST_EMBY_API_KEY=test-only\n")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "mac_mini_harness.py"),
+                    "credential-status",
+                    str(path),
+                    str(local),
+                    str(repo),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("valid\n", result.stdout)
+
+    def test_credential_status_rejects_symlinked_managed_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            local_parent = repo / ".local"
+            outside = Path(temp) / "outside"
+            local_parent.mkdir(parents=True)
+            outside.mkdir()
+            (outside / "secrets.env").write_text(
+                "MEDIA_ROUTER_TEST_EMBY_API_KEY=test-only\n"
+            )
+            (outside / "secrets.env").chmod(0o600)
+            (local_parent / "mac-mini").symlink_to(outside)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "mac_mini_harness.py"),
+                    "credential-status",
+                    str(local_parent / "mac-mini" / "secrets.env"),
+                    str(local_parent / "mac-mini"),
+                    str(repo),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertNotIn("test-only", result.stdout + result.stderr)
+
+    def test_credential_status_rejects_path_outside_managed_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            local = repo / ".local" / "mac-mini"
+            local.mkdir(parents=True)
+            outside = Path(temp) / "secrets.env"
+            outside.write_text("MEDIA_ROUTER_TEST_EMBY_API_KEY=test-only\n")
+            outside.chmod(0o600)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "mac_mini_harness.py"),
+                    "credential-status",
+                    str(outside),
+                    str(local),
+                    str(repo),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertNotIn("test-only", result.stdout + result.stderr)
 
     def test_emby_target_allowlist_and_denylist(self):
         allowed = "host.docker.internal:8597,localhost:8597"
@@ -309,7 +473,7 @@ class MacMiniHarnessTests(unittest.TestCase):
             fake.chmod(0o755)
             local = ROOT / ".local/mac-mini"
             secret = local / "secrets.env"
-            secret.write_text("MAC_TEST_EMBY_API_KEY=never-print-this\n")
+            secret.write_text("MEDIA_ROUTER_TEST_EMBY_API_KEY=never-print-this\n")
             secret.chmod(0o600)
             name = "unit-snapshot"
             shutil.rmtree(local / "snapshots" / name, ignore_errors=True)
@@ -322,6 +486,10 @@ class MacMiniHarnessTests(unittest.TestCase):
             manifest = json.loads((local / "snapshots" / name / "manifest.json").read_text())
             self.assertTrue(manifest["secrets_file_existed"])
             self.assertNotIn("never-print-this", json.dumps(manifest))
+            self.assertNotIn(
+                "never-print-this",
+                (local / "snapshots" / name / "compose.effective.json").read_text(),
+            )
             archive = local / "snapshots" / name / "state.tar.gz"
             with tarfile.open(archive, "r:gz") as bundle:
                 self.assertFalse(any("secrets" in member.name for member in bundle.getmembers()))

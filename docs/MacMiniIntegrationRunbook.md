@@ -51,9 +51,37 @@ The feed ID is a lab-only random UUID with mode `0600`. It is retained by `reset
 and removed only by confirmed `destroy`. It is never derived from a playlist
 locator.
 
-`secrets.env` is also required to have mode `0600` when present. The first harness
-phase does not read it into Compose or send it to any API. Never commit, print, or
-place production credentials in that file.
+`secrets.env` is required to have mode `0600` when present. It is parsed as data,
+never sourced by a shell, included in Compose, or archived. Stage 2 supports
+exactly one credential assignment:
+
+```text
+MEDIA_ROUTER_TEST_EMBY_API_KEY=<dedicated-test-key>
+```
+
+Blank lines and lines whose first non-whitespace character is `#` are allowed.
+No other variables, duplicate assignments, quoting, expansion, command
+substitution, or shell metacharacters are supported. The value must be nonempty,
+at most 1,024 characters, and consist only of letters, digits, `.`, `_`, `~`, or
+`-`. Spaces around the assignment or value are rejected. LF and CRLF line
+endings are accepted. Do not put an Emby URL, production credential, or
+environment label in this file.
+
+Provision the dedicated test key without putting it in shell history, command
+arguments, documentation, or chat:
+
+```sh
+mkdir -p .local/mac-mini
+umask 077
+$EDITOR .local/mac-mini/secrets.env
+chmod 600 .local/mac-mini/secrets.env
+scripts/mac-mini-test credential-status
+```
+
+The final command prints only `valid` or a sanitized state such as
+`missing_file`, `unsafe_mode`, `missing_key`, `duplicate_key`,
+`unknown_variable`, or `invalid_format`. It exits zero only for `valid` and
+nonzero for every other state. Never commit or print the key.
 
 ## Initialization
 
@@ -230,7 +258,11 @@ host.docker.internal:8597,localhost:8597
 ```
 
 The validator does not contact the target or save MediaRouter settings. Stage 2
-Emby configuration and connection testing require separate approval.
+Emby configuration and connection testing require separate approval. A future
+approved Stage 2 operation reads the validated
+`MEDIA_ROUTER_TEST_EMBY_API_KEY` value in-process and supplies it as the
+`api_key` field to `PUT /api/integrations/emby`; it is not an application
+environment variable.
 
 ## Stage 1 readiness and evidence
 
