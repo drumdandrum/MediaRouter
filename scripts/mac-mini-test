@@ -90,7 +90,7 @@ snapshot() {
   trap 'if [ "$was_running" = true ]; then compose start "$SERVICE"; fi' EXIT HUP INT TERM
   rendered="$snapshot_dir/compose.effective.json"
   render_config "$rendered" >/dev/null
-  python3 "$HELPER" create-archive "$LOCAL_ROOT" "$snapshot_dir/state.tar.gz"
+  emby_settings=$(python3 "$HELPER" create-archive "$LOCAL_ROOT" "$snapshot_dir/state.tar.gz")
   integrity=$(python3 "$HELPER" integrity "$LOCAL_ROOT/data/media_router.db")
   fixture_digest=$(python3 "$HELPER" sha256 "$REPO_ROOT/tests/fixtures/mac-mini/catalog/vod-small.m3u")
   image_id=$(compose images -q "$SERVICE" 2>/dev/null | head -n 1 || true)
@@ -98,14 +98,16 @@ snapshot() {
   commit=$(git -C "$REPO_ROOT" rev-parse HEAD)
   secrets_present=false
   [ -f "$SECRETS_FILE" ] && secrets_present=true
-  python3 - "$snapshot_dir/manifest.json" "$name" "$was_running" "$integrity" "$fixture_digest" "$image_id" "$branch" "$commit" "$secrets_present" <<'PY'
+  python3 - "$snapshot_dir/manifest.json" "$name" "$was_running" "$integrity" "$fixture_digest" "$image_id" "$branch" "$commit" "$secrets_present" "$emby_settings" <<'PY'
 import json,sys
 keys=("name","service_was_running","sqlite_integrity","fixture_sha256","image_id","git_branch","git_commit","secrets_file_existed")
-values=sys.argv[2:]
+values=sys.argv[2:-1]
 values[1]=values[1]=="true"
 values[-1]=values[-1]=="true"
+manifest=dict(zip(keys,values))
+manifest["emby_settings"]=json.loads(sys.argv[-1])
 with open(sys.argv[1],"w",encoding="utf-8") as handle:
-    json.dump(dict(zip(keys,values)),handle,indent=2,sort_keys=True)
+    json.dump(manifest,handle,indent=2,sort_keys=True)
     handle.write("\n")
 PY
   if [ "$was_running" = true ]; then
