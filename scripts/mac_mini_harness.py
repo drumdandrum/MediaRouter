@@ -387,10 +387,15 @@ def sanitized_emby_settings_metadata(data_root: Path) -> dict[str, object]:
 
 
 def _validate_archive_members(bundle: tarfile.TarFile) -> None:
+    seen_paths: set[str] = set()
     for member in bundle.getmembers():
         path = PurePosixPath(member.name)
         if path.is_absolute() or ".." in path.parts:
             raise HarnessError("snapshot archive contains an unsafe path")
+        normalized_path = path.as_posix().casefold()
+        if normalized_path in seen_paths:
+            raise HarnessError("snapshot archive contains duplicate paths")
+        seen_paths.add(normalized_path)
         if member.issym() or member.islnk():
             raise HarnessError("snapshot archive may not contain links")
         if not (member.isfile() or member.isdir()):

@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -490,6 +491,20 @@ class MacMiniHarnessTests(unittest.TestCase):
                     with self.assertRaisesRegex(HarnessError, "forbidden Emby"):
                         restore_archive(archive, local)
                     self.assertEqual(preserved, settings.read_bytes())
+
+    def test_archive_rejects_duplicate_normalized_members(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive = root / "duplicate.tar.gz"
+            first = tarfile.TarInfo("data/state.json")
+            first.size = 3
+            second = tarfile.TarInfo("./data/STATE.JSON")
+            second.size = 3
+            with tarfile.open(archive, "w:gz") as bundle:
+                bundle.addfile(first, io.BytesIO(b"one"))
+                bundle.addfile(second, io.BytesIO(b"two"))
+            with self.assertRaisesRegex(HarnessError, "duplicate paths"):
+                validate_archive(archive)
 
     def test_restore_preserves_current_emby_settings_and_omits_missing_settings(self):
         with tempfile.TemporaryDirectory() as temp:

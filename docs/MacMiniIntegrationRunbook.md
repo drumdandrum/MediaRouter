@@ -185,6 +185,10 @@ Restore never configures or contacts Emby. Absolute paths, traversal, links,
 special filesystem members, and top-level content other than `data` and `outputs`
 are rejected.
 
+Stage 3 remains blocked until `stage2-emby-connected` can be created with these
+protections, inspected successfully, and separately approved. Creating or
+restoring a snapshot does not itself authorize imports or other Stage 3 work.
+
 Tag the current test image for rollback:
 
 ```sh
