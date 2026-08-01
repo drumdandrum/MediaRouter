@@ -149,7 +149,7 @@ scripts/mac-mini-test snapshot before-stage-1
 
 A snapshot contains:
 
-- isolated `/data` state;
+- isolated `/data` state except `data/emby_integration_settings.json`;
 - isolated generated outputs;
 - sanitized rendered Compose JSON;
 - image ID when available;
@@ -158,8 +158,13 @@ A snapshot contains:
 - SQLite integrity result;
 - only a boolean indicating whether `secrets.env` existed.
 
-Secret contents and the retained feed UUID are not included in the state archive.
-The service restarts only when it was running before the snapshot.
+The raw Emby settings file is excluded before archive data is written, so its API
+key is never staged, archived, hashed, or copied into evidence. The manifest may
+record only allowlisted metadata: whether the file existed, its enabled state,
+the validated local test URL, an optional validated MediaRouter URL, and
+`api_key_included: false`. Unknown settings are omitted. Secret contents and the
+retained feed UUID are not included in the state archive. The service restarts
+only when it was running before the snapshot.
 
 Restore requires the exact confirmation:
 
@@ -167,11 +172,22 @@ Restore requires the exact confirmation:
 scripts/mac-mini-test restore before-stage-1 --confirm mac-mini-test
 ```
 
-Restore validates archive member paths, creates a pre-restore snapshot, preserves
-`secrets.env` and `feed-id`, restores only test data/outputs, checks SQLite
-integrity, and restarts only if the service was previously running. It never
-configures or contacts Emby. Absolute paths, traversal, links, special filesystem
-members, and top-level content other than `data` and `outputs` are rejected.
+Restore validates archive member paths and rejects any snapshot containing a raw
+`data/emby_integration_settings.json`. It creates a pre-restore snapshot using
+the same exclusion, preserves `secrets.env`, `feed-id`, and the current machine's
+Emby settings file byte-for-byte, restores only the remaining test data and
+outputs, checks SQLite integrity, and restarts only if the service was previously
+running. Snapshot metadata never creates an Emby settings file on a fresh
+machine; credentials must be provisioned locally and separately. Snapshots do not
+transport Emby credentials between machines or environments.
+
+Restore never configures or contacts Emby. Absolute paths, traversal, links,
+special filesystem members, and top-level content other than `data` and `outputs`
+are rejected.
+
+Stage 3 remains blocked until `stage2-emby-connected` can be created with these
+protections, inspected successfully, and separately approved. Creating or
+restoring a snapshot does not itself authorize imports or other Stage 3 work.
 
 Tag the current test image for rollback:
 
@@ -185,6 +201,12 @@ identity:
 ```sh
 scripts/mac-mini-test reset --confirm mac-mini-test
 ```
+
+Reset removes the complete isolated `data` directory, including the local Emby
+settings file, after confirmation. It does not display that file. Confirmed
+`destroy` removes the entire exact `.local/mac-mini` root, including local Emby
+settings, `secrets.env`, and `feed-id`; neither command transports credential
+state elsewhere.
 
 Completely remove only the pinned Compose project and `.local/mac-mini`:
 

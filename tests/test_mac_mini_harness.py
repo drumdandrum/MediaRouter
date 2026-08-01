@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ from mac_mini_harness import (  # noqa: E402
     HarnessError,
     PROJECT,
     credential_file_state,
+    create_archive,
     ensure_feed_id,
     load_test_emby_api_key,
     restore_archive,
@@ -36,20 +38,41 @@ from mac_mini_harness import (  # noqa: E402
 
 
 class MacMiniHarnessTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        subprocess.run([str(SCRIPTS / "mac-mini-test"), "init"], cwd=ROOT, check=True,
-                       capture_output=True, text=True)
-
-    def rendered_config(self):
+    def rendered_config(self, repo=ROOT):
         result = subprocess.run([
             "docker", "compose", "-p", PROJECT,
-            "-f", str(ROOT / "docker-compose.yml"),
-            "-f", str(ROOT / "deploy/mac-mini/compose.test.yml"),
-            "--env-file", str(ROOT / "deploy/mac-mini/.env.test"),
+            "-f", str(repo / "docker-compose.yml"),
+            "-f", str(repo / "deploy/mac-mini/compose.test.yml"),
+            "--env-file", str(repo / "deploy/mac-mini/env.test.example"),
             "config", "--format", "json",
-        ], cwd=ROOT, check=True, capture_output=True, text=True)
+        ], cwd=repo, check=True, capture_output=True, text=True)
         return json.loads(result.stdout)
+
+    def temporary_harness_repo(self, parent: Path) -> Path:
+        repo = parent / "repo"
+        (repo / "scripts").mkdir(parents=True)
+        (repo / "deploy/mac-mini").mkdir(parents=True)
+        (repo / "tests/fixtures/mac-mini/catalog").mkdir(parents=True)
+        for relative in (
+            "scripts/mac-mini-test",
+            "scripts/mac-mini-smoke",
+            "scripts/mac_mini_harness.py",
+            "docker-compose.yml",
+            "deploy/mac-mini/compose.test.yml",
+            "deploy/mac-mini/env.test.example",
+            "tests/fixtures/mac-mini/catalog/vod-small.m3u",
+        ):
+            destination = repo / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / relative, destination)
+        subprocess.run(
+            [str(repo / "scripts/mac-mini-test"), "init"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return repo
 
     def test_effective_compose_is_isolated_and_replaces_base_mounts(self):
         config = self.rendered_config()
@@ -120,6 +143,24 @@ class MacMiniHarnessTests(unittest.TestCase):
                 safe_reset(unrelated, ROOT)
             with self.assertRaisesRegex(HarnessError, "unexpected local test root"):
                 safe_destroy(unrelated, ROOT)
+
+    def test_reset_and_destroy_credential_state_semantics(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            local = repo / ".local/mac-mini"
+            (local / "data").mkdir(parents=True)
+            for name in ("outputs", "logs", "evidence", "snapshots"):
+                (local / name).mkdir()
+            settings = local / "data/emby_integration_settings.json"
+            settings.write_text("synthetic-local-settings")
+            (local / "feed-id").write_text("synthetic-feed")
+            (local / "secrets.env").write_text("synthetic-secret")
+            safe_reset(local, repo)
+            self.assertFalse(settings.exists())
+            self.assertEqual("synthetic-feed", (local / "feed-id").read_text())
+            self.assertEqual("synthetic-secret", (local / "secrets.env").read_text())
+            safe_destroy(local, repo)
+            self.assertFalse(local.exists())
 
     def test_symlinked_local_root_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -425,6 +466,139 @@ class MacMiniHarnessTests(unittest.TestCase):
                 with self.subTest(kind=kind), self.assertRaises(HarnessError):
                     validate_archive(archive)
 
+    def test_archive_rejects_raw_emby_settings_member(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            payload = root / "payload"
+            payload.write_text('{"api_key":"synthetic-never-restore"}')
+            for index, member_name in enumerate((
+                "data/emby_integration_settings.json",
+                "data/EMBY_INTEGRATION_SETTINGS.JSON",
+            )):
+                with self.subTest(member_name=member_name):
+                    archive = root / (member_name.rsplit("/", 1)[-1] + ".tar.gz")
+                    with tarfile.open(archive, "w:gz") as bundle:
+                        bundle.add(payload, arcname=member_name)
+                    with self.assertRaisesRegex(HarnessError, "forbidden Emby"):
+                        validate_archive(archive)
+                    local = root / f"local-{index}"
+                    (local / "data").mkdir(parents=True)
+                    (local / "outputs").mkdir()
+                    settings = local / "data/emby_integration_settings.json"
+                    preserved = b'{"api_key":"synthetic-current-key"}'
+                    settings.write_bytes(preserved)
+                    settings.chmod(0o600)
+                    with self.assertRaisesRegex(HarnessError, "forbidden Emby"):
+                        restore_archive(archive, local)
+                    self.assertEqual(preserved, settings.read_bytes())
+
+    def test_archive_rejects_duplicate_normalized_members(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            archive = root / "duplicate.tar.gz"
+            first = tarfile.TarInfo("data/state.json")
+            first.size = 3
+            second = tarfile.TarInfo("./data/STATE.JSON")
+            second.size = 3
+            with tarfile.open(archive, "w:gz") as bundle:
+                bundle.addfile(first, io.BytesIO(b"one"))
+                bundle.addfile(second, io.BytesIO(b"two"))
+            with self.assertRaisesRegex(HarnessError, "duplicate paths"):
+                validate_archive(archive)
+
+    def test_restore_preserves_current_emby_settings_and_omits_missing_settings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            snapshot_source = root / "snapshot-source"
+            (snapshot_source / "data").mkdir(parents=True)
+            (snapshot_source / "outputs").mkdir()
+            (snapshot_source / "data/catalog.json").write_text("snapshot")
+            (snapshot_source / "outputs/result.txt").write_text("output")
+            archive = root / "snapshot.tar.gz"
+            metadata = create_archive(snapshot_source, archive)
+            self.assertEqual(
+                {"present": False, "api_key_included": False}, metadata
+            )
+
+            local = root / "with-settings"
+            (local / "data").mkdir(parents=True)
+            (local / "outputs").mkdir()
+            settings = local / "data/emby_integration_settings.json"
+            original = b'{"api_key":"synthetic-current-key","enabled":false}'
+            settings.write_bytes(original)
+            settings.chmod(0o600)
+            feed_id = local / "feed-id"
+            feed_id.write_text("synthetic-feed-id")
+            secrets_file = local / "secrets.env"
+            secrets_file.write_text("synthetic-local-secret")
+            (local / "data/old.txt").write_text("old")
+            restore_archive(archive, local)
+            self.assertEqual(original, settings.read_bytes())
+            self.assertEqual(0o600, stat.S_IMODE(settings.stat().st_mode))
+            self.assertEqual("synthetic-feed-id", feed_id.read_text())
+            self.assertEqual("synthetic-local-secret", secrets_file.read_text())
+            self.assertFalse((local / "data/old.txt").exists())
+            self.assertEqual("snapshot", (local / "data/catalog.json").read_text())
+
+            fresh = root / "without-settings"
+            (fresh / "data").mkdir(parents=True)
+            (fresh / "outputs").mkdir()
+            restore_archive(archive, fresh)
+            self.assertFalse((fresh / "data/emby_integration_settings.json").exists())
+
+    def test_snapshot_rejects_symlink_and_malformed_emby_settings_safely(self):
+        marker = "synthetic-secret-must-not-leak"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            (source / "data").mkdir(parents=True)
+            (source / "outputs").mkdir()
+            settings = source / "data/emby_integration_settings.json"
+            target = root / "target"
+            target.write_text(marker)
+            settings.symlink_to(target)
+            archive = root / "snapshot.tar.gz"
+            with self.assertRaises(HarnessError) as symlink_error:
+                create_archive(source, archive)
+            self.assertNotIn(marker, str(symlink_error.exception))
+            self.assertFalse(archive.exists())
+
+            settings.unlink()
+            settings.write_text('{"api_key":"' + marker + '", invalid')
+            with self.assertRaisesRegex(HarnessError, "metadata is malformed") as malformed:
+                create_archive(source, archive)
+            self.assertNotIn(marker, str(malformed.exception))
+            self.assertFalse(archive.exists())
+
+            settings.write_text(json.dumps({
+                "api_key": marker,
+                "server_url": "http://[" + marker,
+                "enabled": False,
+            }))
+            with self.assertRaisesRegex(HarnessError, "unsafe URL") as unsafe_url:
+                create_archive(source, archive)
+            self.assertNotIn(marker, str(unsafe_url.exception))
+            self.assertFalse(archive.exists())
+
+    def test_restore_rejects_symlinked_current_emby_settings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            (source / "data").mkdir(parents=True)
+            (source / "outputs").mkdir()
+            archive = root / "snapshot.tar.gz"
+            create_archive(source, archive)
+            local = root / "local"
+            (local / "data").mkdir(parents=True)
+            (local / "outputs").mkdir()
+            target = root / "target"
+            target.write_text("synthetic-current-secret")
+            (local / "data/emby_integration_settings.json").symlink_to(target)
+            with self.assertRaisesRegex(HarnessError, "regular non-symlink") as caught:
+                restore_archive(archive, local)
+            self.assertNotIn("synthetic-current-secret", str(caught.exception))
+            self.assertEqual("synthetic-current-secret", target.read_text())
+
     def test_snapshot_names_cannot_traverse_or_be_options(self):
         for name in ("../outside", "-option", ".", ".."):
             result = subprocess.run(
@@ -436,7 +610,10 @@ class MacMiniHarnessTests(unittest.TestCase):
 
     def test_compose_render_failure_prevents_start(self):
         with tempfile.TemporaryDirectory() as temp:
-            fake_bin = Path(temp)
+            temp_path = Path(temp)
+            repo = self.temporary_harness_repo(temp_path)
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir()
             log = fake_bin / "docker.log"
             fake = fake_bin / "docker"
             fake.write_text(
@@ -447,8 +624,8 @@ class MacMiniHarnessTests(unittest.TestCase):
             fake.chmod(0o755)
             env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
             result = subprocess.run(
-                [str(SCRIPTS / "mac-mini-test"), "start"],
-                cwd=ROOT, env=env, capture_output=True, text=True,
+                [str(repo / "scripts/mac-mini-test"), "start"],
+                cwd=repo, env=env, capture_output=True, text=True,
             )
             self.assertNotEqual(0, result.returncode)
             commands = log.read_text()
@@ -456,9 +633,12 @@ class MacMiniHarnessTests(unittest.TestCase):
             self.assertNotIn(" up ", f" {commands} ")
 
     def test_snapshot_manifest_excludes_secret_contents_and_no_deployment_runs(self):
-        config = self.rendered_config()
         with tempfile.TemporaryDirectory() as temp:
-            fake_bin = Path(temp)
+            temp_path = Path(temp)
+            repo = self.temporary_harness_repo(temp_path)
+            config = self.rendered_config(repo)
+            fake_bin = temp_path / "bin"
+            fake_bin.mkdir()
             log = fake_bin / "docker.log"
             rendered = fake_bin / "config.json"
             rendered.write_text(json.dumps(config))
@@ -471,34 +651,71 @@ class MacMiniHarnessTests(unittest.TestCase):
                 " *' ps --status running -q '*) :;; esac\n"
             )
             fake.chmod(0o755)
-            local = ROOT / ".local/mac-mini"
+            git = fake_bin / "git"
+            git.write_text(
+                "#!/bin/sh\n"
+                "case \" $* \" in"
+                " *' branch --show-current '*) echo test-branch;;"
+                " *' rev-parse HEAD '*) echo 0123456789abcdef;;"
+                " esac\n"
+            )
+            git.chmod(0o755)
+            local = repo / ".local/mac-mini"
             secret = local / "secrets.env"
             secret.write_text("MEDIA_ROUTER_TEST_EMBY_API_KEY=never-print-this\n")
             secret.chmod(0o600)
+            emby_secret = "synthetic-emby-key-never-archive"
+            settings = local / "data/emby_integration_settings.json"
+            settings.write_text(json.dumps({
+                "enabled": True,
+                "server_url": "http://host.docker.internal:8597",
+                "api_key": emby_secret,
+                "unknown": "omit-me",
+            }))
+            similarly_named = local / "data/emby_integration_settings.json.backup"
+            similarly_named.write_text("safe-similarly-named-state")
             name = "unit-snapshot"
-            shutil.rmtree(local / "snapshots" / name, ignore_errors=True)
             env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
             result = subprocess.run(
-                [str(SCRIPTS / "mac-mini-test"), "snapshot", name],
-                cwd=ROOT, env=env, capture_output=True, text=True,
+                [str(repo / "scripts/mac-mini-test"), "snapshot", name],
+                cwd=repo, env=env, capture_output=True, text=True,
             )
             self.assertEqual(0, result.returncode, result.stderr)
             manifest = json.loads((local / "snapshots" / name / "manifest.json").read_text())
             self.assertTrue(manifest["secrets_file_existed"])
+            self.assertEqual({
+                "present": True,
+                "enabled": True,
+                "server_url": "http://host.docker.internal:8597",
+                "api_key_included": False,
+            }, manifest["emby_settings"])
             self.assertNotIn("never-print-this", json.dumps(manifest))
+            self.assertNotIn(emby_secret, json.dumps(manifest))
+            self.assertNotIn(hashlib.sha256(emby_secret.encode()).hexdigest(), json.dumps(manifest))
             self.assertNotIn(
                 "never-print-this",
                 (local / "snapshots" / name / "compose.effective.json").read_text(),
             )
             archive = local / "snapshots" / name / "state.tar.gz"
+            self.assertNotIn(emby_secret.encode(), archive.read_bytes())
             with tarfile.open(archive, "r:gz") as bundle:
                 self.assertFalse(any("secrets" in member.name for member in bundle.getmembers()))
+                self.assertNotIn(
+                    "data/emby_integration_settings.json",
+                    {member.name for member in bundle.getmembers()},
+                )
+                self.assertIn(
+                    "data/emby_integration_settings.json.backup",
+                    {member.name for member in bundle.getmembers()},
+                )
+                for member in bundle.getmembers():
+                    if member.isfile():
+                        self.assertNotIn(emby_secret.encode(), bundle.extractfile(member).read())
             commands = log.read_text()
             self.assertIn("config --format json", commands)
             self.assertNotIn(" up ", f" {commands} ")
             self.assertNotIn(" start ", f" {commands} ")
-            shutil.rmtree(local / "snapshots" / name)
-            secret.unlink()
+            self.assertNotIn(emby_secret, result.stdout + result.stderr + commands)
 
     def test_smoke_runner_is_read_only_and_rejects_mutation_flags(self):
         source = (
@@ -529,6 +746,7 @@ class MacMiniHarnessTests(unittest.TestCase):
         self.assertIn("-f $REPO_ROOT/docker-compose.yml", source)
         self.assertIn("-f $REPO_ROOT/deploy/mac-mini/compose.test.yml", source)
         self.assertIn("--env-file $ENV_FILE", source)
+        self.assertIn('snapshot "$pre_name"', source)
         self.assertNotIn("ssh ", source)
 
 

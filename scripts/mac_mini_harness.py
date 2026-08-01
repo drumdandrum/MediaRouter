@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import urlopen
@@ -65,6 +66,9 @@ TEST_EMBY_API_KEY_VARIABLE = "MEDIA_ROUTER_TEST_EMBY_API_KEY"
 MAX_SECRET_FILE_BYTES = 4096
 MAX_TEST_EMBY_API_KEY_LENGTH = 1024
 SAFE_SECRET_VALUE_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
+EMBY_SETTINGS_NAME = "emby_integration_settings.json"
+EMBY_SETTINGS_ARCHIVE_PATH = PurePosixPath("data") / EMBY_SETTINGS_NAME
+MAX_EMBY_SETTINGS_BYTES = 64 * 1024
 
 
 class HarnessError(ValueError):
@@ -296,17 +300,118 @@ def sqlite_integrity(path: Path) -> str:
     return "ok"
 
 
+def _read_regular_file_no_follow(path: Path, maximum_bytes: int) -> bytes | None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise HarnessError("managed secret state could not be validated") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise HarnessError("managed secret state must be a regular non-symlink file")
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_dev != metadata.st_dev
+            or opened.st_ino != metadata.st_ino
+        ):
+            raise HarnessError("managed secret state changed during validation")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            raw = handle.read(maximum_bytes + 1)
+    except HarnessError:
+        raise
+    except OSError as exc:
+        raise HarnessError("managed secret state could not be read safely") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if len(raw) > maximum_bytes:
+        raise HarnessError("managed secret state exceeds the safe size limit")
+    return raw
+
+
+def _sanitize_snapshot_url(value: object, *, allowed_ports: set[int]) -> str:
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, str):
+        raise HarnessError("Emby settings metadata is unsafe")
+    try:
+        parsed = urlsplit(value.strip())
+        unsafe = (
+            parsed.scheme != "http"
+            or parsed.hostname
+            not in {"host.docker.internal", "localhost", "127.0.0.1"}
+            or parsed.port not in allowed_ports
+            or parsed.username
+            or parsed.password
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+            or "embyserver" in parsed.netloc.casefold()
+        )
+    except ValueError as exc:
+        raise HarnessError("Emby settings metadata contains an unsafe URL") from exc
+    if unsafe:
+        raise HarnessError("Emby settings metadata contains an unsafe URL")
+    return f"http://{parsed.hostname}:{parsed.port}"
+
+
+def sanitized_emby_settings_metadata(data_root: Path) -> dict[str, object]:
+    """Return an allowlisted snapshot summary without retaining credential data."""
+    path = data_root / EMBY_SETTINGS_NAME
+    raw = _read_regular_file_no_follow(path, MAX_EMBY_SETTINGS_BYTES)
+    if raw is None:
+        return {"present": False, "api_key_included": False}
+    try:
+        values = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HarnessError("Emby settings metadata is malformed") from exc
+    if not isinstance(values, dict) or not isinstance(values.get("enabled", False), bool):
+        raise HarnessError("Emby settings metadata is malformed")
+    metadata: dict[str, object] = {
+        "present": True,
+        "enabled": values.get("enabled", False),
+        "server_url": _sanitize_snapshot_url(
+            values.get("server_url", ""), allowed_ports={8597}
+        ),
+        "api_key_included": False,
+    }
+    if "media_router_url" in values:
+        metadata["media_router_url"] = _sanitize_snapshot_url(
+            values["media_router_url"], allowed_ports={18088}
+        )
+    return metadata
+
+
 def _validate_archive_members(bundle: tarfile.TarFile) -> None:
+    seen_paths: set[str] = set()
     for member in bundle.getmembers():
         path = PurePosixPath(member.name)
         if path.is_absolute() or ".." in path.parts:
             raise HarnessError("snapshot archive contains an unsafe path")
+        normalized_path = path.as_posix().casefold()
+        if normalized_path in seen_paths:
+            raise HarnessError("snapshot archive contains duplicate paths")
+        seen_paths.add(normalized_path)
         if member.issym() or member.islnk():
             raise HarnessError("snapshot archive may not contain links")
         if not (member.isfile() or member.isdir()):
             raise HarnessError("snapshot archive may contain only files and directories")
         if not path.parts or path.parts[0] not in {"data", "outputs"}:
             raise HarnessError("snapshot archive contains an unexpected top-level path")
+        if _is_emby_settings_archive_path(path):
+            raise HarnessError("snapshot archive contains forbidden Emby credential state")
+
+
+def _is_emby_settings_archive_path(path: PurePosixPath) -> bool:
+    return (
+        len(path.parts) == 2
+        and path.parts[0] == "data"
+        and path.parts[1].casefold() == EMBY_SETTINGS_NAME.casefold()
+    )
 
 
 def validate_archive(archive: Path) -> None:
@@ -314,25 +419,60 @@ def validate_archive(archive: Path) -> None:
         _validate_archive_members(bundle)
 
 
-def create_archive(source: Path, archive: Path) -> None:
+def _snapshot_filter(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
+    path = PurePosixPath(member.name)
+    if _is_emby_settings_archive_path(path):
+        return None
+    if member.issym() or member.islnk() or not (member.isfile() or member.isdir()):
+        raise HarnessError("snapshot source may contain only regular files and directories")
+    return member
+
+
+def _validate_snapshot_roots(source: Path) -> None:
+    for path in (source, source / "data", source / "outputs"):
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            if path == source:
+                raise HarnessError("snapshot source is missing")
+            continue
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise HarnessError("snapshot roots must be non-symlink directories")
+
+
+def create_archive(source: Path, archive: Path) -> dict[str, object]:
+    _validate_snapshot_roots(source)
+    emby_metadata = sanitized_emby_settings_metadata(source / "data")
     archive.parent.mkdir(parents=True, exist_ok=True)
     try:
         with tarfile.open(archive, "w:gz") as bundle:
             for name in ("data", "outputs"):
                 item = source / name
                 if item.exists():
-                    bundle.add(item, arcname=name, recursive=True)
+                    bundle.add(item, arcname=name, recursive=True, filter=_snapshot_filter)
         validate_archive(archive)
     except BaseException:
         archive.unlink(missing_ok=True)
         raise
+    return emby_metadata
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
 
 
 def restore_archive(archive: Path, local_root: Path) -> None:
-    staging = local_root.parent / f".{local_root.name}-restore"
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(mode=0o700)
+    if local_root.is_symlink() or not local_root.is_dir():
+        raise HarnessError("restore root must be a non-symlink directory")
+    for managed in (local_root / "data", local_root / "outputs"):
+        if managed.is_symlink():
+            raise HarnessError("restore destinations may not be symlinks")
+    staging = Path(tempfile.mkdtemp(prefix=".restore-staging-", dir=local_root))
+    os.chmod(staging, 0o700)
+    settings_descriptor = -1
     try:
         with tarfile.open(archive, "r:gz") as bundle:
             # Validate and extract from the same open archive to avoid a
@@ -342,16 +482,53 @@ def restore_archive(archive: Path, local_root: Path) -> None:
             # Avoid the newer tarfile filter argument so the operator helper remains
             # usable with the Python versions commonly installed on macOS.
             bundle.extractall(staging)
-        for name in ("data", "outputs"):
-            destination = local_root / name
-            if destination.exists():
-                shutil.rmtree(destination)
-            source = staging / name
-            if source.exists():
-                shutil.move(str(source), destination)
-            else:
-                destination.mkdir(parents=True)
+        data_destination = local_root / "data"
+        settings_path = data_destination / EMBY_SETTINGS_NAME
+        if settings_path.is_symlink() or (
+            settings_path.exists() and not settings_path.is_file()
+        ):
+            raise HarnessError("local Emby settings must be a regular non-symlink file")
+        settings_identity: tuple[int, int] | None = None
+        if settings_path.exists():
+            try:
+                settings_descriptor = os.open(
+                    settings_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                )
+                opened_settings = os.fstat(settings_descriptor)
+            except OSError as exc:
+                raise HarnessError("local Emby settings could not be preserved") from exc
+            if not stat.S_ISREG(opened_settings.st_mode):
+                raise HarnessError("local Emby settings must be a regular file")
+            settings_identity = (opened_settings.st_dev, opened_settings.st_ino)
+        data_destination.mkdir(parents=True, exist_ok=True)
+        for child in data_destination.iterdir():
+            if child.name != EMBY_SETTINGS_NAME:
+                _remove_path(child)
+        staged_data = staging / "data"
+        if staged_data.exists():
+            for child in staged_data.iterdir():
+                if child.name.casefold() == EMBY_SETTINGS_NAME.casefold():
+                    raise HarnessError("snapshot contains forbidden Emby credential state")
+                shutil.move(str(child), data_destination / child.name)
+        if settings_identity is not None:
+            try:
+                current_settings = settings_path.lstat()
+            except OSError as exc:
+                raise HarnessError("local Emby settings changed during restore") from exc
+            if (current_settings.st_dev, current_settings.st_ino) != settings_identity:
+                raise HarnessError("local Emby settings changed during restore")
+
+        outputs_destination = local_root / "outputs"
+        if outputs_destination.exists():
+            shutil.rmtree(outputs_destination)
+        staged_outputs = staging / "outputs"
+        if staged_outputs.exists():
+            shutil.move(str(staged_outputs), outputs_destination)
+        else:
+            outputs_destination.mkdir(parents=True)
     finally:
+        if settings_descriptor >= 0:
+            os.close(settings_descriptor)
         shutil.rmtree(staging, ignore_errors=True)
 
 
@@ -583,7 +760,7 @@ def _main() -> int:
     elif args.command == "validate-archive":
         validate_archive(Path(args.path))
     elif args.command == "create-archive":
-        create_archive(Path(args.source), Path(args.archive))
+        print(json.dumps(create_archive(Path(args.source), Path(args.archive)), sort_keys=True))
     elif args.command == "restore-archive":
         restore_archive(Path(args.archive), Path(args.local_root))
     elif args.command == "reset":
