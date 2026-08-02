@@ -17,7 +17,8 @@ from mac_mini_emby import (  # noqa: E402
     ORIGINAL_VOLUME, PROJECT, require_available_rollback_name,
     validate_backup_archive, validate_backup_location, validate_compose,
     validate_managed_local_root, validate_original_inspect,
-    validate_replacement_inspect, validate_volume_name,
+    validate_replacement_inspect, validate_managed_service_ids,
+    validate_volume_name, sqlite_checks_from_backup,
 )
 
 
@@ -86,7 +87,10 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
                 "Mounts":[{"Destination":"/config","Name":ORIGINAL_VOLUME}]}
 
     def replacement(self):
-        return {"Name":"/MacEmbyTester","Image":IMAGE_ID,"Config":{"Hostname":HOSTNAME},
+        return {"Id":"a"*64,"Name":"/MacEmbyTester","Image":IMAGE_ID,
+                "State":{"Status":"running"},
+                "Config":{"Hostname":HOSTNAME,"Labels":{"com.docker.compose.project":PROJECT,
+                                                           "com.docker.compose.service":"emby"}},
                 "HostConfig":{"Privileged":False,"Devices":[],"CapAdd":None,"CapDrop":None,
                               "ExtraHosts":None,"SecurityOpt":["no-new-privileges:true"]},
                 "NetworkSettings":{"Ports":{"8096/tcp":[{"HostIp":"127.0.0.1","HostPort":"8597"}]}},
@@ -106,6 +110,17 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         with self.assertRaises(EmbyHarnessError): validate_replacement_inspect(data,self.volume,ROOT)
         data=self.replacement(); data["Mounts"][1]["Source"]="/tmp/movies"
         with self.assertRaises(EmbyHarnessError): validate_replacement_inspect(data,self.volume,ROOT)
+        data=self.replacement(); data["Config"]["Labels"]["com.docker.compose.service"]="wrong"
+        with self.assertRaises(EmbyHarnessError): validate_replacement_inspect(data,self.volume,ROOT)
+        with self.assertRaises(EmbyHarnessError):
+            validate_replacement_inspect(self.replacement(),self.volume,ROOT,"b"*64)
+
+    def test_managed_service_resolution_requires_exactly_one_container(self):
+        container="a"*64
+        self.assertEqual(container,validate_managed_service_ids([container]))
+        for values in ([],[container,"b"*64],["short"]):
+            with self.subTest(values=values), self.assertRaises(EmbyHarnessError):
+                validate_managed_service_ids(values)
 
     def test_volume_and_rollback_collision_guards(self):
         self.assertEqual(self.volume, validate_volume_name(self.volume))
@@ -151,6 +166,30 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
             os.chmod(path,0o644)
             with self.assertRaisesRegex(EmbyHarnessError,"0600"): validate_backup_archive(path)
 
+    def test_managed_backup_requires_expected_emby_databases(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/"managed-config-20260802T120000Z.tar.gz"
+            with tarfile.open(path,"w:gz") as bundle:
+                data=b"not sqlite"
+                info=tarfile.TarInfo("data/library.db"); info.size=len(data)
+                bundle.addfile(info,io.BytesIO(data))
+            os.chmod(path,0o600)
+            with self.assertRaisesRegex(EmbyHarnessError,"required Emby"):
+                validate_backup_archive(path,require_emby_paths=True)
+
+    def test_sqlite_validation_failure_propagates(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/"managed-config-20260802T120000Z.tar.gz"
+            with tarfile.open(path,"w:gz") as bundle:
+                for name in ("activitylog.db","authentication.db","library.db","users.db"):
+                    data=b"invalid sqlite database"
+                    info=tarfile.TarInfo("data/"+name); info.size=len(data)
+                    bundle.addfile(info,io.BytesIO(data))
+            os.chmod(path,0o600)
+            validate_backup_archive(path,require_emby_paths=True)
+            with self.assertRaisesRegex(EmbyHarnessError,"integrity"):
+                sqlite_checks_from_backup(path)
+
     def test_backup_rejects_links_traversal_and_special_members(self):
         for label, info in (
             ("traversal",tarfile.TarInfo("../secret")),
@@ -177,6 +216,41 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         self.assertNotIn('docker kill',text)
         self.assertIn('StartupWizardCompleted',text)
         self.assertIn('safety-check) render >/dev/null;',text)
+
+    def test_backup_modes_and_managed_lifecycle_are_explicit_and_ordered(self):
+        script=ROOT/"scripts/mac-mini-emby-test"
+        text=script.read_text()
+        no_mode=subprocess.run([str(script),"backup"],capture_output=True,text=True)
+        self.assertEqual(2,no_mode.returncode)
+        self.assertIn("backup --deployment managed",no_mode.stderr)
+        self.assertIn('backup --deployment legacy',text)
+        self.assertIn('backup --deployment managed',text)
+        self.assertIn('[ "$#" -eq 2 ] && [ "$1" = "--deployment" ]',text)
+        managed=text[text.index("managed_backup() {"):text.index("clone_from_backup() {")]
+        stop=managed.index('compose stop -t 60 "$SERVICE"')
+        archive=managed.index('docker run --rm --entrypoint /bin/sh',stop)
+        restart=managed.index('compose start "$SERVICE"',archive)
+        verify=managed.index('verify_replacement',restart)
+        polling=managed.index('wait_router_polling',verify)
+        self.assertLess(stop,archive)
+        self.assertLess(archive,restart)
+        self.assertLess(restart,verify)
+        self.assertLess(verify,polling)
+        self.assertIn('capture_emby_identity',managed)
+        self.assertEqual(2,managed.count('mac-mini-test" smoke'))
+        self.assertIn('if [ "$managed_needs_restart" = true ]; then compose start',managed)
+        self.assertIn('backup_mode="managed"',managed)
+        self.assertIn('compose_project="emby-mac-test"',managed)
+        self.assertIn('MANAGED_VOLUME=emby-mac-test-config-v1',text)
+        self.assertIn('helper_image="emby/embyserver@sha256:',managed)
+        self.assertIn('volume_name',managed)
+
+    def test_legacy_backup_guards_and_source_remain_preserved(self):
+        text=(ROOT/"scripts/mac-mini-emby-test").read_text()
+        legacy=text[text.index("backup_stopped() {"):text.index("repository_backup_guard() {")]
+        self.assertIn("stopped_original_guard",legacy)
+        self.assertIn('$ORIGINAL_VOLUME,dst=/source,readonly',legacy)
+        self.assertIn('legacy) ensure_initialized; backup_stopped',text)
 
     def test_unit_tests_never_execute_docker_mutations(self):
         # Rendering uses `docker compose config`; all mutation behavior is tested

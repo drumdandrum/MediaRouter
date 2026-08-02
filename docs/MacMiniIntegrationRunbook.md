@@ -355,6 +355,28 @@ volume is never modified. The old container is retained stopped under a timestam
 rollback name, so a failed replacement can return to the exact previous state
 without restoring a database archive.
 
+Backup mode is always explicit. The legacy mode preserves the original-container
+identity and anonymous-volume guards and requires that original container to be
+stopped:
+
+```sh
+scripts/mac-mini-emby-test backup --deployment legacy
+```
+
+The managed mode resolves the one running `emby` service from project
+`emby-mac-test`, validates its exact image, loopback port, security settings, and
+`emby-mac-test-config-v1` mount, then stops only that service for up to 60 seconds:
+
+```sh
+scripts/mac-mini-emby-test backup --deployment managed
+```
+
+It archives the stopped stable volume read-only, validates required Emby databases
+and offline SQLite integrity, records sanitized Git/container/archive metadata,
+starts only the managed service, and verifies server identity and MediaRouter
+parity. Any failure after stop triggers a best-effort start of only that service.
+Neither mode is inferred automatically, and neither mode operates on production.
+
 The controlled operation requires explicit confirmation:
 
 ```sh
