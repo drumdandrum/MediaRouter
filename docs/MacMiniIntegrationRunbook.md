@@ -302,3 +302,79 @@ Before Stage 1:
 Passing Stage 1 authorizes only isolated deployment and health checks. It does not
 authorize Emby configuration, catalog imports, outputs, playback, or shadow-ledger
 observation.
+
+## Managed Mac mini test Emby deployment
+
+The original `MacEmbyTester` container was created outside Compose. Its active
+program-data directory is an anonymous Docker volume mounted at `/config`. Two
+additional writable host binds were created with literal backslash-prefixed Linux
+destinations (`\config` and `\media`); the former is empty and unused, while the
+latter exposes `/Users/Shared/MediaRouter`. Port 8597 was also published on IPv4
+and IPv6 wildcards. These mounts and bindings are not approved for integration
+testing.
+
+`deploy/mac-mini/compose.emby.test.yml` defines the replacement as a separate
+`emby-mac-test` project. It pins the ARM64 Emby image by digest, publishes only
+`127.0.0.1:8597:8096`, mounts one stable named volume at `/config`, and mounts only
+the isolated movie and series STRM roots read-only. It does not mount Live output,
+MediaRouter data, secrets, feed identity, snapshots, the repository root, or any
+production path.
+
+Initialize and render the local nonsecret configuration:
+
+```sh
+scripts/mac-mini-emby-test init
+scripts/mac-mini-emby-test config
+scripts/mac-mini-emby-test safety-check
+```
+
+The ignored `deploy/mac-mini/.env.emby.test` contains only the stable volume name
+and absolute approved output paths. It must not contain API keys or other Emby
+credentials.
+
+### Protected config backup
+
+The managed replacement workflow stops only the test Emby container before
+backing up `/config`. The full archive is written beneath
+`.local/mac-mini/emby-test/backups` with parent mode 0700 and archive mode 0600.
+Unlike MediaRouter snapshots, this archive deliberately contains complete Emby
+configuration and therefore contains credentials and authentication state. It
+must never be committed, copied into a MediaRouter snapshot or evidence bundle,
+printed, or shared between environments.
+
+The helper image is pinned by digest and mounts the original volume read-only.
+Archive validation rejects traversal, duplicate paths, links, and special members.
+Offline SQLite integrity is checked where the local SQLite build can read the
+copied databases. Only archive size, total file count/bytes, archive SHA-256,
+source-volume name, timestamp, and helper-image digest are retained as sanitized
+metadata.
+
+The backup is restored into a new stable named volume. The original anonymous
+volume is never modified. The old container is retained stopped under a timestamped
+rollback name, so a failed replacement can return to the exact previous state
+without restoring a database archive.
+
+The controlled operation requires explicit confirmation:
+
+```sh
+scripts/mac-mini-emby-test replace --confirm emby-mac-test-replace
+```
+
+Library creation, library scans, playback, and runtime requests are deliberately
+absent from this tool. Those remain blocked until the managed replacement passes
+identity, mount, loopback-port, MediaRouter-polling, and stability validation.
+
+### Rollback model
+
+Rollback stops and removes only the replacement container, retains the cloned
+volume and protected backup, renames the retained original container back to
+`MacEmbyTester`, and starts it:
+
+```sh
+scripts/mac-mini-emby-test rollback --confirm emby-mac-test-rollback
+```
+
+Rollback restores the known previous deployment, including its wildcard port and
+unsafe legacy mounts. It is an incident-recovery path, not the desired secure
+state. The original container and anonymous volume must not be deleted until a
+separate approval explicitly retires them.

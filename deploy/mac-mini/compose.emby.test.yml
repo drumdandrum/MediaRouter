@@ -1,0 +1,30 @@
+name: emby-mac-test
+
+services:
+  emby:
+    image: emby/embyserver@sha256:734a6f03c7c783a9e566b08d09a2b6376f41229ff29f032a7e00302e0be98f8a
+    platform: linux/arm64
+    container_name: MacEmbyTester
+    hostname: d6abf72ac521
+    restart: "no"
+    ports:
+      - "127.0.0.1:8597:8096"
+    volumes:
+      - type: volume
+        source: emby-test-config
+        target: /config
+      - type: bind
+        source: ${EMBY_TEST_MOVIES_PATH:?set EMBY_TEST_MOVIES_PATH}
+        target: /media-router-test/movies
+        read_only: true
+      - type: bind
+        source: ${EMBY_TEST_SERIES_PATH:?set EMBY_TEST_SERIES_PATH}
+        target: /media-router-test/series
+        read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  emby-test-config:
+    name: ${EMBY_TEST_CONFIG_VOLUME:?set EMBY_TEST_CONFIG_VOLUME}
+    external: true

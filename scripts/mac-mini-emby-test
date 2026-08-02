@@ -1,0 +1,251 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+PROJECT=emby-mac-test
+SERVICE=emby
+CONTAINER=MacEmbyTester
+EXPECTED_ORIGINAL_ID=d6abf72ac521d48fea45eff4a54a7d60286115734e5f081e1211db79e3dad28f
+ORIGINAL_VOLUME=be434b05f00eb341f06016c078d9b852990188a14ccead1884fdf2157061cc73
+IMAGE='emby/embyserver@sha256:734a6f03c7c783a9e566b08d09a2b6376f41229ff29f032a7e00302e0be98f8a'
+SERVER_ID=312374cb311f4fa28ba32489efc20e39
+ENV_FILE="$REPO_ROOT/deploy/mac-mini/.env.emby.test"
+COMPOSE_FILE="$REPO_ROOT/deploy/mac-mini/compose.emby.test.yml"
+LOCAL_ROOT="$REPO_ROOT/.local/mac-mini/emby-test"
+BACKUP_ROOT="$LOCAL_ROOT/backups"
+EVIDENCE_ROOT="$LOCAL_ROOT/evidence"
+STATE_FILE="$LOCAL_ROOT/replacement-state.json"
+HELPER="$SCRIPT_DIR/mac_mini_emby.py"
+
+usage() {
+  echo "usage: scripts/mac-mini-emby-test {init|config|safety-check|status|backup|clone-config BACKUP|replace --confirm emby-mac-test-replace|verify|rollback --confirm emby-mac-test-rollback|logs}" >&2
+  exit 2
+}
+
+compose() {
+  docker compose -p "$PROJECT" -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+}
+
+volume_name() {
+  value=$(awk -F= '$1=="EMBY_TEST_CONFIG_VOLUME" {print substr($0,index($0,"=")+1)}' "$ENV_FILE")
+  python3 "$HELPER" validate-volume "$value"
+}
+
+ensure_initialized() {
+  python3 "$SCRIPT_DIR/mac_mini_harness.py" validate-local-root "$REPO_ROOT/.local/mac-mini" "$REPO_ROOT"
+  [ -f "$ENV_FILE" ] && [ ! -L "$ENV_FILE" ] || { echo "Run init first; local env must be a regular file." >&2; exit 1; }
+  [ "$(stat -f %Lp "$ENV_FILE")" = "600" ] || { echo "Local env mode must be 0600." >&2; exit 1; }
+  mkdir -p "$BACKUP_ROOT" "$EVIDENCE_ROOT"
+  chmod 700 "$LOCAL_ROOT" "$BACKUP_ROOT" "$EVIDENCE_ROOT"
+}
+
+render() {
+  ensure_initialized
+  output=${1:-"$EVIDENCE_ROOT/compose.effective.json"}
+  compose config --format json >"$output"
+  python3 "$HELPER" validate-compose "$output" "$REPO_ROOT" "$(volume_name)"
+  printf '%s\n' "$output"
+}
+
+original_guard() {
+  output="$EVIDENCE_ROOT/original.inspect.json"
+  temporary=$(mktemp "$LOCAL_ROOT/.original-inspect.XXXXXX")
+  docker inspect "$CONTAINER" >"$temporary"
+  python3 - "$temporary" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p))[0]; json.dump(d,open(p,"w"))
+PY
+  python3 "$HELPER" validate-original-inspect "$temporary" "$EXPECTED_ORIGINAL_ID"
+  python3 - "$temporary" "$output" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); c=d.get("Config") or {}; c["Env"]=[x.split("=",1)[0]+"=[redacted]" for x in c.get("Env") or []]; d["Config"]=c
+json.dump(d,open(sys.argv[2],"w"),indent=2,sort_keys=True)
+PY
+  python3 -c 'from pathlib import Path; Path(__import__("sys").argv[1]).unlink(missing_ok=True)' "$temporary"
+  [ "$(docker inspect -f '{{.State.Status}}' "$CONTAINER")" = "running" ] || {
+    echo "Original container must be running before replacement begins." >&2; exit 1;
+  }
+  [ -z "$(docker ps -a --filter label=com.docker.compose.project=$PROJECT -q)" ] || {
+    echo "A managed replacement project already exists." >&2; exit 1;
+  }
+}
+
+backup_stopped() {
+  [ "$(docker inspect -f '{{.State.Status}}' "$CONTAINER")" = "exited" ] || {
+    echo "Backup requires the original container to be stopped." >&2; exit 1;
+  }
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  archive="$BACKUP_ROOT/config-$stamp.tar.gz"
+  [ ! -e "$archive" ] || { echo "Backup already exists." >&2; exit 1; }
+  docker run --rm --entrypoint /bin/sh \
+    --mount "type=volume,src=$ORIGINAL_VOLUME,dst=/source,readonly" \
+    --mount "type=bind,src=$BACKUP_ROOT,dst=/backup" \
+    "$IMAGE" -c "umask 077; tar -czf /backup/$(basename "$archive") -C /source ."
+  chmod 600 "$archive"
+  python3 "$HELPER" validate-backup "$archive" --sqlite >"$archive.metadata.json"
+  python3 - "$archive.metadata.json" "$ORIGINAL_VOLUME" "$stamp" "$IMAGE" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d.update(source_volume=sys.argv[2],timestamp=sys.argv[3],helper_image=sys.argv[4]); json.dump(d,open(p,"w"),indent=2,sort_keys=True); open(p,"a").write("\n")
+PY
+  chmod 600 "$archive.metadata.json"
+  printf '%s\n' "$archive"
+}
+
+clone_from_backup() {
+  archive=$1
+  [ -f "$archive" ] || { echo "Backup archive is missing." >&2; exit 1; }
+  python3 "$HELPER" validate-backup "$archive" --sqlite >/dev/null
+  target=$(volume_name)
+  [ -z "$(docker volume ls -q --filter name=^${target}$)" ] || {
+    echo "Clone volume already exists; refusing ambiguous resume." >&2; exit 1;
+  }
+  docker volume create --label mediarouter.environment=mac-mini-test --label mediarouter.purpose=emby-config "$target" >/dev/null
+  if ! docker run --rm --entrypoint /bin/sh \
+    --mount "type=bind,src=$(dirname "$archive"),dst=/backup,readonly" \
+    --mount "type=volume,src=$target,dst=/target" \
+    "$IMAGE" -c "tar -xzpf /backup/$(basename "$archive") -C /target"; then
+    echo "Config clone failed; retained the new volume for diagnosis." >&2
+    exit 1
+  fi
+  verify_archive="$BACKUP_ROOT/.clone-verify-$$.tar.gz"
+  trap 'python3 -c '\''from pathlib import Path; import sys; Path(sys.argv[1]).unlink(missing_ok=True); Path(sys.argv[1]+".json").unlink(missing_ok=True)'\'' "$verify_archive"' EXIT HUP INT TERM
+  docker run --rm --entrypoint /bin/sh \
+    --mount "type=volume,src=$target,dst=/source,readonly" \
+    --mount "type=bind,src=$BACKUP_ROOT,dst=/backup" \
+    "$IMAGE" -c "umask 077; tar -czf /backup/$(basename "$verify_archive") -C /source ."
+  chmod 600 "$verify_archive"
+  python3 "$HELPER" validate-backup "$verify_archive" --sqlite >"$verify_archive.json"
+  python3 - "$archive.metadata.json" "$verify_archive.json" <<'PY'
+import json,sys
+a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2]))
+if (a["file_count"],a["total_bytes"]) != (b["file_count"],b["total_bytes"]): raise SystemExit("cloned volume file count or size mismatch")
+if any(v not in {"ok","unavailable"} for v in b.get("sqlite_integrity",{}).values()): raise SystemExit("cloned volume SQLite integrity failed")
+PY
+  python3 -c 'from pathlib import Path; import sys; Path(sys.argv[1]).unlink(missing_ok=True); Path(sys.argv[1]+".json").unlink(missing_ok=True)' "$verify_archive"
+  trap - EXIT HUP INT TERM
+}
+
+rollback_internal() {
+  rollback_name=$1
+  compose down >/dev/null 2>&1 || true
+  if docker ps -a --format '{{.Names}}' | grep -Fxq "$rollback_name"; then
+    docker rename "$rollback_name" "$CONTAINER"
+    docker start "$CONTAINER" >/dev/null
+  fi
+}
+
+recover_failed_migration() {
+  rollback_name=$1
+  if [ -n "$rollback_name" ] && docker ps -a --format '{{.Names}}' | grep -Fxq "$rollback_name"; then
+    rollback_internal "$rollback_name"
+  elif docker ps -a --format '{{.Names}}' | grep -Fxq "$CONTAINER"; then
+    status=$(docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null || true)
+    [ "$status" = "running" ] || docker start "$CONTAINER" >/dev/null || true
+  fi
+}
+
+verify_replacement() {
+  output="$EVIDENCE_ROOT/replacement.inspect.json"
+  temporary=$(mktemp "$LOCAL_ROOT/.replacement-inspect.XXXXXX")
+  docker inspect "$CONTAINER" >"$temporary"
+  python3 - "$temporary" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p))[0]; json.dump(d,open(p,"w"))
+PY
+  python3 "$HELPER" validate-replacement-inspect "$temporary" "$(volume_name)"
+  python3 - "$temporary" "$output" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); c=d.get("Config") or {}; c["Env"]=[x.split("=",1)[0]+"=[redacted]" for x in c.get("Env") or []]; d["Config"]=c
+json.dump(d,open(sys.argv[2],"w"),indent=2,sort_keys=True)
+PY
+  python3 -c 'from pathlib import Path; Path(__import__("sys").argv[1]).unlink(missing_ok=True)' "$temporary"
+  docker exec "$CONTAINER" sh -c 'test -r /media-router-test/movies && test -r /media-router-test/series; ! touch /media-router-test/movies/.write-test 2>/dev/null; ! touch /media-router-test/series/.write-test 2>/dev/null'
+  python3 - "$SERVER_ID" <<'PY'
+import json,sys,time,urllib.request
+expected=sys.argv[1]
+deadline=time.monotonic()+120
+while True:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8597/System/Info/Public",timeout=5) as r:
+            data=json.load(r)
+        if data.get("Id") != expected:
+            raise SystemExit("replacement Emby server ID mismatch")
+        print(json.dumps({"server_id":data.get("Id"),"server_name":data.get("ServerName"),"version":data.get("Version")},sort_keys=True))
+        break
+    except Exception:
+        if time.monotonic() >= deadline: raise
+        time.sleep(2)
+PY
+  python3 - "$SERVER_ID" <<'PY'
+import json,sys,urllib.request
+expected=sys.argv[1]
+req=urllib.request.Request("http://127.0.0.1:18088/api/integrations/emby/test",data=b"",method="POST")
+with urllib.request.urlopen(req,timeout=15) as r: data=json.load(r)
+if not data.get("success") or data.get("server_id") != expected:
+    raise SystemExit("MediaRouter cannot verify the expected replacement Emby identity")
+print(json.dumps({"success":True,"server_id":data.get("server_id"),"server_name":data.get("server_name"),"server_version":data.get("server_version")},sort_keys=True))
+PY
+}
+
+command=${1:-}; [ -n "$command" ] || usage; shift || true
+case "$command" in
+  init)
+    mkdir -p "$LOCAL_ROOT" "$BACKUP_ROOT" "$EVIDENCE_ROOT"
+    chmod 700 "$LOCAL_ROOT" "$BACKUP_ROOT" "$EVIDENCE_ROOT"
+    [ ! -L "$ENV_FILE" ] || { echo "Local env may not be a symlink." >&2; exit 1; }
+    if [ ! -e "$ENV_FILE" ]; then
+      umask 077
+      {
+        echo "EMBY_TEST_CONFIG_VOLUME=emby-mac-test-config-v1"
+        echo "EMBY_TEST_MOVIES_PATH=$REPO_ROOT/.local/mac-mini/outputs/movies"
+        echo "EMBY_TEST_SERIES_PATH=$REPO_ROOT/.local/mac-mini/outputs/series"
+      } >"$ENV_FILE"
+    fi
+    chmod 600 "$ENV_FILE"
+    render >/dev/null
+    echo "Initialized managed test Emby configuration."
+    ;;
+  config) cat "$(render)" ;;
+  safety-check) render >/dev/null; original_guard; echo "Managed Emby safety checks passed." ;;
+  status) ensure_initialized; compose ps -a; docker ps -a --filter name=MacEmbyTester --format 'name={{.Names}} id={{.ID}} status={{.Status}}' ;;
+  backup) ensure_initialized; backup_stopped ;;
+  clone-config) [ "$#" -eq 1 ] || usage; ensure_initialized; clone_from_backup "$1" ;;
+  replace)
+    [ "${1:-}" = "--confirm" ] && [ "${2:-}" = "emby-mac-test-replace" ] || usage
+    ensure_initialized; render >/dev/null; original_guard
+    rollback_name="MacEmbyTester-rollback-$(date -u +%Y%m%d-%H%M%S)"
+    [ -z "$(docker ps -a --format '{{.Names}}' | grep -Fx "$rollback_name" || true)" ] || { echo "Rollback name collision." >&2; exit 1; }
+    migration_complete=false
+    trap 'if [ "$migration_complete" != true ]; then recover_failed_migration "$rollback_name"; fi' EXIT HUP INT TERM
+    docker stop "$CONTAINER" >/dev/null
+    archive=$(backup_stopped)
+    clone_from_backup "$archive"
+    docker rename "$CONTAINER" "$rollback_name"
+    if ! render >/dev/null || ! compose up -d "$SERVICE" || ! verify_replacement; then
+      echo "Replacement validation failed; restoring the retained original container." >&2
+      rollback_internal "$rollback_name"
+      exit 1
+    fi
+    replacement_id=$(docker inspect -f '{{.Id}}' "$CONTAINER")
+    python3 - "$STATE_FILE" "$rollback_name" "$archive" "$replacement_id" "$(volume_name)" <<'PY'
+import json,sys
+keys=("rollback_container","backup_archive","replacement_id","config_volume")
+with open(sys.argv[1],"w") as f: json.dump(dict(zip(keys,sys.argv[2:])),f,indent=2,sort_keys=True); f.write("\n")
+PY
+    chmod 600 "$STATE_FILE"
+    migration_complete=true
+    trap - EXIT HUP INT TERM
+    echo "Managed test Emby replacement passed. Original retained as $rollback_name"
+    ;;
+  verify) ensure_initialized; verify_replacement ;;
+  rollback)
+    [ "${1:-}" = "--confirm" ] && [ "${2:-}" = "emby-mac-test-rollback" ] || usage
+    [ -f "$STATE_FILE" ] || { echo "Replacement state is missing." >&2; exit 1; }
+    rollback_name=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["rollback_container"])' "$STATE_FILE")
+    rollback_internal "$rollback_name"
+    echo "Restored the retained original test Emby container."
+    ;;
+  logs) ensure_initialized; compose logs --tail 200 "$SERVICE" ;;
+  *) usage ;;
+esac
