@@ -302,3 +302,102 @@ Before Stage 1:
 Passing Stage 1 authorizes only isolated deployment and health checks. It does not
 authorize Emby configuration, catalog imports, outputs, playback, or shadow-ledger
 observation.
+
+## Managed Mac mini test Emby deployment
+
+The original `MacEmbyTester` container was created outside Compose. Its active
+program-data directory is an anonymous Docker volume mounted at `/config`. Two
+additional writable host binds were created with literal backslash-prefixed Linux
+destinations (`\config` and `\media`); the former is empty and unused, while the
+latter exposes `/Users/Shared/MediaRouter`. Port 8597 was also published on IPv4
+and IPv6 wildcards. These mounts and bindings are not approved for integration
+testing.
+
+`deploy/mac-mini/compose.emby.test.yml` defines the replacement as a separate
+`emby-mac-test` project. It pins the ARM64 Emby image by digest, publishes only
+`127.0.0.1:8597:8096`, mounts one stable named volume at `/config`, and mounts only
+the isolated movie and series STRM roots read-only. It does not mount Live output,
+MediaRouter data, secrets, feed identity, snapshots, the repository root, or any
+production path. A 60-second stop grace period allows Emby's service supervisor to
+finish database shutdown before Docker escalates to a forced stop.
+
+Initialize and render the local nonsecret configuration:
+
+```sh
+scripts/mac-mini-emby-test init
+scripts/mac-mini-emby-test config
+scripts/mac-mini-emby-test safety-check
+```
+
+The ignored `deploy/mac-mini/.env.emby.test` contains only the stable volume name
+and absolute approved output paths. It must not contain API keys or other Emby
+credentials.
+
+### Protected config backup
+
+The managed replacement workflow stops only the test Emby container before
+backing up `/config`. The full archive is written beneath
+`.local/mac-mini/emby-test/backups` with parent mode 0700 and archive mode 0600.
+Unlike MediaRouter snapshots, this archive deliberately contains complete Emby
+configuration and therefore contains credentials and authentication state. It
+must never be committed, copied into a MediaRouter snapshot or evidence bundle,
+printed, or shared between environments.
+
+The helper image is pinned by digest and mounts the original volume read-only.
+Archive validation rejects traversal, duplicate paths, links, and special members.
+Offline SQLite integrity is checked where the local SQLite build can read the
+copied databases. Only archive size, total file count/bytes, archive SHA-256,
+source-volume name, timestamp, and helper-image digest are retained as sanitized
+metadata.
+
+The backup is restored into a new stable named volume. The original anonymous
+volume is never modified. The old container is retained stopped under a timestamped
+rollback name, so a failed replacement can return to the exact previous state
+without restoring a database archive.
+
+The controlled operation requires explicit confirmation:
+
+```sh
+scripts/mac-mini-emby-test replace --confirm emby-mac-test-replace
+```
+
+Library creation, library scans, playback, and runtime requests are deliberately
+absent from this tool. Those remain blocked until the managed replacement passes
+identity, mount, loopback-port, MediaRouter-polling, and stability validation.
+
+### Rollback model
+
+Rollback stops and removes only the replacement container, retains the cloned
+volume and protected backup, renames the retained original container back to
+`MacEmbyTester`, and starts it:
+
+```sh
+scripts/mac-mini-emby-test rollback --confirm emby-mac-test-rollback
+```
+
+Rollback restores the known previous deployment, including its wildcard port and
+unsafe legacy mounts. It is an incident-recovery path, not the desired secure
+state. The original container and anonymous volume must not be deleted until a
+separate approval explicitly retires them.
+
+### Managed replacement result (2026-08-02)
+
+The controlled migration retained the original container, stopped, as
+`MacEmbyTester-rollback-20260802-001317` and retained its authoritative anonymous
+volume `be434b05f00eb341f06016c078d9b852990188a14ccead1884fdf2157061cc73`.
+The managed replacement uses `emby-mac-test-config-v1`, preserved server identity
+`312374cb311f4fa28ba32489efc20e39`, and passed loopback-port, exact-mount, and
+MediaRouter-polling validation. The protected backup remains local and sensitive;
+its contents must not be inspected or included in evidence.
+
+Emby 4.9.5 can omit `StartupWizardCompleted` from the public system response.
+Replacement verification rejects an explicit incomplete value and otherwise
+confirms configured state from the preserved server identity and version,
+required configuration databases, and MediaRouter's authenticated connection
+test.
+
+One legacy test Movies library already existed in the cloned configuration. The
+migration neither created nor changed it, and no scan ran during migration. The
+ability to suppress external metadata and image providers for new libraries is
+still unresolved. Creating the two Stage 4A lab libraries and running their single
+controlled scan therefore require separate explicit approval and validation.
