@@ -15,7 +15,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from mac_mini_emby import (  # noqa: E402
     CONTAINER, EmbyHarnessError, HOSTNAME, IMAGE, IMAGE_ID, ORIGINAL_ID,
     ORIGINAL_VOLUME, PROJECT, require_available_rollback_name,
-    validate_backup_archive, validate_compose, validate_original_inspect,
+    validate_backup_archive, validate_backup_location, validate_compose,
+    validate_managed_local_root, validate_original_inspect,
     validate_replacement_inspect, validate_volume_name,
 )
 
@@ -48,7 +49,9 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         self.assertEqual(CONTAINER, service["container_name"])
         self.assertEqual(HOSTNAME, service["hostname"])
         self.assertEqual(IMAGE, service["image"])
+        self.assertEqual("linux/arm64", service["platform"])
         self.assertEqual("1m0s", service["stop_grace_period"])
+        self.assertEqual(["no-new-privileges:true"], service["security_opt"])
         self.assertEqual("127.0.0.1", service["ports"][0]["host_ip"])
         targets = {x["target"]: x for x in service["volumes"]}
         self.assertEqual({"/config", "/media-router-test/movies", "/media-router-test/series"}, set(targets))
@@ -68,6 +71,11 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         add("anonymous", lambda c: c["services"]["emby"]["volumes"][0].update(source=""))
         add("extra service", lambda c: c["services"].update(extra={"image":"busybox"}))
         add("privileged", lambda c: c["services"]["emby"].update(privileged=True))
+        add("wrong platform", lambda c: c["services"]["emby"].update(platform="linux/amd64"))
+        add("short stop", lambda c: c["services"]["emby"].update(stop_grace_period="10s"))
+        add("security removed", lambda c: c["services"]["emby"].update(security_opt=[]))
+        add("capability", lambda c: c["services"]["emby"].update(cap_add=["SYS_ADMIN"]))
+        add("host network", lambda c: c["services"]["emby"].update(network_mode="host"))
         for label, mutate in mutations:
             with self.subTest(label=label):
                 config = self.rendered(); mutate(config)
@@ -79,27 +87,57 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
 
     def replacement(self):
         return {"Name":"/MacEmbyTester","Image":IMAGE_ID,"Config":{"Hostname":HOSTNAME},
+                "HostConfig":{"Privileged":False,"Devices":[],"CapAdd":None,"CapDrop":None,
+                              "ExtraHosts":None,"SecurityOpt":["no-new-privileges:true"]},
                 "NetworkSettings":{"Ports":{"8096/tcp":[{"HostIp":"127.0.0.1","HostPort":"8597"}]}},
                 "Mounts":[{"Destination":"/config","Name":self.volume,"RW":True},
-                          {"Destination":"/media-router-test/movies","RW":False},
-                          {"Destination":"/media-router-test/series","RW":False}]}
+                          {"Destination":"/media-router-test/movies","RW":False,
+                           "Source":str(ROOT/".local/mac-mini/outputs/movies")},
+                          {"Destination":"/media-router-test/series","RW":False,
+                           "Source":"/host_mnt"+str(ROOT/".local/mac-mini/outputs/series")}]}
 
     def test_identity_guards(self):
         validate_original_inspect(self.original())
-        validate_replacement_inspect(self.replacement(), self.volume)
+        validate_replacement_inspect(self.replacement(), self.volume, ROOT)
         for key in ("Id", "Image"):
             data=self.original(); data[key]="wrong"
             with self.assertRaises(EmbyHarnessError): validate_original_inspect(data)
         data=self.replacement(); data["NetworkSettings"]["Ports"]["8096/tcp"][0]["HostIp"]="0.0.0.0"
-        with self.assertRaises(EmbyHarnessError): validate_replacement_inspect(data,self.volume)
+        with self.assertRaises(EmbyHarnessError): validate_replacement_inspect(data,self.volume,ROOT)
+        data=self.replacement(); data["Mounts"][1]["Source"]="/tmp/movies"
+        with self.assertRaises(EmbyHarnessError): validate_replacement_inspect(data,self.volume,ROOT)
 
     def test_volume_and_rollback_collision_guards(self):
         self.assertEqual(self.volume, validate_volume_name(self.volume))
-        for value in ("", "../bad", ORIGINAL_VOLUME):
+        for value in ("", "../bad", ORIGINAL_VOLUME, "embyserver-config", "production-config"):
             with self.assertRaises(EmbyHarnessError): validate_volume_name(value)
         name="MacEmbyTester-rollback-20260801-120000"
         self.assertEqual(name,require_available_rollback_name(set(),name))
         with self.assertRaises(EmbyHarnessError): require_available_rollback_name({name},name)
+
+    def test_managed_local_and_backup_paths_reject_escape_and_symlinks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo=Path(temp)/"repo"
+            root=repo/".local/mac-mini/emby-test"
+            backups=root/"backups"
+            backups.mkdir(parents=True)
+            (root/"evidence").mkdir()
+            validate_managed_local_root(root,repo)
+            candidate=backups/"config-20260802T001328Z.tar.gz"
+            validate_backup_location(candidate,backups)
+            with self.assertRaises(EmbyHarnessError):
+                validate_backup_location(repo/"config-20260802T001328Z.tar.gz",backups)
+            link=root/"linked"
+            link.symlink_to(backups,target_is_directory=True)
+            with self.assertRaises(EmbyHarnessError):
+                validate_backup_location(link/"config-20260802T001328Z.tar.gz",backups)
+
+    def test_retained_original_name_is_part_of_identity(self):
+        name="MacEmbyTester-rollback-20260802-001317"
+        data=self.original(); data["Name"]="/"+name
+        validate_original_inspect(data,ORIGINAL_ID,name)
+        with self.assertRaises(EmbyHarnessError):
+            validate_original_inspect(data,ORIGINAL_ID,"MacEmbyTester-rollback-20260802-999999")
 
     def test_backup_archive_permissions_and_members(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -135,6 +173,10 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         self.assertNotIn("library-create",text)
         self.assertNotIn("scan-library",text)
         self.assertNotIn("ssh ",text.casefold())
+        self.assertIn('compose stop -t 60',text)
+        self.assertNotIn('docker kill',text)
+        self.assertIn('StartupWizardCompleted',text)
+        self.assertIn('safety-check) render >/dev/null;',text)
 
     def test_unit_tests_never_execute_docker_mutations(self):
         # Rendering uses `docker compose config`; all mutation behavior is tested

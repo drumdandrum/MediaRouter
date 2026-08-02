@@ -379,3 +379,25 @@ Rollback restores the known previous deployment, including its wildcard port and
 unsafe legacy mounts. It is an incident-recovery path, not the desired secure
 state. The original container and anonymous volume must not be deleted until a
 separate approval explicitly retires them.
+
+### Managed replacement result (2026-08-02)
+
+The controlled migration retained the original container, stopped, as
+`MacEmbyTester-rollback-20260802-001317` and retained its authoritative anonymous
+volume `be434b05f00eb341f06016c078d9b852990188a14ccead1884fdf2157061cc73`.
+The managed replacement uses `emby-mac-test-config-v1`, preserved server identity
+`312374cb311f4fa28ba32489efc20e39`, and passed loopback-port, exact-mount, and
+MediaRouter-polling validation. The protected backup remains local and sensitive;
+its contents must not be inspected or included in evidence.
+
+Emby 4.9.5 can omit `StartupWizardCompleted` from the public system response.
+Replacement verification rejects an explicit incomplete value and otherwise
+confirms configured state from the preserved server identity and version,
+required configuration databases, and MediaRouter's authenticated connection
+test.
+
+One legacy test Movies library already existed in the cloned configuration. The
+migration neither created nor changed it, and no scan ran during migration. The
+ability to suppress external metadata and image providers for new libraries is
+still unresolved. Creating the two Stage 4A lab libraries and running their single
+controlled scan therefore require separate explicit approval and validation.
