@@ -318,7 +318,8 @@ testing.
 `127.0.0.1:8597:8096`, mounts one stable named volume at `/config`, and mounts only
 the isolated movie and series STRM roots read-only. It does not mount Live output,
 MediaRouter data, secrets, feed identity, snapshots, the repository root, or any
-production path.
+production path. A 60-second stop grace period allows Emby's service supervisor to
+finish database shutdown before Docker escalates to a forced stop.
 
 Initialize and render the local nonsecret configuration:
 

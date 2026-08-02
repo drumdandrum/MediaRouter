@@ -48,6 +48,7 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         self.assertEqual(CONTAINER, service["container_name"])
         self.assertEqual(HOSTNAME, service["hostname"])
         self.assertEqual(IMAGE, service["image"])
+        self.assertEqual("1m0s", service["stop_grace_period"])
         self.assertEqual("127.0.0.1", service["ports"][0]["host_ip"])
         targets = {x["target"]: x for x in service["volumes"]}
         self.assertEqual({"/config", "/media-router-test/movies", "/media-router-test/series"}, set(targets))
