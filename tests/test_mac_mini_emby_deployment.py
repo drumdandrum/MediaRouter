@@ -291,7 +291,7 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
             self.assertEqual(b"winner archive",archive.read_bytes())
             self.assertEqual("validated",json.loads(metadata.read_text())["backup_status"])
             self.assertTrue(claim.is_dir())
-            self.assertFalse(temporary.exists())
+            self.assertEqual("loser temporary",temporary.read_text())
 
     def test_owner_cleanup_removes_only_unpublished_current_archive(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -321,6 +321,7 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
             cleanup_unpublished_backup(archive,metadata,temporary,root,claim_owned=False)
             self.assertEqual(b"successful archive",archive.read_bytes())
             self.assertEqual("validated",json.loads(metadata.read_text())["backup_status"])
+            self.assertEqual("loser",temporary.read_text())
 
             owner_temporary=root/".managed-metadata.owner"
             owner_temporary.write_text("owner")

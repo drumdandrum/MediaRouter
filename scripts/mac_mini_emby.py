@@ -134,8 +134,10 @@ def cleanup_unpublished_backup(
     if (temporary.parent.resolve() != backup_root.resolve()
             or not temporary.name.startswith(".managed-metadata.")):
         raise EmbyHarnessError("unsafe managed metadata cleanup path")
+    if not claim_owned:
+        return
     temporary.unlink(missing_ok=True)
-    if not claim_owned or archive is None or metadata is None or os.path.lexists(metadata):
+    if archive is None or metadata is None or os.path.lexists(metadata):
         return
     validate_backup_location(archive, backup_root)
     if metadata != Path(str(archive) + ".metadata.json"):
