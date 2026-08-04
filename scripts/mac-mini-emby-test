@@ -231,7 +231,33 @@ managed_backup() {
   inspect_file=$(mktemp "$LOCAL_ROOT/.managed-inspect.XXXXXX")
   baseline_before=$(mktemp "$LOCAL_ROOT/.router-baseline-before.XXXXXX")
   baseline_after=$(mktemp "$LOCAL_ROOT/.router-baseline-after.XXXXXX")
-  trap 'python3 -c '\''from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:]]'\'' "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after"' EXIT HUP INT TERM
+  metadata_temporary=$(mktemp "$BACKUP_ROOT/.managed-metadata.XXXXXX")
+  archive=
+  metadata=
+  archive_validated=false
+  managed_needs_restart=false
+  managed_backup_exit() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    if [ "$managed_needs_restart" = true ]; then
+      compose start "$SERVICE" >/dev/null 2>&1 || echo "Best-effort managed Emby restart failed." >&2
+    fi
+    if [ "$archive_validated" != true ]; then
+      python3 -c 'from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:] if p]' \
+        "$archive" "$metadata" "$metadata_temporary" >/dev/null 2>&1 || true
+    else
+      python3 -c 'from pathlib import Path; import sys; Path(sys.argv[1]).unlink(missing_ok=True)' \
+        "$metadata_temporary" >/dev/null 2>&1 || true
+    fi
+    python3 -c 'from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:] if p]' \
+      "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after" \
+      >/dev/null 2>&1 || true
+    exit "$status"
+  }
+  trap managed_backup_exit EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   managed_container_guard "$ids_file" "$inspect_file"
   pre_identity=$(capture_emby_identity)
   capture_router_baseline "$baseline_before"
@@ -246,7 +272,6 @@ managed_backup() {
   }
   python3 "$HELPER" validate-backup-location "$archive" "$BACKUP_ROOT"
   managed_needs_restart=true
-  trap 'status=$?; if [ "$managed_needs_restart" = true ]; then compose start "$SERVICE" >/dev/null 2>&1 || echo "Best-effort managed Emby restart failed." >&2; fi; python3 -c '\''from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:]]'\'' "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after"; exit $status' EXIT HUP INT TERM
   compose stop -t 60 "$SERVICE" >/dev/null
   [ "$(docker inspect -f '{{.State.Status}}' "$MANAGED_CONTAINER_ID")" = "exited" ] || {
     echo "Managed Emby did not fully stop before backup." >&2; exit 1;
@@ -260,12 +285,12 @@ managed_backup() {
     exit 1
   fi
   chmod 600 "$archive"
-  if ! python3 "$HELPER" validate-backup "$archive" --require-emby --sqlite >"$metadata"; then
-    python3 -c 'from pathlib import Path; import sys; Path(sys.argv[1]).unlink(missing_ok=True); Path(sys.argv[2]).unlink(missing_ok=True)' "$archive" "$metadata"
+  chmod 600 "$metadata_temporary"
+  if ! python3 "$HELPER" validate-backup "$archive" --require-emby --sqlite >"$metadata_temporary"; then
     echo "Managed config archive validation failed." >&2
     exit 1
   fi
-  python3 - "$metadata" "$stamp" "$MANAGED_CONTAINER_ID" "$MANAGED_IMAGE_ID" "$(volume_name)" "$(basename "$archive")" "$BACKUP_GIT_BRANCH" "$BACKUP_GIT_HEAD" <<'PY'
+  python3 - "$metadata_temporary" "$stamp" "$MANAGED_CONTAINER_ID" "$MANAGED_IMAGE_ID" "$(volume_name)" "$(basename "$archive")" "$BACKUP_GIT_BRANCH" "$BACKUP_GIT_HEAD" <<'PY'
 import json,sys
 path=sys.argv[1]; data=json.load(open(path))
 keys=("timestamp","container_id","image_id","volume_name","archive_filename","git_branch","git_head")
@@ -274,7 +299,9 @@ data.update(backup_mode="managed",compose_project="emby-mac-test",compose_servic
             helper_image="emby/embyserver@sha256:734a6f03c7c783a9e566b08d09a2b6376f41229ff29f032a7e00302e0be98f8a")
 with open(path,"w") as handle: json.dump(data,handle,indent=2,sort_keys=True); handle.write("\n")
 PY
+  mv "$metadata_temporary" "$metadata"
   chmod 600 "$metadata"
+  archive_validated=true
   compose start "$SERVICE" >/dev/null
   verify_replacement >/dev/null
   wait_router_polling

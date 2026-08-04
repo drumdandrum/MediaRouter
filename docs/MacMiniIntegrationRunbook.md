@@ -423,3 +423,20 @@ migration neither created nor changed it, and no scan ran during migration. The
 ability to suppress external metadata and image providers for new libraries is
 still unresolved. Creating the two Stage 4A lab libraries and running their single
 controlled scan therefore require separate explicit approval and validation.
+
+### Legacy-library cleanup result (2026-08-02)
+
+The protected managed backup `managed-config-20260802T211244Z.tar.gz` was used as
+the rollback point for removing only stale library ID `49992`. Its archive SHA-256
+is `0d10359ba2a22806badd5a66103d2316ebb67eb056936869be445d70f7fe454d`;
+the archive remains local, ignored, mode 0600, credential-bearing, and must not be
+opened or copied into evidence.
+
+The global scan task's exact 12-hour trigger was captured, temporarily replaced
+with an empty trigger array, and verified idle. Library `49992` was deleted once
+through the Emby API with `RefreshLibrary=false`; its 4,999 stale movie items
+reached zero without a manual scan or direct database mutation. The original
+12-hour trigger was restored and verified, and no replacement library was created.
+A later natural scheduled scan completed successfully with an empty library
+inventory. Creating the two isolated Stage 4A libraries remains a separate,
+explicitly approved operation.
