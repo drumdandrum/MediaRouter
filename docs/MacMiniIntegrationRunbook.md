@@ -380,10 +380,13 @@ Neither mode is inferred automatically, and neither mode operates on production.
 Managed backup names use a UTC timestamp with one-second precision. Before opening
 the archive path, the process atomically creates an exact per-timestamp claim
 directory beneath the protected backup root. A simultaneous same-name attempt is
-rejected; it does not alter the owner's claim, archive, or metadata. Metadata is
-validated and enriched in a mode-0600 temporary file, then published under the
-final name with an exclusive same-filesystem hard link, so an existing final name
-is never replaced and partially visible final metadata is impossible.
+rejected before any per-run temporary file, archive, helper operation, service
+stop, or volume mount; it does not alter the owner's claim, archive, temporary
+metadata, or final metadata. Cleanup of every backup artifact requires
+process-local ownership of that claim. After ownership is established, metadata
+is validated and enriched in a mode-0600 temporary file, then published under
+the final name with an exclusive same-filesystem hard link, so an existing final
+name is never replaced and partially visible final metadata is impossible.
 
 HUP, INT, and TERM retain statuses 129, 130, and 143. The first signal runs scoped
 cleanup once; repeated termination signals are ignored only until that cleanup

@@ -245,6 +245,17 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         claim=managed.index('acquire-backup-claim "$backup_claim" "$BACKUP_ROOT"')
         temporary=managed.index('metadata_temporary=$(mktemp "$BACKUP_ROOT/.managed-metadata.XXXXXX")')
         self.assertLess(claim,temporary)
+        for artifact in (
+            'ids_file=$(mktemp "$LOCAL_ROOT/.managed-ids.XXXXXX")',
+            'inspect_file=$(mktemp "$LOCAL_ROOT/.managed-inspect.XXXXXX")',
+            'baseline_before=$(mktemp "$LOCAL_ROOT/.router-baseline-before.XXXXXX")',
+            'baseline_after=$(mktemp "$LOCAL_ROOT/.router-baseline-after.XXXXXX")',
+            'render >/dev/null',
+            'managed_container_guard "$ids_file" "$inspect_file"',
+            'compose stop -t 60 "$SERVICE"',
+            'docker run --rm --entrypoint /bin/sh',
+        ):
+            self.assertLess(claim,managed.index(artifact))
         self.assertIn('validate-backup "$archive" --require-emby --sqlite >"$metadata_temporary"',managed)
         self.assertIn('backup_claim="$BACKUP_ROOT/.managed-config-$stamp.lock"',managed)
         self.assertIn('acquire-backup-claim "$backup_claim" "$BACKUP_ROOT"',managed)

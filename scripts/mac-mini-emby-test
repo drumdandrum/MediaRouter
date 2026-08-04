@@ -137,6 +137,23 @@ repository_backup_guard() {
   BACKUP_GIT_HEAD=$head
 }
 
+validate_managed_backup_root() {
+  python3 "$SCRIPT_DIR/mac_mini_harness.py" validate-local-root "$REPO_ROOT/.local/mac-mini" "$REPO_ROOT"
+  python3 "$HELPER" validate-local-root "$LOCAL_ROOT" "$REPO_ROOT"
+  [ -f "$ENV_FILE" ] && [ ! -L "$ENV_FILE" ] || {
+    echo "Run init first; local env must be a regular file." >&2; exit 1;
+  }
+  [ "$(stat -f %Lp "$ENV_FILE")" = "600" ] || {
+    echo "Local env mode must be 0600." >&2; exit 1;
+  }
+  [ -d "$BACKUP_ROOT" ] && [ ! -L "$BACKUP_ROOT" ] || {
+    echo "Managed backup root must already be initialized." >&2; exit 1;
+  }
+  [ "$(stat -f %Lp "$LOCAL_ROOT")" = "700" ] && [ "$(stat -f %Lp "$BACKUP_ROOT")" = "700" ] || {
+    echo "Managed backup root modes must be 0700." >&2; exit 1;
+  }
+}
+
 capture_router_baseline() {
   destination=$1
   python3 - "$destination" "$REPO_ROOT/.local/mac-mini/outputs" <<'PY'
@@ -222,15 +239,14 @@ PY
 
 managed_backup() {
   repository_backup_guard
-  ensure_initialized
-  render >/dev/null
+  validate_managed_backup_root
   [ "$(volume_name)" = "$MANAGED_VOLUME" ] || {
     echo "Managed backup requires the approved stable config volume." >&2; exit 1;
   }
-  ids_file=$(mktemp "$LOCAL_ROOT/.managed-ids.XXXXXX")
-  inspect_file=$(mktemp "$LOCAL_ROOT/.managed-inspect.XXXXXX")
-  baseline_before=$(mktemp "$LOCAL_ROOT/.router-baseline-before.XXXXXX")
-  baseline_after=$(mktemp "$LOCAL_ROOT/.router-baseline-after.XXXXXX")
+  ids_file=
+  inspect_file=
+  baseline_before=
+  baseline_after=
   metadata_temporary=
   archive=
   metadata=
@@ -267,12 +283,6 @@ managed_backup() {
   trap 'exit 129' HUP
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  managed_container_guard "$ids_file" "$inspect_file"
-  pre_identity=$(capture_emby_identity)
-  capture_router_baseline "$baseline_before"
-  "$SCRIPT_DIR/mac-mini-test" smoke >/dev/null
-  scripts_before_runtime=$(docker logs mediarouter-mac-test-app 2>&1 | grep -Ec '(GET|POST) /r/(movie|episode)/' || true)
-  scripts_before_locks=$(docker logs mediarouter-mac-test-app 2>&1 | grep -Eic 'database is locked|traceback' || true)
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
   archive="$BACKUP_ROOT/managed-config-$stamp.tar.gz"
   metadata="$archive.metadata.json"
@@ -282,8 +292,19 @@ managed_backup() {
   }
   python3 "$HELPER" acquire-backup-claim "$backup_claim" "$BACKUP_ROOT"
   backup_claim_owned=true
+  render >/dev/null
+  ids_file=$(mktemp "$LOCAL_ROOT/.managed-ids.XXXXXX")
+  inspect_file=$(mktemp "$LOCAL_ROOT/.managed-inspect.XXXXXX")
+  baseline_before=$(mktemp "$LOCAL_ROOT/.router-baseline-before.XXXXXX")
+  baseline_after=$(mktemp "$LOCAL_ROOT/.router-baseline-after.XXXXXX")
   metadata_temporary=$(mktemp "$BACKUP_ROOT/.managed-metadata.XXXXXX")
   python3 "$HELPER" validate-backup-location "$archive" "$BACKUP_ROOT"
+  managed_container_guard "$ids_file" "$inspect_file"
+  pre_identity=$(capture_emby_identity)
+  capture_router_baseline "$baseline_before"
+  "$SCRIPT_DIR/mac-mini-test" smoke >/dev/null
+  scripts_before_runtime=$(docker logs mediarouter-mac-test-app 2>&1 | grep -Ec '(GET|POST) /r/(movie|episode)/' || true)
+  scripts_before_locks=$(docker logs mediarouter-mac-test-app 2>&1 | grep -Eic 'database is locked|traceback' || true)
   managed_needs_restart=true
   compose stop -t 60 "$SERVICE" >/dev/null
   [ "$(docker inspect -f '{{.State.Status}}' "$MANAGED_CONTAINER_ID")" = "exited" ] || {
