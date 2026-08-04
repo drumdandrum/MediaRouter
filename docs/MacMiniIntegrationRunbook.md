@@ -377,6 +377,27 @@ starts only the managed service, and verifies server identity and MediaRouter
 parity. Any failure after stop triggers a best-effort start of only that service.
 Neither mode is inferred automatically, and neither mode operates on production.
 
+Managed backup names use a UTC timestamp with one-second precision. Before opening
+the archive path, the process atomically creates an exact per-timestamp claim
+directory beneath the protected backup root. A simultaneous same-name attempt is
+rejected; it does not alter the owner's claim, archive, or metadata. Metadata is
+validated and enriched in a mode-0600 temporary file, then published under the
+final name with an exclusive same-filesystem hard link, so an existing final name
+is never replaced and partially visible final metadata is impossible.
+
+HUP, INT, and TERM retain statuses 129, 130, and 143. The first signal runs scoped
+cleanup once; repeated termination signals are ignored only until that cleanup
+finishes. Restart and cleanup failures are reported categorically but do not
+replace the primary status. A validated archive and its published metadata remain
+available if later service-recovery checks fail.
+
+An uncatchable process termination can leave a hidden timestamp claim directory.
+That stale claim conservatively blocks reuse of the same identity and cannot
+damage another backup. It is not removed automatically: an operator must first
+confirm no backup process owns it and that the matching archive/metadata state is
+understood, then remove only that exact empty claim directory. No broad stale-claim
+cleanup command is provided.
+
 The controlled operation requires explicit confirmation:
 
 ```sh

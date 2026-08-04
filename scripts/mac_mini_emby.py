@@ -102,7 +102,45 @@ def publish_metadata_exclusive(source: Path, target: Path, backup_root: Path) ->
         os.link(source, target, follow_symlinks=False)
     except OSError as exc:
         raise EmbyHarnessError("managed metadata publication failed") from exc
-    source.unlink()
+    try:
+        source.unlink()
+    except OSError:
+        # The final name is already complete and valid. The caller's exact-path
+        # cleanup removes the now-redundant temporary link without changing the
+        # successful publication result.
+        pass
+
+
+def acquire_backup_claim(claim: Path, backup_root: Path) -> None:
+    if backup_root.is_symlink() or not backup_root.is_dir():
+        raise EmbyHarnessError("backup root must be a regular directory")
+    if (claim.parent.resolve() != backup_root.resolve() or claim.is_symlink()
+            or not re.fullmatch(r"\.managed-config-[0-9]{8}T[0-9]{6}Z\.lock", claim.name)):
+        raise EmbyHarnessError("unsafe managed backup claim path")
+    try:
+        claim.mkdir(mode=0o700)
+    except FileExistsError as exc:
+        raise EmbyHarnessError("managed backup destination is already claimed") from exc
+    except OSError as exc:
+        raise EmbyHarnessError("managed backup claim creation failed") from exc
+
+
+def cleanup_unpublished_backup(
+    archive: Path | None, metadata: Path | None, temporary: Path,
+    backup_root: Path, *, claim_owned: bool,
+) -> None:
+    if backup_root.is_symlink() or not backup_root.is_dir():
+        raise EmbyHarnessError("backup root must be a regular directory")
+    if (temporary.parent.resolve() != backup_root.resolve()
+            or not temporary.name.startswith(".managed-metadata.")):
+        raise EmbyHarnessError("unsafe managed metadata cleanup path")
+    temporary.unlink(missing_ok=True)
+    if not claim_owned or archive is None or metadata is None or os.path.lexists(metadata):
+        return
+    validate_backup_location(archive, backup_root)
+    if metadata != Path(str(archive) + ".metadata.json"):
+        raise EmbyHarnessError("managed backup cleanup paths do not correspond")
+    archive.unlink(missing_ok=True)
 
 
 def validate_compose(config: dict, repo_root: Path, volume_name: str) -> None:
@@ -320,6 +358,12 @@ def main() -> None:
     publication = sub.add_parser("publish-metadata")
     publication.add_argument("source"); publication.add_argument("target")
     publication.add_argument("root")
+    claim = sub.add_parser("acquire-backup-claim")
+    claim.add_argument("path"); claim.add_argument("root")
+    cleanup = sub.add_parser("cleanup-unpublished-backup")
+    cleanup.add_argument("archive"); cleanup.add_argument("metadata")
+    cleanup.add_argument("temporary"); cleanup.add_argument("root")
+    cleanup.add_argument("--claim-owned", action="store_true")
     volume = sub.add_parser("validate-volume")
     volume.add_argument("name")
     local = sub.add_parser("validate-local-root")
@@ -352,6 +396,14 @@ def main() -> None:
         print(validate_managed_service_ids(json.loads(Path(args.path).read_text())))
     elif args.command == "publish-metadata":
         publish_metadata_exclusive(Path(args.source), Path(args.target), Path(args.root))
+    elif args.command == "acquire-backup-claim":
+        acquire_backup_claim(Path(args.path), Path(args.root))
+    elif args.command == "cleanup-unpublished-backup":
+        cleanup_unpublished_backup(
+            Path(args.archive) if args.archive else None,
+            Path(args.metadata) if args.metadata else None,
+            Path(args.temporary), Path(args.root), claim_owned=args.claim_owned,
+        )
 
 
 if __name__ == "__main__":

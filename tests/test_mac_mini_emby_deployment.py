@@ -1,4 +1,5 @@
 import io
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,7 @@ from mac_mini_emby import (  # noqa: E402
     validate_managed_local_root, validate_original_inspect,
     validate_replacement_inspect, validate_managed_service_ids,
     validate_volume_name, sqlite_checks_from_backup, publish_metadata_exclusive,
+    acquire_backup_claim, cleanup_unpublished_backup,
 )
 
 
@@ -243,10 +245,10 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         self.assertIn('metadata_temporary=$(mktemp "$BACKUP_ROOT/.managed-metadata.XXXXXX")',managed)
         self.assertIn('validate-backup "$archive" --require-emby --sqlite >"$metadata_temporary"',managed)
         self.assertIn('backup_claim="$BACKUP_ROOT/.managed-config-$stamp.lock"',managed)
-        self.assertIn('mkdir "$backup_claim"',managed)
+        self.assertIn('acquire-backup-claim "$backup_claim" "$BACKUP_ROOT"',managed)
         self.assertIn('backup_claim_owned=true',managed)
         self.assertIn('backup_claim_owned=false',managed)
-        self.assertIn('[ "$backup_claim_owned" != true ] || rmdir "$backup_claim"',managed)
+        self.assertIn('if [ "$backup_claim_owned" = true ] && ! rmdir "$backup_claim"',managed)
         self.assertIn('publish-metadata "$metadata_temporary" "$metadata" "$BACKUP_ROOT"',managed)
         self.assertNotIn('mv "$metadata_temporary" "$metadata"',managed)
         self.assertIn('archive_validated=true',managed)
@@ -255,12 +257,76 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         self.assertIn("trap 'exit 130' INT",managed)
         self.assertIn('exit "$status"',managed)
         self.assertIn('>/dev/null 2>&1 || true',managed)
+        self.assertIn('Managed backup artifact cleanup failed; exact current paths may remain.',managed)
+        self.assertIn('Managed backup temporary metadata cleanup failed.',managed)
+        self.assertIn('Managed backup claim cleanup failed: $backup_claim',managed)
         self.assertIn('backup_mode="managed"',managed)
         self.assertIn('backup_status="validated"',managed)
         self.assertIn('compose_project="emby-mac-test"',managed)
         self.assertIn('MANAGED_VOLUME=emby-mac-test-config-v1',text)
         self.assertIn('helper_image="emby/embyserver@sha256:',managed)
         self.assertIn('volume_name',managed)
+
+    def test_concurrent_claim_has_one_winner_and_loser_cannot_clean_winner(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            claim=root/".managed-config-20260803T120000Z.lock"
+            def attempt():
+                try:
+                    acquire_backup_claim(claim,root)
+                    return "won"
+                except EmbyHarnessError:
+                    return "lost"
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results=list(pool.map(lambda _: attempt(),range(2)))
+            self.assertEqual(["lost","won"],sorted(results))
+
+            archive=root/"managed-config-20260803T120000Z.tar.gz"
+            metadata=Path(str(archive)+".metadata.json")
+            temporary=root/".managed-metadata.loser"
+            archive.write_bytes(b"winner archive")
+            metadata.write_text('{"backup_status":"validated"}\n')
+            temporary.write_text("loser temporary")
+            cleanup_unpublished_backup(archive,metadata,temporary,root,claim_owned=False)
+            self.assertEqual(b"winner archive",archive.read_bytes())
+            self.assertEqual("validated",json.loads(metadata.read_text())["backup_status"])
+            self.assertTrue(claim.is_dir())
+            self.assertFalse(temporary.exists())
+
+    def test_owner_cleanup_removes_only_unpublished_current_archive(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            archive=root/"managed-config-20260803T120000Z.tar.gz"
+            metadata=Path(str(archive)+".metadata.json")
+            temporary=root/".managed-metadata.owner"
+            archive.write_bytes(b"partial")
+            temporary.write_text("temporary")
+            cleanup_unpublished_backup(archive,metadata,temporary,root,claim_owned=True)
+            self.assertFalse(archive.exists())
+            self.assertFalse(temporary.exists())
+
+            prior=root/"managed-config-20260803T115959Z.tar.gz"
+            prior.write_bytes(b"prior")
+            self.assertEqual(b"prior",prior.read_bytes())
+
+    def test_existing_archive_or_metadata_is_never_removed_without_ownership(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            archive=root/"managed-config-20260803T120000Z.tar.gz"
+            metadata=Path(str(archive)+".metadata.json")
+            temporary=root/".managed-metadata.loser"
+            archive.write_bytes(b"successful archive")
+            metadata.write_text('{"backup_status":"validated"}\n')
+            temporary.write_text("loser")
+            cleanup_unpublished_backup(archive,metadata,temporary,root,claim_owned=False)
+            self.assertEqual(b"successful archive",archive.read_bytes())
+            self.assertEqual("validated",json.loads(metadata.read_text())["backup_status"])
+
+            owner_temporary=root/".managed-metadata.owner"
+            owner_temporary.write_text("owner")
+            cleanup_unpublished_backup(archive,metadata,owner_temporary,root,claim_owned=True)
+            self.assertEqual(b"successful archive",archive.read_bytes())
+            self.assertEqual("validated",json.loads(metadata.read_text())["backup_status"])
 
     def test_metadata_publication_is_restrictive_atomic_and_no_overwrite(self):
         with tempfile.TemporaryDirectory() as temp:

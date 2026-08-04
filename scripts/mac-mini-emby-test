@@ -246,16 +246,21 @@ managed_backup() {
       compose start "$SERVICE" >/dev/null 2>&1 || echo "Best-effort managed Emby restart failed." >&2
     fi
     if [ "$archive_validated" != true ]; then
-      python3 -c 'from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:] if p]' \
-        "$archive" "$metadata" "$metadata_temporary" >/dev/null 2>&1 || true
+      claim_option=
+      [ "$backup_claim_owned" != true ] || claim_option=--claim-owned
+      python3 "$HELPER" cleanup-unpublished-backup \
+        "$archive" "$metadata" "$metadata_temporary" "$BACKUP_ROOT" $claim_option \
+        >/dev/null 2>&1 || echo "Managed backup artifact cleanup failed; exact current paths may remain." >&2
     else
       python3 -c 'from pathlib import Path; import sys; Path(sys.argv[1]).unlink(missing_ok=True)' \
-        "$metadata_temporary" >/dev/null 2>&1 || true
+        "$metadata_temporary" >/dev/null 2>&1 || echo "Managed backup temporary metadata cleanup failed." >&2
     fi
     python3 -c 'from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:] if p]' \
       "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after" \
       >/dev/null 2>&1 || true
-    [ "$backup_claim_owned" != true ] || rmdir "$backup_claim" >/dev/null 2>&1 || true
+    if [ "$backup_claim_owned" = true ] && ! rmdir "$backup_claim" >/dev/null 2>&1; then
+      echo "Managed backup claim cleanup failed: $backup_claim" >&2
+    fi
     exit "$status"
   }
   trap managed_backup_exit EXIT
@@ -275,9 +280,7 @@ managed_backup() {
   [ ! -e "$archive" ] && [ ! -L "$archive" ] && [ ! -e "$metadata" ] && [ ! -L "$metadata" ] || {
     echo "Managed backup destination already exists." >&2; exit 1;
   }
-  mkdir "$backup_claim" || {
-    echo "Managed backup destination is already claimed." >&2; exit 1;
-  }
+  python3 "$HELPER" acquire-backup-claim "$backup_claim" "$BACKUP_ROOT"
   backup_claim_owned=true
   python3 "$HELPER" validate-backup-location "$archive" "$BACKUP_ROOT"
   managed_needs_restart=true
@@ -333,7 +336,9 @@ PY
   python3 -c 'from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:]]' \
     "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after" \
     >/dev/null 2>&1 || true
-  rmdir "$backup_claim" >/dev/null 2>&1 || true
+  if ! rmdir "$backup_claim" >/dev/null 2>&1; then
+    echo "Managed backup claim cleanup failed: $backup_claim" >&2
+  fi
   backup_claim_owned=false
   trap - EXIT HUP INT TERM
 }
