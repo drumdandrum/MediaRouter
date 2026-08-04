@@ -257,6 +257,8 @@ managed_backup() {
   backup_claim_owned=false
   archive_validated=false
   managed_stop_attempted=false
+  managed_stop_state_checked=false
+  managed_stop_state_ambiguous=false
   managed_service_observed_stopped=false
   managed_recovery_required=false
   managed_restart_attempted=false
@@ -319,7 +321,10 @@ PY
     trap - EXIT
     trap '' HUP INT TERM
     if [ "$backup_claim_owned" = true ]; then
-      if [ "$managed_stop_attempted" = true ] && [ "$managed_service_observed_stopped" != true ]; then
+      if [ "$managed_stop_attempted" = true ] \
+          && [ "$managed_stop_state_checked" != true ] \
+          && [ "$managed_stop_state_ambiguous" != true ] \
+          && [ "$managed_service_observed_stopped" != true ]; then
         managed_state=$(docker inspect -f '{{.State.Status}}' "$MANAGED_CONTAINER_ID" 2>/dev/null || true)
         if [ "$managed_state" = exited ]; then
           managed_service_observed_stopped=true
@@ -384,9 +389,11 @@ PY
   managed_stop_attempted=true
   compose stop -t 60 "$SERVICE" >/dev/null
   if ! managed_state=$(docker inspect -f '{{.State.Status}}' "$MANAGED_CONTAINER_ID"); then
+    managed_stop_state_ambiguous=true
     echo "Managed Emby state could not be verified after stop." >&2
     exit 1
   fi
+  managed_stop_state_checked=true
   [ "$managed_state" = "exited" ] || {
     echo "Managed Emby did not fully stop before backup." >&2; exit 1;
   }

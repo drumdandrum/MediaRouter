@@ -400,6 +400,10 @@ start. Recovery inspection and sanitized evidence use owner-specific temporary
 paths; managed backup does not overwrite the shared replacement evidence file.
 Failures before recovery responsibility is established do not invoke recovery
 inspection, service verification, or start operations.
+If the explicit post-stop state query is ambiguous, or conclusively reports the
+service still running, cleanup does not later reinterpret that result to acquire
+recovery responsibility. Cleanup probes state only when the stop command failed
+or was interrupted before any post-stop state result was obtained.
 If an uncatchable crash leaves the managed service stopped, the operator must
 verify the exact managed container and claim before starting only that service.
 After ownership is established, metadata
