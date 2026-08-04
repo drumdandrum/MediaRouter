@@ -11,6 +11,7 @@ ORIGINAL_VOLUME=be434b05f00eb341f06016c078d9b852990188a14ccead1884fdf2157061cc73
 IMAGE='emby/embyserver@sha256:734a6f03c7c783a9e566b08d09a2b6376f41229ff29f032a7e00302e0be98f8a'
 SERVER_ID=312374cb311f4fa28ba32489efc20e39
 VERSION=4.9.5.0
+MANAGED_VOLUME=emby-mac-test-config-v1
 ENV_FILE="$REPO_ROOT/deploy/mac-mini/.env.emby.test"
 COMPOSE_FILE="$REPO_ROOT/deploy/mac-mini/compose.emby.test.yml"
 LOCAL_ROOT="$REPO_ROOT/.local/mac-mini/emby-test"
@@ -20,7 +21,7 @@ STATE_FILE="$LOCAL_ROOT/replacement-state.json"
 HELPER="$SCRIPT_DIR/mac_mini_emby.py"
 
 usage() {
-  echo "usage: scripts/mac-mini-emby-test {init|config|safety-check|status|backup|clone-config BACKUP|replace --confirm emby-mac-test-replace|verify|rollback --confirm emby-mac-test-rollback|logs}" >&2
+  echo "usage: scripts/mac-mini-emby-test {init|config|safety-check|status|backup --deployment legacy|backup --deployment managed|clone-config BACKUP|replace --confirm emby-mac-test-replace|verify|rollback --confirm emby-mac-test-rollback|logs}" >&2
   exit 2
 }
 
@@ -117,6 +118,345 @@ PY
   printf '%s\n' "$archive"
 }
 
+repository_backup_guard() {
+  branch=$(git -C "$REPO_ROOT" branch --show-current)
+  head=$(git -C "$REPO_ROOT" rev-parse HEAD)
+  [ -n "$branch" ] && [ -n "$head" ] || {
+    echo "Managed backup requires an attached Git branch and commit." >&2; exit 1;
+  }
+  git -C "$REPO_ROOT" merge-base --is-ancestor audit/emby-integration-wip "$head" || {
+    echo "Managed backup HEAD must descend from audit/emby-integration-wip." >&2; exit 1;
+  }
+  [ -z "$(git -C "$REPO_ROOT" status --porcelain)" ] || {
+    echo "Managed backup requires a clean working tree." >&2; exit 1;
+  }
+  case $(printf '%s' "$branch" | tr '[:upper:]' '[:lower:]') in
+    *production*|*embyserver*) echo "Managed backup refuses a production-named branch." >&2; exit 1 ;;
+  esac
+  BACKUP_GIT_BRANCH=$branch
+  BACKUP_GIT_HEAD=$head
+}
+
+validate_managed_backup_root() {
+  python3 "$SCRIPT_DIR/mac_mini_harness.py" validate-local-root "$REPO_ROOT/.local/mac-mini" "$REPO_ROOT"
+  python3 "$HELPER" validate-local-root "$LOCAL_ROOT" "$REPO_ROOT"
+  [ -f "$ENV_FILE" ] && [ ! -L "$ENV_FILE" ] || {
+    echo "Run init first; local env must be a regular file." >&2; exit 1;
+  }
+  [ "$(stat -f %Lp "$ENV_FILE")" = "600" ] || {
+    echo "Local env mode must be 0600." >&2; exit 1;
+  }
+  [ -d "$BACKUP_ROOT" ] && [ ! -L "$BACKUP_ROOT" ] || {
+    echo "Managed backup root must already be initialized." >&2; exit 1;
+  }
+  [ "$(stat -f %Lp "$LOCAL_ROOT")" = "700" ] && [ "$(stat -f %Lp "$BACKUP_ROOT")" = "700" ] || {
+    echo "Managed backup root modes must be 0700." >&2; exit 1;
+  }
+}
+
+capture_router_baseline() {
+  destination=$1
+  python3 - "$destination" "$REPO_ROOT/.local/mac-mini/outputs" <<'PY'
+import hashlib,json,sys,urllib.request
+from pathlib import Path
+base="http://127.0.0.1:18088"
+paths=("/api/catalog/summary","/api/jobs","/api/outputs/strm/history",
+       "/api/outputs/live-m3u/history","/api/integrations/emby/channel-mappings",
+       "/api/integrations/emby/bindings","/api/integrations/emby",
+       "/api/broker/reservations")
+result={}
+for path in paths:
+    with urllib.request.urlopen(base+path,timeout=10) as response:
+        result[path]=json.load(response)
+active=[job for job in result["/api/jobs"] if job.get("status") not in {"complete","failed","cancelled"}]
+if active: raise SystemExit("MediaRouter has an active job; managed backup refused")
+root=Path(sys.argv[2]); files=sorted((p for p in root.rglob("*") if p.is_file()),key=lambda p:p.relative_to(root).as_posix())
+digest=hashlib.sha256()
+for path in files:
+    digest.update(path.relative_to(root).as_posix().encode()); digest.update(b"\0"); digest.update(path.read_bytes())
+result["outputs"]={"file_count":len(files),"total_bytes":sum(p.stat().st_size for p in files),"digest":digest.hexdigest()}
+Path(sys.argv[1]).write_text(json.dumps(result,sort_keys=True)+"\n")
+PY
+  chmod 600 "$destination"
+}
+
+capture_emby_identity() {
+  python3 - "$SERVER_ID" "$VERSION" <<'PY'
+import json,sys,urllib.request
+expected_id,expected_version=sys.argv[1:3]
+with urllib.request.urlopen("http://127.0.0.1:8597/System/Info/Public",timeout=10) as response:
+    data=json.load(response)
+if data.get("Id") != expected_id or data.get("Version") != expected_version:
+    raise SystemExit("managed Emby identity mismatch before backup")
+print(data["Id"]+" "+data["Version"])
+PY
+}
+
+wait_router_polling() {
+  python3 - "$SERVER_ID" "$VERSION" <<'PY'
+import json,sys,time,urllib.request
+expected_id,expected_version=sys.argv[1:3]
+deadline=time.monotonic()+120
+while True:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:18088/api/integrations/emby/status",timeout=10) as response:
+            data=json.load(response)
+        if (data.get("enabled") and data.get("health_state")=="healthy"
+                and data.get("server_id")==expected_id and data.get("server_version")==expected_version
+                and data.get("consecutive_failures")==0 and data.get("last_successful_poll")):
+            break
+    except Exception:
+        pass
+    if time.monotonic()>=deadline: raise SystemExit("MediaRouter Emby polling did not recover")
+    time.sleep(2)
+PY
+}
+
+managed_container_guard() {
+  ids_file=$1
+  inspect_file=$2
+  compose ps -q "$SERVICE" | python3 -c 'import json,sys; print(json.dumps([line.strip() for line in sys.stdin if line.strip()]))' >"$ids_file"
+  managed_id=$(python3 "$HELPER" validate-managed-service-ids "$ids_file")
+  project_ids=$(docker ps --filter "label=com.docker.compose.project=$PROJECT" --format '{{.ID}}')
+  [ "$(printf '%s\n' "$project_ids" | sed '/^$/d' | wc -l | tr -d ' ')" = "1" ] || {
+    echo "Managed backup requires exactly one active project container." >&2; exit 1;
+  }
+  docker inspect "$managed_id" >"$inspect_file.array"
+  python3 - "$inspect_file.array" "$inspect_file" <<'PY'
+import json,sys
+data=json.load(open(sys.argv[1]))
+if len(data)!=1: raise SystemExit("managed container inspect was ambiguous")
+json.dump(data[0],open(sys.argv[2],"w"),sort_keys=True)
+PY
+  python3 "$HELPER" validate-replacement-inspect "$inspect_file" "$(volume_name)" "$REPO_ROOT" "$managed_id"
+  [ "$(docker inspect -f '{{.State.Status}}' "$managed_id")" = "running" ] || {
+    echo "Managed backup requires the Compose service to be running." >&2; exit 1;
+  }
+  MANAGED_CONTAINER_ID=$managed_id
+  MANAGED_IMAGE_ID=$(docker inspect -f '{{.Image}}' "$managed_id")
+  MANAGED_RESTART_COUNT=$(docker inspect -f '{{.RestartCount}}' "$managed_id")
+}
+
+managed_backup() {
+  repository_backup_guard
+  validate_managed_backup_root
+  [ "$(volume_name)" = "$MANAGED_VOLUME" ] || {
+    echo "Managed backup requires the approved stable config volume." >&2; exit 1;
+  }
+  ids_file=
+  inspect_file=
+  baseline_before=
+  baseline_after=
+  compose_evidence=
+  recovery_inspect=
+  recovery_evidence=
+  metadata_temporary=
+  archive=
+  metadata=
+  backup_claim=
+  backup_claim_owned=false
+  archive_validated=false
+  managed_stop_attempted=false
+  managed_stop_state_checked=false
+  managed_stop_state_ambiguous=false
+  managed_service_observed_stopped=false
+  managed_recovery_required=false
+  managed_restart_attempted=false
+  managed_recovery_verified=false
+  revalidate_recovery_container() {
+    recovery_id=$(compose ps -aq "$SERVICE")
+    [ "$recovery_id" = "$MANAGED_CONTAINER_ID" ] || {
+      echo "Managed Emby recovery container identity is ambiguous." >&2
+      return 1
+    }
+    recovery_project_ids=$(docker ps -a --no-trunc --filter "label=com.docker.compose.project=$PROJECT" --format '{{.ID}}')
+    [ "$recovery_project_ids" = "$MANAGED_CONTAINER_ID" ] || {
+      echo "Managed Emby recovery project membership is ambiguous." >&2
+      return 1
+    }
+    docker inspect "$MANAGED_CONTAINER_ID" >"$recovery_inspect.array"
+    python3 - "$recovery_inspect.array" "$recovery_inspect" <<'PY'
+import json,sys
+data=json.load(open(sys.argv[1]))
+if len(data)!=1: raise SystemExit("managed recovery inspect was ambiguous")
+json.dump(data[0],open(sys.argv[2],"w"),sort_keys=True)
+PY
+    python3 "$HELPER" validate-replacement-inspect \
+      "$recovery_inspect" "$(volume_name)" "$REPO_ROOT" "$MANAGED_CONTAINER_ID"
+    recovery_state=$(docker inspect -f '{{.State.Status}}' "$MANAGED_CONTAINER_ID")
+    recovery_port_ids=$(docker ps --no-trunc --filter publish=8597 --format '{{.ID}}')
+    if [ "$recovery_state" = running ]; then
+      [ "$recovery_port_ids" = "$MANAGED_CONTAINER_ID" ] || {
+        echo "Managed Emby recovery port ownership is ambiguous." >&2
+        return 1
+      }
+    elif [ "$recovery_state" = exited ]; then
+      [ -z "$recovery_port_ids" ] || {
+        echo "Managed Emby recovery port is occupied." >&2
+        return 1
+      }
+    else
+      echo "Managed Emby recovery state could not be established." >&2
+      return 1
+    fi
+  }
+  recover_managed_service() {
+    [ "$backup_claim_owned" = true ] && [ "$managed_recovery_required" = true ] || return 0
+    revalidate_recovery_container || return 1
+    if [ "$recovery_state" = running ]; then
+      managed_recovery_required=false
+      return 0
+    fi
+    [ "$recovery_state" = exited ] || {
+      echo "Managed Emby recovery state could not be established." >&2
+      return 1
+    }
+    [ "$managed_restart_attempted" != true ] || return 1
+    managed_restart_attempted=true
+    compose start "$SERVICE" >/dev/null
+    managed_recovery_required=false
+  }
+  managed_backup_exit() {
+    status=$?
+    trap - EXIT
+    trap '' HUP INT TERM
+    if [ "$backup_claim_owned" = true ]; then
+      if [ "$managed_stop_attempted" = true ] \
+          && [ "$managed_stop_state_checked" != true ] \
+          && [ "$managed_stop_state_ambiguous" != true ] \
+          && [ "$managed_service_observed_stopped" != true ]; then
+        managed_state=$(docker inspect -f '{{.State.Status}}' "$MANAGED_CONTAINER_ID" 2>/dev/null || true)
+        if [ "$managed_state" = exited ]; then
+          managed_service_observed_stopped=true
+          managed_recovery_required=true
+        fi
+      fi
+      if [ "$managed_recovery_required" = true ]; then
+        if recover_managed_service >/dev/null 2>&1; then
+          verify_replacement "$recovery_evidence" "$recovery_inspect" >/dev/null 2>&1 \
+            || echo "Best-effort managed Emby recovery verification failed." >&2
+        else
+          echo "Best-effort managed Emby restart failed." >&2
+        fi
+      fi
+      if [ "$archive_validated" != true ]; then
+        python3 "$HELPER" cleanup-unpublished-backup \
+          "$archive" "$metadata" "$metadata_temporary" "$BACKUP_ROOT" --claim-owned \
+          >/dev/null 2>&1 || echo "Managed backup artifact cleanup failed; exact current paths may remain." >&2
+      else
+        python3 -c 'from pathlib import Path; import sys; Path(sys.argv[1]).unlink(missing_ok=True)' \
+          "$metadata_temporary" >/dev/null 2>&1 || echo "Managed backup temporary metadata cleanup failed." >&2
+      fi
+      python3 -c 'from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:] if p]' \
+        "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after" "$compose_evidence" \
+        "$recovery_inspect" "$recovery_inspect.array" "$recovery_evidence" \
+        >/dev/null 2>&1 || true
+      if ! rmdir "$backup_claim" >/dev/null 2>&1; then
+        echo "Managed backup claim cleanup failed: $backup_claim" >&2
+      fi
+    fi
+    exit "$status"
+  }
+  trap managed_backup_exit EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  archive="$BACKUP_ROOT/managed-config-$stamp.tar.gz"
+  metadata="$archive.metadata.json"
+  backup_claim="$BACKUP_ROOT/.managed-config-$stamp.lock"
+  [ ! -e "$archive" ] && [ ! -L "$archive" ] && [ ! -e "$metadata" ] && [ ! -L "$metadata" ] || {
+    echo "Managed backup destination already exists." >&2; exit 1;
+  }
+  python3 "$HELPER" acquire-backup-claim "$backup_claim" "$BACKUP_ROOT"
+  backup_claim_owned=true
+  compose_evidence=$(mktemp "$LOCAL_ROOT/.managed-compose.XXXXXX")
+  recovery_inspect=$(mktemp "$LOCAL_ROOT/.managed-recovery-inspect.XXXXXX")
+  recovery_evidence=$(mktemp "$LOCAL_ROOT/.managed-recovery-evidence.XXXXXX")
+  render "$compose_evidence" >/dev/null
+  ids_file=$(mktemp "$LOCAL_ROOT/.managed-ids.XXXXXX")
+  inspect_file=$(mktemp "$LOCAL_ROOT/.managed-inspect.XXXXXX")
+  baseline_before=$(mktemp "$LOCAL_ROOT/.router-baseline-before.XXXXXX")
+  baseline_after=$(mktemp "$LOCAL_ROOT/.router-baseline-after.XXXXXX")
+  metadata_temporary=$(mktemp "$BACKUP_ROOT/.managed-metadata.XXXXXX")
+  python3 "$HELPER" validate-backup-location "$archive" "$BACKUP_ROOT"
+  managed_container_guard "$ids_file" "$inspect_file"
+  pre_identity=$(capture_emby_identity)
+  capture_router_baseline "$baseline_before"
+  "$SCRIPT_DIR/mac-mini-test" smoke >/dev/null
+  scripts_before_runtime=$(docker logs mediarouter-mac-test-app 2>&1 | grep -Ec '(GET|POST) /r/(movie|episode)/' || true)
+  scripts_before_locks=$(docker logs mediarouter-mac-test-app 2>&1 | grep -Eic 'database is locked|traceback' || true)
+  managed_stop_attempted=true
+  compose stop -t 60 "$SERVICE" >/dev/null
+  if ! managed_state=$(docker inspect -f '{{.State.Status}}' "$MANAGED_CONTAINER_ID"); then
+    managed_stop_state_ambiguous=true
+    echo "Managed Emby state could not be verified after stop." >&2
+    exit 1
+  fi
+  managed_stop_state_checked=true
+  [ "$managed_state" = "exited" ] || {
+    echo "Managed Emby did not fully stop before backup." >&2; exit 1;
+  }
+  managed_service_observed_stopped=true
+  managed_recovery_required=true
+  if ! docker run --rm --entrypoint /bin/sh \
+    --mount "type=volume,src=$(volume_name),dst=/source,readonly" \
+    --mount "type=bind,src=$BACKUP_ROOT,dst=/backup" \
+    "$IMAGE" -c "umask 077; tar -czf /backup/$(basename "$archive") -C /source ."; then
+    python3 -c 'from pathlib import Path; import sys; Path(sys.argv[1]).unlink(missing_ok=True)' "$archive"
+    echo "Managed config archive creation failed." >&2
+    exit 1
+  fi
+  chmod 600 "$archive"
+  chmod 600 "$metadata_temporary"
+  if ! python3 "$HELPER" validate-backup "$archive" --require-emby --sqlite >"$metadata_temporary"; then
+    echo "Managed config archive validation failed." >&2
+    exit 1
+  fi
+  python3 - "$metadata_temporary" "$stamp" "$MANAGED_CONTAINER_ID" "$MANAGED_IMAGE_ID" "$(volume_name)" "$(basename "$archive")" "$BACKUP_GIT_BRANCH" "$BACKUP_GIT_HEAD" <<'PY'
+import json,sys
+path=sys.argv[1]; data=json.load(open(path))
+keys=("timestamp","container_id","image_id","volume_name","archive_filename","git_branch","git_head")
+data.update(dict(zip(keys,sys.argv[2:])))
+data.update(backup_mode="managed",backup_status="validated",
+            compose_project="emby-mac-test",compose_service="emby",
+            helper_image="emby/embyserver@sha256:734a6f03c7c783a9e566b08d09a2b6376f41229ff29f032a7e00302e0be98f8a")
+with open(path,"w") as handle: json.dump(data,handle,indent=2,sort_keys=True); handle.write("\n")
+PY
+  python3 "$HELPER" publish-metadata "$metadata_temporary" "$metadata" "$BACKUP_ROOT"
+  archive_validated=true
+  recover_managed_service
+  managed_service_observed_stopped=false
+  verify_replacement "$recovery_evidence" "$recovery_inspect" >/dev/null
+  wait_router_polling
+  "$SCRIPT_DIR/mac-mini-test" smoke >/dev/null
+  managed_recovery_verified=true
+  managed_stop_attempted=false
+  post_id=$(compose ps -q "$SERVICE")
+  [ "$post_id" = "$MANAGED_CONTAINER_ID" ] || {
+    echo "Managed Emby container identity changed across backup." >&2; exit 1;
+  }
+  post_restart_count=$(docker inspect -f '{{.RestartCount}}' "$post_id")
+  capture_router_baseline "$baseline_after"
+  cmp -s "$baseline_before" "$baseline_after" || {
+    echo "MediaRouter authoritative baseline changed during managed backup." >&2; exit 1;
+  }
+  scripts_after_runtime=$(docker logs mediarouter-mac-test-app 2>&1 | grep -Ec '(GET|POST) /r/(movie|episode)/' || true)
+  scripts_after_locks=$(docker logs mediarouter-mac-test-app 2>&1 | grep -Eic 'database is locked|traceback' || true)
+  [ "$scripts_after_runtime" = "$scripts_before_runtime" ] || { echo "Runtime requests occurred during managed backup." >&2; exit 1; }
+  [ "$scripts_after_locks" = "$scripts_before_locks" ] || { echo "Database lock or traceback count changed during managed backup." >&2; exit 1; }
+  echo "Managed backup passed: archive=$archive metadata=$metadata container_id=$post_id restart_count=$post_restart_count identity=$pre_identity polling=healthy"
+  python3 -c 'from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:]]' \
+    "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after" "$compose_evidence" \
+    "$recovery_inspect" "$recovery_inspect.array" "$recovery_evidence" \
+    >/dev/null 2>&1 || true
+  if ! rmdir "$backup_claim" >/dev/null 2>&1; then
+    echo "Managed backup claim cleanup failed: $backup_claim" >&2
+  fi
+  backup_claim_owned=false
+  trap - EXIT HUP INT TERM
+}
+
 clone_from_backup() {
   archive=$1
   python3 "$HELPER" validate-backup-location "$archive" "$BACKUP_ROOT"
@@ -173,8 +513,8 @@ recover_failed_migration() {
 }
 
 verify_replacement() {
-  output="$EVIDENCE_ROOT/replacement.inspect.json"
-  temporary=$(mktemp "$LOCAL_ROOT/.replacement-inspect.XXXXXX")
+  output=${1:-"$EVIDENCE_ROOT/replacement.inspect.json"}
+  temporary=${2:-$(mktemp "$LOCAL_ROOT/.replacement-inspect.XXXXXX")}
   docker inspect "$CONTAINER" >"$temporary"
   python3 - "$temporary" <<'PY'
 import json,sys
@@ -242,7 +582,14 @@ case "$command" in
   config) cat "$(render)" ;;
   safety-check) render >/dev/null; echo "Managed Emby safety checks passed." ;;
   status) ensure_initialized; compose ps -a; docker ps -a --filter name=MacEmbyTester --format 'name={{.Names}} id={{.ID}} status={{.Status}}' ;;
-  backup) ensure_initialized; backup_stopped ;;
+  backup)
+    [ "$#" -eq 2 ] && [ "$1" = "--deployment" ] || usage
+    case "$2" in
+      legacy) ensure_initialized; backup_stopped ;;
+      managed) managed_backup ;;
+      *) usage ;;
+    esac
+    ;;
   clone-config) [ "$#" -eq 1 ] || usage; ensure_initialized; clone_from_backup "$1" ;;
   replace)
     [ "${1:-}" = "--confirm" ] && [ "${2:-}" = "emby-mac-test-replace" ] || usage

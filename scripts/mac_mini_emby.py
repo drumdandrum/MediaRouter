@@ -25,6 +25,9 @@ ORIGINAL_ID = "d6abf72ac521d48fea45eff4a54a7d60286115734e5f081e1211db79e3dad28f"
 ORIGINAL_VOLUME = "be434b05f00eb341f06016c078d9b852990188a14ccead1884fdf2157061cc73"
 SERVER_ID = "312374cb311f4fa28ba32489efc20e39"
 VERSION = "4.9.5.0"
+REQUIRED_EMBY_BACKUP_PATHS = {
+    "data/activitylog.db", "data/authentication.db", "data/library.db", "data/users.db",
+}
 VOLUME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,127}$")
 FORBIDDEN = (
     "embyserver:", "//embyserver", "/users/shared/mediarouter", "/opt/mediarouter",
@@ -69,8 +72,78 @@ def validate_backup_location(path: Path, backup_root: Path) -> None:
         raise EmbyHarnessError("backup root must be a regular directory")
     if path.is_symlink() or os.path.abspath(path.parent) != os.path.abspath(backup_root):
         raise EmbyHarnessError("backup must remain directly beneath the protected backup root")
-    if not path.name.startswith("config-") or not path.name.endswith(".tar.gz"):
+    if (not path.name.endswith(".tar.gz")
+            or not path.name.startswith(("config-", "managed-config-"))):
         raise EmbyHarnessError("unexpected backup archive name")
+
+
+def validate_managed_service_ids(ids: list[str]) -> str:
+    cleaned = [value.strip() for value in ids if value.strip()]
+    if len(cleaned) != 1 or not re.fullmatch(r"[0-9a-f]{64}", cleaned[0]):
+        raise EmbyHarnessError("managed Compose service must resolve to exactly one container")
+    return cleaned[0]
+
+
+def publish_metadata_exclusive(source: Path, target: Path, backup_root: Path) -> None:
+    """Publish validated metadata atomically without replacing an existing name."""
+    if backup_root.is_symlink() or not backup_root.is_dir():
+        raise EmbyHarnessError("backup root must be a regular directory")
+    if (source.parent.resolve() != backup_root.resolve()
+            or target.parent.resolve() != backup_root.resolve()
+            or source.is_symlink() or not source.is_file()
+            or not source.name.startswith(".managed-metadata.")
+            or not target.name.startswith("managed-config-")
+            or not target.name.endswith(".tar.gz.metadata.json")
+            or stat.S_IMODE(source.stat().st_mode) != 0o600):
+        raise EmbyHarnessError("unsafe managed metadata publication path")
+    if os.path.lexists(target):
+        raise EmbyHarnessError("managed metadata destination already exists")
+    try:
+        os.link(source, target, follow_symlinks=False)
+    except OSError as exc:
+        raise EmbyHarnessError("managed metadata publication failed") from exc
+    try:
+        source.unlink()
+    except OSError:
+        # The final name is already complete and valid. The caller's exact-path
+        # cleanup removes the now-redundant temporary link without changing the
+        # successful publication result.
+        pass
+
+
+def acquire_backup_claim(claim: Path, backup_root: Path) -> None:
+    if backup_root.is_symlink() or not backup_root.is_dir():
+        raise EmbyHarnessError("backup root must be a regular directory")
+    if (claim.parent.resolve() != backup_root.resolve() or claim.is_symlink()
+            or not re.fullmatch(r"\.managed-config-[0-9]{8}T[0-9]{6}Z\.lock", claim.name)):
+        raise EmbyHarnessError("unsafe managed backup claim path")
+    try:
+        claim.mkdir(mode=0o700)
+    except FileExistsError as exc:
+        raise EmbyHarnessError("managed backup destination is already claimed") from exc
+    except OSError as exc:
+        raise EmbyHarnessError("managed backup claim creation failed") from exc
+
+
+def cleanup_unpublished_backup(
+    archive: Path | None, metadata: Path | None, temporary: Path | None,
+    backup_root: Path, *, claim_owned: bool,
+) -> None:
+    if backup_root.is_symlink() or not backup_root.is_dir():
+        raise EmbyHarnessError("backup root must be a regular directory")
+    if not claim_owned:
+        return
+    if temporary is not None:
+        if (temporary.parent.resolve() != backup_root.resolve()
+                or not temporary.name.startswith(".managed-metadata.")):
+            raise EmbyHarnessError("unsafe managed metadata cleanup path")
+        temporary.unlink(missing_ok=True)
+    if archive is None or metadata is None or os.path.lexists(metadata):
+        return
+    validate_backup_location(archive, backup_root)
+    if metadata != Path(str(archive) + ".metadata.json"):
+        raise EmbyHarnessError("managed backup cleanup paths do not correspond")
+    archive.unlink(missing_ok=True)
 
 
 def validate_compose(config: dict, repo_root: Path, volume_name: str) -> None:
@@ -153,12 +226,22 @@ def _docker_desktop_host_path(value: str) -> Path:
     return Path(value)
 
 
-def validate_replacement_inspect(data: dict, volume_name: str, repo_root: Path) -> None:
+def validate_replacement_inspect(
+    data: dict, volume_name: str, repo_root: Path, expected_id: str | None = None
+) -> None:
     validate_volume_name(volume_name)
     if data.get("Name") != f"/{CONTAINER}" or data.get("Image") != IMAGE_ID:
         raise EmbyHarnessError("replacement identity mismatch")
+    if expected_id is not None and data.get("Id") != expected_id:
+        raise EmbyHarnessError("replacement container ID mismatch")
     if (data.get("Config") or {}).get("Hostname") != HOSTNAME:
         raise EmbyHarnessError("replacement hostname mismatch")
+    labels = (data.get("Config") or {}).get("Labels") or {}
+    if (labels.get("com.docker.compose.project") != PROJECT
+            or labels.get("com.docker.compose.service") != SERVICE):
+        raise EmbyHarnessError("replacement Compose ownership mismatch")
+    if (data.get("State") or {}).get("Status") not in {"running", "exited"}:
+        raise EmbyHarnessError("replacement container state is not backup-safe")
     host = data.get("HostConfig") or {}
     if (host.get("Privileged") or host.get("Devices") or host.get("CapAdd")
             or host.get("CapDrop") or host.get("ExtraHosts")
@@ -181,13 +264,16 @@ def validate_replacement_inspect(data: dict, volume_name: str, repo_root: Path) 
             raise EmbyHarnessError("replacement media mounts must be read-only")
 
 
-def validate_backup_archive(path: Path, *, require_mode: bool = True) -> dict[str, object]:
+def validate_backup_archive(
+    path: Path, *, require_mode: bool = True, require_emby_paths: bool = False
+) -> dict[str, object]:
     if path.is_symlink() or not path.is_file():
         raise EmbyHarnessError("backup must be a regular non-symlink file")
     if require_mode and stat.S_IMODE(path.stat().st_mode) != 0o600:
         raise EmbyHarnessError("backup archive mode must be 0600")
     count = total = 0
     database_members: list[str] = []
+    normalized_files: set[str] = set()
     with tarfile.open(path, "r:gz") as bundle:
         seen: set[str] = set()
         for member in bundle.getmembers():
@@ -204,10 +290,15 @@ def validate_backup_archive(path: Path, *, require_mode: bool = True) -> dict[st
             if member.issym() or member.islnk() or not (member.isfile() or member.isdir()):
                 raise EmbyHarnessError("backup contains a link or special member")
             if member.isfile():
+                normalized_files.add(normalized)
                 count += 1
                 total += member.size
                 if normalized.startswith("data/") and normalized.endswith(".db"):
                     database_members.append(member.name)
+    if require_emby_paths:
+        missing = sorted(REQUIRED_EMBY_BACKUP_PATHS - normalized_files)
+        if missing:
+            raise EmbyHarnessError("backup is missing required Emby configuration databases")
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
@@ -261,8 +352,21 @@ def main() -> None:
     original.add_argument("expected_name", nargs="?", default=CONTAINER)
     replacement = sub.add_parser("validate-replacement-inspect")
     replacement.add_argument("path"); replacement.add_argument("volume"); replacement.add_argument("repo")
+    replacement.add_argument("expected_id", nargs="?")
     backup = sub.add_parser("validate-backup")
     backup.add_argument("path"); backup.add_argument("--sqlite", action="store_true")
+    backup.add_argument("--require-emby", action="store_true")
+    service_ids = sub.add_parser("validate-managed-service-ids")
+    service_ids.add_argument("path")
+    publication = sub.add_parser("publish-metadata")
+    publication.add_argument("source"); publication.add_argument("target")
+    publication.add_argument("root")
+    claim = sub.add_parser("acquire-backup-claim")
+    claim.add_argument("path"); claim.add_argument("root")
+    cleanup = sub.add_parser("cleanup-unpublished-backup")
+    cleanup.add_argument("archive"); cleanup.add_argument("metadata")
+    cleanup.add_argument("temporary"); cleanup.add_argument("root")
+    cleanup.add_argument("--claim-owned", action="store_true")
     volume = sub.add_parser("validate-volume")
     volume.add_argument("name")
     local = sub.add_parser("validate-local-root")
@@ -277,9 +381,11 @@ def main() -> None:
             json.loads(Path(args.path).read_text()), args.expected_id, args.expected_name
         )
     elif args.command == "validate-replacement-inspect":
-        validate_replacement_inspect(json.loads(Path(args.path).read_text()), args.volume, Path(args.repo))
+        validate_replacement_inspect(
+            json.loads(Path(args.path).read_text()), args.volume, Path(args.repo), args.expected_id
+        )
     elif args.command == "validate-backup":
-        result = validate_backup_archive(Path(args.path))
+        result = validate_backup_archive(Path(args.path), require_emby_paths=args.require_emby)
         if args.sqlite:
             result["sqlite_integrity"] = sqlite_checks_from_backup(Path(args.path))
         print(json.dumps(result, sort_keys=True))
@@ -289,6 +395,19 @@ def main() -> None:
         validate_managed_local_root(Path(args.path), Path(args.repo))
     elif args.command == "validate-backup-location":
         validate_backup_location(Path(args.path), Path(args.root))
+    elif args.command == "validate-managed-service-ids":
+        print(validate_managed_service_ids(json.loads(Path(args.path).read_text())))
+    elif args.command == "publish-metadata":
+        publish_metadata_exclusive(Path(args.source), Path(args.target), Path(args.root))
+    elif args.command == "acquire-backup-claim":
+        acquire_backup_claim(Path(args.path), Path(args.root))
+    elif args.command == "cleanup-unpublished-backup":
+        cleanup_unpublished_backup(
+            Path(args.archive) if args.archive else None,
+            Path(args.metadata) if args.metadata else None,
+            Path(args.temporary) if args.temporary else None,
+            Path(args.root), claim_owned=args.claim_owned,
+        )
 
 
 if __name__ == "__main__":

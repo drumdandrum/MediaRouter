@@ -355,6 +355,75 @@ volume is never modified. The old container is retained stopped under a timestam
 rollback name, so a failed replacement can return to the exact previous state
 without restoring a database archive.
 
+Backup mode is always explicit. The legacy mode preserves the original-container
+identity and anonymous-volume guards and requires that original container to be
+stopped:
+
+```sh
+scripts/mac-mini-emby-test backup --deployment legacy
+```
+
+The managed mode resolves the one running `emby` service from project
+`emby-mac-test`, validates its exact image, loopback port, security settings, and
+`emby-mac-test-config-v1` mount, then stops only that service for up to 60 seconds:
+
+```sh
+scripts/mac-mini-emby-test backup --deployment managed
+```
+
+It archives the stopped stable volume read-only, validates required Emby databases
+and offline SQLite integrity, records sanitized Git/container/archive metadata,
+starts only the managed service, and verifies server identity and MediaRouter
+parity. Any failure after stop triggers a best-effort start of only that service.
+Neither mode is inferred automatically, and neither mode operates on production.
+
+Managed backup names use a UTC timestamp with one-second precision. Before opening
+the archive path, the process atomically creates an exact per-timestamp claim
+directory beneath the protected backup root. A simultaneous same-name attempt is
+rejected before any per-run temporary file, archive, helper operation, service
+stop, or volume mount; it does not alter the owner's claim, archive, temporary
+metadata, or final metadata. Cleanup of every backup artifact requires
+process-local ownership of that claim; a loser does not invoke artifact or
+evidence cleanup helpers. Compose rendering, container inspection, and baseline
+evidence use owner-specific temporary files that are removed by exact path.
+Service recovery is attempted only after an owner initiated a stop and the
+managed container is observed stopped. Stop-attempt, observed-stopped,
+restart-attempted, and recovery-verified states are tracked separately; a failed
+state query never causes a blind restart, and restart is attempted at most once.
+Recovery rechecks the exact managed container immediately before starting it. If
+another actor already started that container, the backup verifies recovery
+without issuing a redundant start or stopping it again.
+The recheck requires the original container ID, Compose project/service labels,
+pinned image, approved volume and mounts, security settings, and exclusive Docker
+ownership of port 8597. Missing, replaced, or conflicting state fails without a
+start. Recovery inspection and sanitized evidence use owner-specific temporary
+paths; managed backup does not overwrite the shared replacement evidence file.
+Failures before recovery responsibility is established do not invoke recovery
+inspection, service verification, or start operations.
+If the explicit post-stop state query is ambiguous, or conclusively reports the
+service still running, cleanup does not later reinterpret that result to acquire
+recovery responsibility. Cleanup probes state only when the stop command failed
+or was interrupted before any post-stop state result was obtained.
+If an uncatchable crash leaves the managed service stopped, the operator must
+verify the exact managed container and claim before starting only that service.
+After ownership is established, metadata
+is validated and enriched in a mode-0600 temporary file, then published under
+the final name with an exclusive same-filesystem hard link, so an existing final
+name is never replaced and partially visible final metadata is impossible.
+
+HUP, INT, and TERM retain statuses 129, 130, and 143. The first signal runs scoped
+cleanup once; repeated termination signals are ignored only until that cleanup
+finishes. Restart and cleanup failures are reported categorically but do not
+replace the primary status. A validated archive and its published metadata remain
+available if later service-recovery checks fail.
+
+An uncatchable process termination can leave a hidden timestamp claim directory.
+That stale claim conservatively blocks reuse of the same identity and cannot
+damage another backup. It is not removed automatically: an operator must first
+confirm no backup process owns it and that the matching archive/metadata state is
+understood, then remove only that exact empty claim directory. No broad stale-claim
+cleanup command is provided.
+
 The controlled operation requires explicit confirmation:
 
 ```sh
@@ -401,3 +470,22 @@ migration neither created nor changed it, and no scan ran during migration. The
 ability to suppress external metadata and image providers for new libraries is
 still unresolved. Creating the two Stage 4A lab libraries and running their single
 controlled scan therefore require separate explicit approval and validation.
+
+### Legacy-library cleanup result (2026-08-02)
+
+The protected managed backup `managed-config-20260802T211244Z.tar.gz` was used as
+the rollback point for removing only stale library ID `49992`. Its archive SHA-256
+is `0d10359ba2a22806badd5a66103d2316ebb67eb056936869be445d70f7fe454d`;
+the archive remains local, ignored, mode 0600, credential-bearing, and must not be
+opened or copied into evidence.
+
+The global scan task's exact 12-hour trigger was captured, temporarily replaced
+with an empty trigger array, and verified idle. Library `49992` was deleted once
+through the Emby API with `RefreshLibrary=false`; its 4,999 stale movie items
+reached zero without a manual scan or direct database mutation. The original
+12-hour trigger was restored and verified, and no replacement library was created.
+A later natural scheduled scan completed successfully with an empty library
+inventory. Creating the two isolated Stage 4A libraries remains a separate,
+explicitly approved operation. Restoring this backup or the retained original
+container would also restore the stale legacy library and its previous externally
+enabled metadata-provider state.

@@ -1,4 +1,5 @@
 import io
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,9 @@ from mac_mini_emby import (  # noqa: E402
     ORIGINAL_VOLUME, PROJECT, require_available_rollback_name,
     validate_backup_archive, validate_backup_location, validate_compose,
     validate_managed_local_root, validate_original_inspect,
-    validate_replacement_inspect, validate_volume_name,
+    validate_replacement_inspect, validate_managed_service_ids,
+    validate_volume_name, sqlite_checks_from_backup, publish_metadata_exclusive,
+    acquire_backup_claim, cleanup_unpublished_backup,
 )
 
 
@@ -86,7 +89,10 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
                 "Mounts":[{"Destination":"/config","Name":ORIGINAL_VOLUME}]}
 
     def replacement(self):
-        return {"Name":"/MacEmbyTester","Image":IMAGE_ID,"Config":{"Hostname":HOSTNAME},
+        return {"Id":"a"*64,"Name":"/MacEmbyTester","Image":IMAGE_ID,
+                "State":{"Status":"running"},
+                "Config":{"Hostname":HOSTNAME,"Labels":{"com.docker.compose.project":PROJECT,
+                                                           "com.docker.compose.service":"emby"}},
                 "HostConfig":{"Privileged":False,"Devices":[],"CapAdd":None,"CapDrop":None,
                               "ExtraHosts":None,"SecurityOpt":["no-new-privileges:true"]},
                 "NetworkSettings":{"Ports":{"8096/tcp":[{"HostIp":"127.0.0.1","HostPort":"8597"}]}},
@@ -106,6 +112,17 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         with self.assertRaises(EmbyHarnessError): validate_replacement_inspect(data,self.volume,ROOT)
         data=self.replacement(); data["Mounts"][1]["Source"]="/tmp/movies"
         with self.assertRaises(EmbyHarnessError): validate_replacement_inspect(data,self.volume,ROOT)
+        data=self.replacement(); data["Config"]["Labels"]["com.docker.compose.service"]="wrong"
+        with self.assertRaises(EmbyHarnessError): validate_replacement_inspect(data,self.volume,ROOT)
+        with self.assertRaises(EmbyHarnessError):
+            validate_replacement_inspect(self.replacement(),self.volume,ROOT,"b"*64)
+
+    def test_managed_service_resolution_requires_exactly_one_container(self):
+        container="a"*64
+        self.assertEqual(container,validate_managed_service_ids([container]))
+        for values in ([],[container,"b"*64],["short"]):
+            with self.subTest(values=values), self.assertRaises(EmbyHarnessError):
+                validate_managed_service_ids(values)
 
     def test_volume_and_rollback_collision_guards(self):
         self.assertEqual(self.volume, validate_volume_name(self.volume))
@@ -151,6 +168,30 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
             os.chmod(path,0o644)
             with self.assertRaisesRegex(EmbyHarnessError,"0600"): validate_backup_archive(path)
 
+    def test_managed_backup_requires_expected_emby_databases(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/"managed-config-20260802T120000Z.tar.gz"
+            with tarfile.open(path,"w:gz") as bundle:
+                data=b"not sqlite"
+                info=tarfile.TarInfo("data/library.db"); info.size=len(data)
+                bundle.addfile(info,io.BytesIO(data))
+            os.chmod(path,0o600)
+            with self.assertRaisesRegex(EmbyHarnessError,"required Emby"):
+                validate_backup_archive(path,require_emby_paths=True)
+
+    def test_sqlite_validation_failure_propagates(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/"managed-config-20260802T120000Z.tar.gz"
+            with tarfile.open(path,"w:gz") as bundle:
+                for name in ("activitylog.db","authentication.db","library.db","users.db"):
+                    data=b"invalid sqlite database"
+                    info=tarfile.TarInfo("data/"+name); info.size=len(data)
+                    bundle.addfile(info,io.BytesIO(data))
+            os.chmod(path,0o600)
+            validate_backup_archive(path,require_emby_paths=True)
+            with self.assertRaisesRegex(EmbyHarnessError,"integrity"):
+                sqlite_checks_from_backup(path)
+
     def test_backup_rejects_links_traversal_and_special_members(self):
         for label, info in (
             ("traversal",tarfile.TarInfo("../secret")),
@@ -177,6 +218,218 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         self.assertNotIn('docker kill',text)
         self.assertIn('StartupWizardCompleted',text)
         self.assertIn('safety-check) render >/dev/null;',text)
+
+    def test_backup_modes_and_managed_lifecycle_are_explicit_and_ordered(self):
+        script=ROOT/"scripts/mac-mini-emby-test"
+        text=script.read_text()
+        no_mode=subprocess.run([str(script),"backup"],capture_output=True,text=True)
+        self.assertEqual(2,no_mode.returncode)
+        self.assertIn("backup --deployment managed",no_mode.stderr)
+        self.assertIn('backup --deployment legacy',text)
+        self.assertIn('backup --deployment managed',text)
+        self.assertIn('[ "$#" -eq 2 ] && [ "$1" = "--deployment" ]',text)
+        managed=text[text.index("managed_backup() {"):text.index("clone_from_backup() {")]
+        stop=managed.index('compose stop -t 60 "$SERVICE"')
+        archive=managed.index('docker run --rm --entrypoint /bin/sh',stop)
+        restart=managed.index('\n  recover_managed_service\n',archive)
+        verify=managed.index('verify_replacement',restart)
+        polling=managed.index('wait_router_polling',verify)
+        self.assertLess(stop,archive)
+        self.assertLess(archive,restart)
+        self.assertLess(restart,verify)
+        self.assertLess(verify,polling)
+        self.assertIn('capture_emby_identity',managed)
+        self.assertEqual(2,managed.count('mac-mini-test" smoke'))
+        self.assertIn('if [ "$managed_stop_attempted" = true ]',managed)
+        self.assertIn('managed_service_observed_stopped=false',managed)
+        self.assertIn('managed_stop_state_checked=false',managed)
+        self.assertIn('managed_stop_state_ambiguous=false',managed)
+        self.assertIn('managed_recovery_required=false',managed)
+        self.assertIn('managed_restart_attempted=false',managed)
+        self.assertIn('managed_recovery_verified=false',managed)
+        self.assertIn('[ "$managed_service_observed_stopped" != true ]',managed)
+        self.assertIn('[ "$managed_restart_attempted" != true ]',managed)
+        self.assertIn('managed_service_observed_stopped=true',managed)
+        self.assertIn('managed_recovery_required=true',managed)
+        self.assertIn('managed_restart_attempted=true',managed)
+        self.assertIn('managed_recovery_verified=true',managed)
+        self.assertIn('Managed Emby state could not be verified after stop.',managed)
+        self.assertIn('managed_stop_state_ambiguous=true',managed)
+        self.assertIn('managed_stop_state_checked=true',managed)
+        revalidation=managed[managed.index('revalidate_recovery_container() {'):managed.index('recover_managed_service() {')]
+        self.assertIn('compose ps -aq "$SERVICE"',revalidation)
+        self.assertIn('com.docker.compose.project=$PROJECT',revalidation)
+        self.assertIn('validate-replacement-inspect',revalidation)
+        self.assertIn('filter publish=8597',revalidation)
+        self.assertIn('"$recovery_port_ids" = "$MANAGED_CONTAINER_ID"',revalidation)
+        self.assertIn('[ -z "$recovery_port_ids" ]',revalidation)
+        recovery=managed[managed.index('recover_managed_service() {'):managed.index('managed_backup_exit() {')]
+        self.assertIn('[ "$backup_claim_owned" = true ]',recovery)
+        self.assertIn('[ "$managed_recovery_required" = true ]',recovery)
+        self.assertLess(recovery.index('revalidate_recovery_container'),recovery.index('compose start "$SERVICE"'))
+        self.assertIn('if [ "$recovery_state" = running ]; then',recovery)
+        self.assertIn('[ "$recovery_state" = exited ]',recovery)
+        self.assertIn('[ "$managed_restart_attempted" != true ]',recovery)
+        self.assertEqual(1,recovery.count('compose start "$SERVICE"'))
+        self.assertIn('compose start "$SERVICE"',managed)
+        claim=managed.index('acquire-backup-claim "$backup_claim" "$BACKUP_ROOT"')
+        temporary=managed.index('metadata_temporary=$(mktemp "$BACKUP_ROOT/.managed-metadata.XXXXXX")')
+        self.assertLess(claim,temporary)
+        for artifact in (
+            'ids_file=$(mktemp "$LOCAL_ROOT/.managed-ids.XXXXXX")',
+            'inspect_file=$(mktemp "$LOCAL_ROOT/.managed-inspect.XXXXXX")',
+            'baseline_before=$(mktemp "$LOCAL_ROOT/.router-baseline-before.XXXXXX")',
+            'baseline_after=$(mktemp "$LOCAL_ROOT/.router-baseline-after.XXXXXX")',
+            'compose_evidence=$(mktemp "$LOCAL_ROOT/.managed-compose.XXXXXX")',
+            'recovery_inspect=$(mktemp "$LOCAL_ROOT/.managed-recovery-inspect.XXXXXX")',
+            'recovery_evidence=$(mktemp "$LOCAL_ROOT/.managed-recovery-evidence.XXXXXX")',
+            'render "$compose_evidence" >/dev/null',
+            'managed_container_guard "$ids_file" "$inspect_file"',
+            'compose stop -t 60 "$SERVICE"',
+            'docker run --rm --entrypoint /bin/sh',
+        ):
+            self.assertLess(claim,managed.index(artifact))
+        self.assertIn('validate-backup "$archive" --require-emby --sqlite >"$metadata_temporary"',managed)
+        self.assertIn('backup_claim="$BACKUP_ROOT/.managed-config-$stamp.lock"',managed)
+        self.assertIn('acquire-backup-claim "$backup_claim" "$BACKUP_ROOT"',managed)
+        self.assertIn('backup_claim_owned=true',managed)
+        self.assertIn('backup_claim_owned=false',managed)
+        self.assertIn('if ! rmdir "$backup_claim"',managed)
+        self.assertIn('publish-metadata "$metadata_temporary" "$metadata" "$BACKUP_ROOT"',managed)
+        self.assertNotIn('mv "$metadata_temporary" "$metadata"',managed)
+        self.assertIn('archive_validated=true',managed)
+        self.assertIn('trap - EXIT',managed)
+        self.assertIn("trap '' HUP INT TERM",managed)
+        self.assertIn("trap 'exit 130' INT",managed)
+        self.assertIn('exit "$status"',managed)
+        self.assertIn('>/dev/null 2>&1 || true',managed)
+        self.assertIn('Managed backup artifact cleanup failed; exact current paths may remain.',managed)
+        self.assertIn('Managed backup temporary metadata cleanup failed.',managed)
+        exit_handler=managed[managed.index("managed_backup_exit() {"):managed.index("trap managed_backup_exit EXIT")]
+        owner_guard=exit_handler.index('if [ "$backup_claim_owned" = true ]; then')
+        self.assertLess(owner_guard,exit_handler.index('cleanup-unpublished-backup'))
+        self.assertLess(owner_guard,exit_handler.index('"$ids_file" "$inspect_file"'))
+        self.assertLess(owner_guard,exit_handler.index('rmdir "$backup_claim"'))
+        self.assertLess(owner_guard,exit_handler.index('docker inspect -f'))
+        self.assertIn('"$compose_evidence"',exit_handler)
+        self.assertIn('"$recovery_inspect"',exit_handler)
+        self.assertIn('"$recovery_evidence"',exit_handler)
+        recovery_guard=exit_handler.index('if [ "$managed_recovery_required" = true ]; then')
+        self.assertLess(recovery_guard,exit_handler.index('recover_managed_service'))
+        self.assertLess(recovery_guard,exit_handler.index('verify_replacement'))
+        state_probe=exit_handler.index('managed_state=$(docker inspect')
+        self.assertLess(exit_handler.index('[ "$managed_stop_state_checked" != true ]'),state_probe)
+        self.assertLess(exit_handler.index('[ "$managed_stop_state_ambiguous" != true ]'),state_probe)
+        self.assertNotIn('claim_option=',exit_handler)
+        self.assertIn('Managed backup claim cleanup failed: $backup_claim',managed)
+        self.assertIn('backup_mode="managed"',managed)
+        self.assertIn('backup_status="validated"',managed)
+        self.assertIn('compose_project="emby-mac-test"',managed)
+        self.assertIn('MANAGED_VOLUME=emby-mac-test-config-v1',text)
+        self.assertIn('helper_image="emby/embyserver@sha256:',managed)
+        self.assertIn('volume_name',managed)
+
+    def test_concurrent_claim_has_one_winner_and_loser_cannot_clean_winner(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            claim=root/".managed-config-20260803T120000Z.lock"
+            def attempt():
+                try:
+                    acquire_backup_claim(claim,root)
+                    return "won"
+                except EmbyHarnessError:
+                    return "lost"
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results=list(pool.map(lambda _: attempt(),range(2)))
+            self.assertEqual(["lost","won"],sorted(results))
+
+            archive=root/"managed-config-20260803T120000Z.tar.gz"
+            metadata=Path(str(archive)+".metadata.json")
+            temporary=root/".managed-metadata.loser"
+            archive.write_bytes(b"winner archive")
+            metadata.write_text('{"backup_status":"validated"}\n')
+            temporary.write_text("loser temporary")
+            cleanup_unpublished_backup(archive,metadata,temporary,root,claim_owned=False)
+            self.assertEqual(b"winner archive",archive.read_bytes())
+            self.assertEqual("validated",json.loads(metadata.read_text())["backup_status"])
+            self.assertTrue(claim.is_dir())
+            self.assertEqual("loser temporary",temporary.read_text())
+
+            cleanup_unpublished_backup(archive,metadata,None,root,claim_owned=False)
+            self.assertEqual(b"winner archive",archive.read_bytes())
+            self.assertEqual("validated",json.loads(metadata.read_text())["backup_status"])
+
+    def test_owner_cleanup_removes_only_unpublished_current_archive(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            archive=root/"managed-config-20260803T120000Z.tar.gz"
+            metadata=Path(str(archive)+".metadata.json")
+            temporary=root/".managed-metadata.owner"
+            archive.write_bytes(b"partial")
+            temporary.write_text("temporary")
+            cleanup_unpublished_backup(archive,metadata,temporary,root,claim_owned=True)
+            self.assertFalse(archive.exists())
+            self.assertFalse(temporary.exists())
+
+            prior=root/"managed-config-20260803T115959Z.tar.gz"
+            prior.write_bytes(b"prior")
+            self.assertEqual(b"prior",prior.read_bytes())
+
+    def test_existing_archive_or_metadata_is_never_removed_without_ownership(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            archive=root/"managed-config-20260803T120000Z.tar.gz"
+            metadata=Path(str(archive)+".metadata.json")
+            temporary=root/".managed-metadata.loser"
+            archive.write_bytes(b"successful archive")
+            metadata.write_text('{"backup_status":"validated"}\n')
+            temporary.write_text("loser")
+            cleanup_unpublished_backup(archive,metadata,temporary,root,claim_owned=False)
+            self.assertEqual(b"successful archive",archive.read_bytes())
+            self.assertEqual("validated",json.loads(metadata.read_text())["backup_status"])
+            self.assertEqual("loser",temporary.read_text())
+
+            owner_temporary=root/".managed-metadata.owner"
+            owner_temporary.write_text("owner")
+            cleanup_unpublished_backup(archive,metadata,owner_temporary,root,claim_owned=True)
+            self.assertEqual(b"successful archive",archive.read_bytes())
+            self.assertEqual("validated",json.loads(metadata.read_text())["backup_status"])
+
+    def test_metadata_publication_is_restrictive_atomic_and_no_overwrite(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            source=root/".managed-metadata.synthetic"
+            target=root/"managed-config-20260803T120000Z.tar.gz.metadata.json"
+            source.write_text('{"backup_status":"validated"}\n')
+            os.chmod(source,0o600)
+            publish_metadata_exclusive(source,target,root)
+            self.assertFalse(source.exists())
+            self.assertEqual(0o600,stat.S_IMODE(target.stat().st_mode))
+            self.assertEqual("validated",json.loads(target.read_text())["backup_status"])
+
+            second=root/".managed-metadata.second"
+            second.write_text("new metadata")
+            os.chmod(second,0o600)
+            with self.assertRaisesRegex(EmbyHarnessError,"already exists"):
+                publish_metadata_exclusive(second,target,root)
+            self.assertTrue(second.exists())
+            self.assertEqual("validated",json.loads(target.read_text())["backup_status"])
+
+    def test_runbook_records_completed_legacy_cleanup(self):
+        text=(ROOT/"docs/MacMiniIntegrationRunbook.md").read_text()
+        normalized=" ".join(text.split())
+        self.assertIn("Legacy-library cleanup result (2026-08-02)",text)
+        self.assertIn('`RefreshLibrary=false`',text)
+        self.assertIn("4,999 stale movie items reached zero without a manual scan",normalized)
+        self.assertIn("12-hour trigger was restored and verified",normalized)
+        self.assertIn("no replacement library was created",normalized)
+
+    def test_legacy_backup_guards_and_source_remain_preserved(self):
+        text=(ROOT/"scripts/mac-mini-emby-test").read_text()
+        legacy=text[text.index("backup_stopped() {"):text.index("repository_backup_guard() {")]
+        self.assertIn("stopped_original_guard",legacy)
+        self.assertIn('$ORIGINAL_VOLUME,dst=/source,readonly',legacy)
+        self.assertIn('legacy) ensure_initialized; backup_stopped',text)
 
     def test_unit_tests_never_execute_docker_mutations(self):
         # Rendering uses `docker compose config`; all mutation behavior is tested
