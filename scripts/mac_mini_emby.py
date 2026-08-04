@@ -126,17 +126,18 @@ def acquire_backup_claim(claim: Path, backup_root: Path) -> None:
 
 
 def cleanup_unpublished_backup(
-    archive: Path | None, metadata: Path | None, temporary: Path,
+    archive: Path | None, metadata: Path | None, temporary: Path | None,
     backup_root: Path, *, claim_owned: bool,
 ) -> None:
     if backup_root.is_symlink() or not backup_root.is_dir():
         raise EmbyHarnessError("backup root must be a regular directory")
-    if (temporary.parent.resolve() != backup_root.resolve()
-            or not temporary.name.startswith(".managed-metadata.")):
-        raise EmbyHarnessError("unsafe managed metadata cleanup path")
     if not claim_owned:
         return
-    temporary.unlink(missing_ok=True)
+    if temporary is not None:
+        if (temporary.parent.resolve() != backup_root.resolve()
+                or not temporary.name.startswith(".managed-metadata.")):
+            raise EmbyHarnessError("unsafe managed metadata cleanup path")
+        temporary.unlink(missing_ok=True)
     if archive is None or metadata is None or os.path.lexists(metadata):
         return
     validate_backup_location(archive, backup_root)
@@ -404,7 +405,8 @@ def main() -> None:
         cleanup_unpublished_backup(
             Path(args.archive) if args.archive else None,
             Path(args.metadata) if args.metadata else None,
-            Path(args.temporary), Path(args.root), claim_owned=args.claim_owned,
+            Path(args.temporary) if args.temporary else None,
+            Path(args.root), claim_owned=args.claim_owned,
         )
 
 

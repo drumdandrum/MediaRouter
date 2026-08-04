@@ -242,7 +242,9 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         self.assertEqual(2,managed.count('mac-mini-test" smoke'))
         self.assertIn('if [ "$managed_needs_restart" = true ]; then',managed)
         self.assertIn('compose start "$SERVICE"',managed)
-        self.assertIn('metadata_temporary=$(mktemp "$BACKUP_ROOT/.managed-metadata.XXXXXX")',managed)
+        claim=managed.index('acquire-backup-claim "$backup_claim" "$BACKUP_ROOT"')
+        temporary=managed.index('metadata_temporary=$(mktemp "$BACKUP_ROOT/.managed-metadata.XXXXXX")')
+        self.assertLess(claim,temporary)
         self.assertIn('validate-backup "$archive" --require-emby --sqlite >"$metadata_temporary"',managed)
         self.assertIn('backup_claim="$BACKUP_ROOT/.managed-config-$stamp.lock"',managed)
         self.assertIn('acquire-backup-claim "$backup_claim" "$BACKUP_ROOT"',managed)
@@ -259,6 +261,7 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         self.assertIn('>/dev/null 2>&1 || true',managed)
         self.assertIn('Managed backup artifact cleanup failed; exact current paths may remain.',managed)
         self.assertIn('Managed backup temporary metadata cleanup failed.',managed)
+        self.assertIn('elif [ "$backup_claim_owned" = true ]; then',managed)
         self.assertIn('Managed backup claim cleanup failed: $backup_claim',managed)
         self.assertIn('backup_mode="managed"',managed)
         self.assertIn('backup_status="validated"',managed)
@@ -292,6 +295,10 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
             self.assertEqual("validated",json.loads(metadata.read_text())["backup_status"])
             self.assertTrue(claim.is_dir())
             self.assertEqual("loser temporary",temporary.read_text())
+
+            cleanup_unpublished_backup(archive,metadata,None,root,claim_owned=False)
+            self.assertEqual(b"winner archive",archive.read_bytes())
+            self.assertEqual("validated",json.loads(metadata.read_text())["backup_status"])
 
     def test_owner_cleanup_removes_only_unpublished_current_archive(self):
         with tempfile.TemporaryDirectory() as temp:

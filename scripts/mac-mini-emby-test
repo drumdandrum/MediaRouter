@@ -231,7 +231,7 @@ managed_backup() {
   inspect_file=$(mktemp "$LOCAL_ROOT/.managed-inspect.XXXXXX")
   baseline_before=$(mktemp "$LOCAL_ROOT/.router-baseline-before.XXXXXX")
   baseline_after=$(mktemp "$LOCAL_ROOT/.router-baseline-after.XXXXXX")
-  metadata_temporary=$(mktemp "$BACKUP_ROOT/.managed-metadata.XXXXXX")
+  metadata_temporary=
   archive=
   metadata=
   backup_claim=
@@ -251,7 +251,7 @@ managed_backup() {
       python3 "$HELPER" cleanup-unpublished-backup \
         "$archive" "$metadata" "$metadata_temporary" "$BACKUP_ROOT" $claim_option \
         >/dev/null 2>&1 || echo "Managed backup artifact cleanup failed; exact current paths may remain." >&2
-    else
+    elif [ "$backup_claim_owned" = true ]; then
       python3 -c 'from pathlib import Path; import sys; Path(sys.argv[1]).unlink(missing_ok=True)' \
         "$metadata_temporary" >/dev/null 2>&1 || echo "Managed backup temporary metadata cleanup failed." >&2
     fi
@@ -282,6 +282,7 @@ managed_backup() {
   }
   python3 "$HELPER" acquire-backup-claim "$backup_claim" "$BACKUP_ROOT"
   backup_claim_owned=true
+  metadata_temporary=$(mktemp "$BACKUP_ROOT/.managed-metadata.XXXXXX")
   python3 "$HELPER" validate-backup-location "$archive" "$BACKUP_ROOT"
   managed_needs_restart=true
   compose stop -t 60 "$SERVICE" >/dev/null
