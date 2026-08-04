@@ -393,6 +393,11 @@ state query never causes a blind restart, and restart is attempted at most once.
 Recovery rechecks the exact managed container immediately before starting it. If
 another actor already started that container, the backup verifies recovery
 without issuing a redundant start or stopping it again.
+The recheck requires the original container ID, Compose project/service labels,
+pinned image, approved volume and mounts, security settings, and exclusive Docker
+ownership of port 8597. Missing, replaced, or conflicting state fails without a
+start. Recovery inspection and sanitized evidence use owner-specific temporary
+paths; managed backup does not overwrite the shared replacement evidence file.
 If an uncatchable crash leaves the managed service stopped, the operator must
 verify the exact managed container and claim before starting only that service.
 After ownership is established, metadata

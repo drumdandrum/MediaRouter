@@ -252,10 +252,17 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         self.assertIn('managed_restart_attempted=true',managed)
         self.assertIn('managed_recovery_verified=true',managed)
         self.assertIn('Managed Emby state could not be verified after stop.',managed)
+        revalidation=managed[managed.index('revalidate_recovery_container() {'):managed.index('recover_managed_service() {')]
+        self.assertIn('compose ps -aq "$SERVICE"',revalidation)
+        self.assertIn('com.docker.compose.project=$PROJECT',revalidation)
+        self.assertIn('validate-replacement-inspect',revalidation)
+        self.assertIn('filter publish=8597',revalidation)
+        self.assertIn('"$recovery_port_ids" = "$MANAGED_CONTAINER_ID"',revalidation)
+        self.assertIn('[ -z "$recovery_port_ids" ]',revalidation)
         recovery=managed[managed.index('recover_managed_service() {'):managed.index('managed_backup_exit() {')]
         self.assertIn('[ "$backup_claim_owned" = true ]',recovery)
         self.assertIn('[ "$managed_recovery_required" = true ]',recovery)
-        self.assertLess(recovery.index('recovery_state=$(docker inspect'),recovery.index('compose start "$SERVICE"'))
+        self.assertLess(recovery.index('revalidate_recovery_container'),recovery.index('compose start "$SERVICE"'))
         self.assertIn('if [ "$recovery_state" = running ]; then',recovery)
         self.assertIn('[ "$recovery_state" = exited ]',recovery)
         self.assertIn('[ "$managed_restart_attempted" != true ]',recovery)
@@ -270,6 +277,8 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
             'baseline_before=$(mktemp "$LOCAL_ROOT/.router-baseline-before.XXXXXX")',
             'baseline_after=$(mktemp "$LOCAL_ROOT/.router-baseline-after.XXXXXX")',
             'compose_evidence=$(mktemp "$LOCAL_ROOT/.managed-compose.XXXXXX")',
+            'recovery_inspect=$(mktemp "$LOCAL_ROOT/.managed-recovery-inspect.XXXXXX")',
+            'recovery_evidence=$(mktemp "$LOCAL_ROOT/.managed-recovery-evidence.XXXXXX")',
             'render "$compose_evidence" >/dev/null',
             'managed_container_guard "$ids_file" "$inspect_file"',
             'compose stop -t 60 "$SERVICE"',
@@ -299,6 +308,8 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         self.assertLess(owner_guard,exit_handler.index('rmdir "$backup_claim"'))
         self.assertLess(owner_guard,exit_handler.index('docker inspect -f'))
         self.assertIn('"$compose_evidence"',exit_handler)
+        self.assertIn('"$recovery_inspect"',exit_handler)
+        self.assertIn('"$recovery_evidence"',exit_handler)
         self.assertNotIn('claim_option=',exit_handler)
         self.assertIn('Managed backup claim cleanup failed: $backup_claim',managed)
         self.assertIn('backup_mode="managed"',managed)

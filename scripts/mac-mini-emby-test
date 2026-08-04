@@ -248,6 +248,8 @@ managed_backup() {
   baseline_before=
   baseline_after=
   compose_evidence=
+  recovery_inspect=
+  recovery_evidence=
   metadata_temporary=
   archive=
   metadata=
@@ -259,9 +261,46 @@ managed_backup() {
   managed_recovery_required=false
   managed_restart_attempted=false
   managed_recovery_verified=false
+  revalidate_recovery_container() {
+    recovery_id=$(compose ps -aq "$SERVICE")
+    [ "$recovery_id" = "$MANAGED_CONTAINER_ID" ] || {
+      echo "Managed Emby recovery container identity is ambiguous." >&2
+      return 1
+    }
+    recovery_project_ids=$(docker ps -a --no-trunc --filter "label=com.docker.compose.project=$PROJECT" --format '{{.ID}}')
+    [ "$recovery_project_ids" = "$MANAGED_CONTAINER_ID" ] || {
+      echo "Managed Emby recovery project membership is ambiguous." >&2
+      return 1
+    }
+    docker inspect "$MANAGED_CONTAINER_ID" >"$recovery_inspect.array"
+    python3 - "$recovery_inspect.array" "$recovery_inspect" <<'PY'
+import json,sys
+data=json.load(open(sys.argv[1]))
+if len(data)!=1: raise SystemExit("managed recovery inspect was ambiguous")
+json.dump(data[0],open(sys.argv[2],"w"),sort_keys=True)
+PY
+    python3 "$HELPER" validate-replacement-inspect \
+      "$recovery_inspect" "$(volume_name)" "$REPO_ROOT" "$MANAGED_CONTAINER_ID"
+    recovery_state=$(docker inspect -f '{{.State.Status}}' "$MANAGED_CONTAINER_ID")
+    recovery_port_ids=$(docker ps --no-trunc --filter publish=8597 --format '{{.ID}}')
+    if [ "$recovery_state" = running ]; then
+      [ "$recovery_port_ids" = "$MANAGED_CONTAINER_ID" ] || {
+        echo "Managed Emby recovery port ownership is ambiguous." >&2
+        return 1
+      }
+    elif [ "$recovery_state" = exited ]; then
+      [ -z "$recovery_port_ids" ] || {
+        echo "Managed Emby recovery port is occupied." >&2
+        return 1
+      }
+    else
+      echo "Managed Emby recovery state could not be established." >&2
+      return 1
+    fi
+  }
   recover_managed_service() {
     [ "$backup_claim_owned" = true ] && [ "$managed_recovery_required" = true ] || return 0
-    recovery_state=$(docker inspect -f '{{.State.Status}}' "$MANAGED_CONTAINER_ID" 2>/dev/null || true)
+    revalidate_recovery_container || return 1
     if [ "$recovery_state" = running ]; then
       managed_recovery_required=false
       return 0
@@ -287,7 +326,12 @@ managed_backup() {
           managed_recovery_required=true
         fi
       fi
-      recover_managed_service >/dev/null 2>&1 || echo "Best-effort managed Emby restart failed." >&2
+      if recover_managed_service >/dev/null 2>&1; then
+        verify_replacement "$recovery_evidence" "$recovery_inspect" >/dev/null 2>&1 \
+          || echo "Best-effort managed Emby recovery verification failed." >&2
+      else
+        echo "Best-effort managed Emby restart failed." >&2
+      fi
       if [ "$archive_validated" != true ]; then
         python3 "$HELPER" cleanup-unpublished-backup \
           "$archive" "$metadata" "$metadata_temporary" "$BACKUP_ROOT" --claim-owned \
@@ -298,6 +342,7 @@ managed_backup() {
       fi
       python3 -c 'from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:] if p]' \
         "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after" "$compose_evidence" \
+        "$recovery_inspect" "$recovery_inspect.array" "$recovery_evidence" \
         >/dev/null 2>&1 || true
       if ! rmdir "$backup_claim" >/dev/null 2>&1; then
         echo "Managed backup claim cleanup failed: $backup_claim" >&2
@@ -319,6 +364,8 @@ managed_backup() {
   python3 "$HELPER" acquire-backup-claim "$backup_claim" "$BACKUP_ROOT"
   backup_claim_owned=true
   compose_evidence=$(mktemp "$LOCAL_ROOT/.managed-compose.XXXXXX")
+  recovery_inspect=$(mktemp "$LOCAL_ROOT/.managed-recovery-inspect.XXXXXX")
+  recovery_evidence=$(mktemp "$LOCAL_ROOT/.managed-recovery-evidence.XXXXXX")
   render "$compose_evidence" >/dev/null
   ids_file=$(mktemp "$LOCAL_ROOT/.managed-ids.XXXXXX")
   inspect_file=$(mktemp "$LOCAL_ROOT/.managed-inspect.XXXXXX")
@@ -371,7 +418,7 @@ PY
   archive_validated=true
   recover_managed_service
   managed_service_observed_stopped=false
-  verify_replacement >/dev/null
+  verify_replacement "$recovery_evidence" "$recovery_inspect" >/dev/null
   wait_router_polling
   "$SCRIPT_DIR/mac-mini-test" smoke >/dev/null
   managed_recovery_verified=true
@@ -392,6 +439,7 @@ PY
   echo "Managed backup passed: archive=$archive metadata=$metadata container_id=$post_id restart_count=$post_restart_count identity=$pre_identity polling=healthy"
   python3 -c 'from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:]]' \
     "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after" "$compose_evidence" \
+    "$recovery_inspect" "$recovery_inspect.array" "$recovery_evidence" \
     >/dev/null 2>&1 || true
   if ! rmdir "$backup_claim" >/dev/null 2>&1; then
     echo "Managed backup claim cleanup failed: $backup_claim" >&2
@@ -456,8 +504,8 @@ recover_failed_migration() {
 }
 
 verify_replacement() {
-  output="$EVIDENCE_ROOT/replacement.inspect.json"
-  temporary=$(mktemp "$LOCAL_ROOT/.replacement-inspect.XXXXXX")
+  output=${1:-"$EVIDENCE_ROOT/replacement.inspect.json"}
+  temporary=${2:-$(mktemp "$LOCAL_ROOT/.replacement-inspect.XXXXXX")}
   docker inspect "$CONTAINER" >"$temporary"
   python3 - "$temporary" <<'PY'
 import json,sys
