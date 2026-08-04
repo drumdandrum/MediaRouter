@@ -255,16 +255,23 @@ managed_backup() {
   backup_claim_owned=false
   archive_validated=false
   managed_stop_attempted=false
+  managed_service_observed_stopped=false
+  managed_restart_attempted=false
+  managed_recovery_verified=false
   managed_backup_exit() {
     status=$?
     trap - EXIT
     trap '' HUP INT TERM
     if [ "$backup_claim_owned" = true ]; then
-      if [ "$managed_stop_attempted" = true ]; then
+      if [ "$managed_stop_attempted" = true ] && [ "$managed_service_observed_stopped" != true ]; then
         managed_state=$(docker inspect -f '{{.State.Status}}' "$MANAGED_CONTAINER_ID" 2>/dev/null || true)
         if [ "$managed_state" = exited ]; then
-          compose start "$SERVICE" >/dev/null 2>&1 || echo "Best-effort managed Emby restart failed." >&2
+          managed_service_observed_stopped=true
         fi
+      fi
+      if [ "$managed_service_observed_stopped" = true ] && [ "$managed_restart_attempted" != true ]; then
+        managed_restart_attempted=true
+        compose start "$SERVICE" >/dev/null 2>&1 || echo "Best-effort managed Emby restart failed." >&2
       fi
       if [ "$archive_validated" != true ]; then
         python3 "$HELPER" cleanup-unpublished-backup \
@@ -312,9 +319,14 @@ managed_backup() {
   scripts_before_locks=$(docker logs mediarouter-mac-test-app 2>&1 | grep -Eic 'database is locked|traceback' || true)
   managed_stop_attempted=true
   compose stop -t 60 "$SERVICE" >/dev/null
-  [ "$(docker inspect -f '{{.State.Status}}' "$MANAGED_CONTAINER_ID")" = "exited" ] || {
+  if ! managed_state=$(docker inspect -f '{{.State.Status}}' "$MANAGED_CONTAINER_ID"); then
+    echo "Managed Emby state could not be verified after stop." >&2
+    exit 1
+  fi
+  [ "$managed_state" = "exited" ] || {
     echo "Managed Emby did not fully stop before backup." >&2; exit 1;
   }
+  managed_service_observed_stopped=true
   if ! docker run --rm --entrypoint /bin/sh \
     --mount "type=volume,src=$(volume_name),dst=/source,readonly" \
     --mount "type=bind,src=$BACKUP_ROOT,dst=/backup" \
@@ -341,12 +353,14 @@ with open(path,"w") as handle: json.dump(data,handle,indent=2,sort_keys=True); h
 PY
   python3 "$HELPER" publish-metadata "$metadata_temporary" "$metadata" "$BACKUP_ROOT"
   archive_validated=true
+  managed_restart_attempted=true
   compose start "$SERVICE" >/dev/null
-  managed_stop_attempted=false
+  managed_service_observed_stopped=false
   verify_replacement >/dev/null
   wait_router_polling
   "$SCRIPT_DIR/mac-mini-test" smoke >/dev/null
-  managed_needs_restart=false
+  managed_recovery_verified=true
+  managed_stop_attempted=false
   post_id=$(compose ps -q "$SERVICE")
   [ "$post_id" = "$MANAGED_CONTAINER_ID" ] || {
     echo "Managed Emby container identity changed across backup." >&2; exit 1;

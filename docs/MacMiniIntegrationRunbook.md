@@ -387,7 +387,12 @@ process-local ownership of that claim; a loser does not invoke artifact or
 evidence cleanup helpers. Compose rendering, container inspection, and baseline
 evidence use owner-specific temporary files that are removed by exact path.
 Service recovery is attempted only after an owner initiated a stop and the
-managed container is observed stopped. After ownership is established, metadata
+managed container is observed stopped. Stop-attempt, observed-stopped,
+restart-attempted, and recovery-verified states are tracked separately; a failed
+state query never causes a blind restart, and restart is attempted at most once.
+If an uncatchable crash leaves the managed service stopped, the operator must
+verify the exact managed container and claim before starting only that service.
+After ownership is established, metadata
 is validated and enriched in a mode-0600 temporary file, then published under
 the final name with an exclusive same-filesystem hard link, so an existing final
 name is never replaced and partially visible final metadata is impossible.
