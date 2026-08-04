@@ -256,8 +256,25 @@ managed_backup() {
   archive_validated=false
   managed_stop_attempted=false
   managed_service_observed_stopped=false
+  managed_recovery_required=false
   managed_restart_attempted=false
   managed_recovery_verified=false
+  recover_managed_service() {
+    [ "$backup_claim_owned" = true ] && [ "$managed_recovery_required" = true ] || return 0
+    recovery_state=$(docker inspect -f '{{.State.Status}}' "$MANAGED_CONTAINER_ID" 2>/dev/null || true)
+    if [ "$recovery_state" = running ]; then
+      managed_recovery_required=false
+      return 0
+    fi
+    [ "$recovery_state" = exited ] || {
+      echo "Managed Emby recovery state could not be established." >&2
+      return 1
+    }
+    [ "$managed_restart_attempted" != true ] || return 1
+    managed_restart_attempted=true
+    compose start "$SERVICE" >/dev/null
+    managed_recovery_required=false
+  }
   managed_backup_exit() {
     status=$?
     trap - EXIT
@@ -267,12 +284,10 @@ managed_backup() {
         managed_state=$(docker inspect -f '{{.State.Status}}' "$MANAGED_CONTAINER_ID" 2>/dev/null || true)
         if [ "$managed_state" = exited ]; then
           managed_service_observed_stopped=true
+          managed_recovery_required=true
         fi
       fi
-      if [ "$managed_service_observed_stopped" = true ] && [ "$managed_restart_attempted" != true ]; then
-        managed_restart_attempted=true
-        compose start "$SERVICE" >/dev/null 2>&1 || echo "Best-effort managed Emby restart failed." >&2
-      fi
+      recover_managed_service >/dev/null 2>&1 || echo "Best-effort managed Emby restart failed." >&2
       if [ "$archive_validated" != true ]; then
         python3 "$HELPER" cleanup-unpublished-backup \
           "$archive" "$metadata" "$metadata_temporary" "$BACKUP_ROOT" --claim-owned \
@@ -327,6 +342,7 @@ managed_backup() {
     echo "Managed Emby did not fully stop before backup." >&2; exit 1;
   }
   managed_service_observed_stopped=true
+  managed_recovery_required=true
   if ! docker run --rm --entrypoint /bin/sh \
     --mount "type=volume,src=$(volume_name),dst=/source,readonly" \
     --mount "type=bind,src=$BACKUP_ROOT,dst=/backup" \
@@ -353,8 +369,7 @@ with open(path,"w") as handle: json.dump(data,handle,indent=2,sort_keys=True); h
 PY
   python3 "$HELPER" publish-metadata "$metadata_temporary" "$metadata" "$BACKUP_ROOT"
   archive_validated=true
-  managed_restart_attempted=true
-  compose start "$SERVICE" >/dev/null
+  recover_managed_service
   managed_service_observed_stopped=false
   verify_replacement >/dev/null
   wait_router_polling

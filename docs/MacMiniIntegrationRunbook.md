@@ -390,6 +390,9 @@ Service recovery is attempted only after an owner initiated a stop and the
 managed container is observed stopped. Stop-attempt, observed-stopped,
 restart-attempted, and recovery-verified states are tracked separately; a failed
 state query never causes a blind restart, and restart is attempted at most once.
+Recovery rechecks the exact managed container immediately before starting it. If
+another actor already started that container, the backup verifies recovery
+without issuing a redundant start or stopping it again.
 If an uncatchable crash leaves the managed service stopped, the operator must
 verify the exact managed container and claim before starting only that service.
 After ownership is established, metadata
