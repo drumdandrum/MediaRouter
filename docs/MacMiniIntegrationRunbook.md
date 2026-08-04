@@ -384,7 +384,10 @@ rejected before any per-run temporary file, archive, helper operation, service
 stop, or volume mount; it does not alter the owner's claim, archive, temporary
 metadata, or final metadata. Cleanup of every backup artifact requires
 process-local ownership of that claim; a loser does not invoke artifact or
-evidence cleanup helpers. After ownership is established, metadata
+evidence cleanup helpers. Compose rendering, container inspection, and baseline
+evidence use owner-specific temporary files that are removed by exact path.
+Service recovery is attempted only after an owner initiated a stop and the
+managed container is observed stopped. After ownership is established, metadata
 is validated and enriched in a mode-0600 temporary file, then published under
 the final name with an exclusive same-filesystem hard link, so an existing final
 name is never replaced and partially visible final metadata is impossible.

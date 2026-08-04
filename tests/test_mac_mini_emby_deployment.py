@@ -240,7 +240,8 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         self.assertLess(verify,polling)
         self.assertIn('capture_emby_identity',managed)
         self.assertEqual(2,managed.count('mac-mini-test" smoke'))
-        self.assertIn('if [ "$managed_needs_restart" = true ]; then',managed)
+        self.assertIn('if [ "$managed_stop_attempted" = true ]; then',managed)
+        self.assertIn('if [ "$managed_state" = exited ]; then',managed)
         self.assertIn('compose start "$SERVICE"',managed)
         claim=managed.index('acquire-backup-claim "$backup_claim" "$BACKUP_ROOT"')
         temporary=managed.index('metadata_temporary=$(mktemp "$BACKUP_ROOT/.managed-metadata.XXXXXX")')
@@ -250,7 +251,8 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
             'inspect_file=$(mktemp "$LOCAL_ROOT/.managed-inspect.XXXXXX")',
             'baseline_before=$(mktemp "$LOCAL_ROOT/.router-baseline-before.XXXXXX")',
             'baseline_after=$(mktemp "$LOCAL_ROOT/.router-baseline-after.XXXXXX")',
-            'render >/dev/null',
+            'compose_evidence=$(mktemp "$LOCAL_ROOT/.managed-compose.XXXXXX")',
+            'render "$compose_evidence" >/dev/null',
             'managed_container_guard "$ids_file" "$inspect_file"',
             'compose stop -t 60 "$SERVICE"',
             'docker run --rm --entrypoint /bin/sh',
@@ -277,6 +279,8 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         self.assertLess(owner_guard,exit_handler.index('cleanup-unpublished-backup'))
         self.assertLess(owner_guard,exit_handler.index('"$ids_file" "$inspect_file"'))
         self.assertLess(owner_guard,exit_handler.index('rmdir "$backup_claim"'))
+        self.assertLess(owner_guard,exit_handler.index('docker inspect -f'))
+        self.assertIn('"$compose_evidence"',exit_handler)
         self.assertNotIn('claim_option=',exit_handler)
         self.assertIn('Managed backup claim cleanup failed: $backup_claim',managed)
         self.assertIn('backup_mode="managed"',managed)

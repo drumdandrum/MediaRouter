@@ -247,21 +247,25 @@ managed_backup() {
   inspect_file=
   baseline_before=
   baseline_after=
+  compose_evidence=
   metadata_temporary=
   archive=
   metadata=
   backup_claim=
   backup_claim_owned=false
   archive_validated=false
-  managed_needs_restart=false
+  managed_stop_attempted=false
   managed_backup_exit() {
     status=$?
     trap - EXIT
     trap '' HUP INT TERM
-    if [ "$managed_needs_restart" = true ]; then
-      compose start "$SERVICE" >/dev/null 2>&1 || echo "Best-effort managed Emby restart failed." >&2
-    fi
     if [ "$backup_claim_owned" = true ]; then
+      if [ "$managed_stop_attempted" = true ]; then
+        managed_state=$(docker inspect -f '{{.State.Status}}' "$MANAGED_CONTAINER_ID" 2>/dev/null || true)
+        if [ "$managed_state" = exited ]; then
+          compose start "$SERVICE" >/dev/null 2>&1 || echo "Best-effort managed Emby restart failed." >&2
+        fi
+      fi
       if [ "$archive_validated" != true ]; then
         python3 "$HELPER" cleanup-unpublished-backup \
           "$archive" "$metadata" "$metadata_temporary" "$BACKUP_ROOT" --claim-owned \
@@ -271,7 +275,7 @@ managed_backup() {
           "$metadata_temporary" >/dev/null 2>&1 || echo "Managed backup temporary metadata cleanup failed." >&2
       fi
       python3 -c 'from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:] if p]' \
-        "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after" \
+        "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after" "$compose_evidence" \
         >/dev/null 2>&1 || true
       if ! rmdir "$backup_claim" >/dev/null 2>&1; then
         echo "Managed backup claim cleanup failed: $backup_claim" >&2
@@ -292,7 +296,8 @@ managed_backup() {
   }
   python3 "$HELPER" acquire-backup-claim "$backup_claim" "$BACKUP_ROOT"
   backup_claim_owned=true
-  render >/dev/null
+  compose_evidence=$(mktemp "$LOCAL_ROOT/.managed-compose.XXXXXX")
+  render "$compose_evidence" >/dev/null
   ids_file=$(mktemp "$LOCAL_ROOT/.managed-ids.XXXXXX")
   inspect_file=$(mktemp "$LOCAL_ROOT/.managed-inspect.XXXXXX")
   baseline_before=$(mktemp "$LOCAL_ROOT/.router-baseline-before.XXXXXX")
@@ -305,7 +310,7 @@ managed_backup() {
   "$SCRIPT_DIR/mac-mini-test" smoke >/dev/null
   scripts_before_runtime=$(docker logs mediarouter-mac-test-app 2>&1 | grep -Ec '(GET|POST) /r/(movie|episode)/' || true)
   scripts_before_locks=$(docker logs mediarouter-mac-test-app 2>&1 | grep -Eic 'database is locked|traceback' || true)
-  managed_needs_restart=true
+  managed_stop_attempted=true
   compose stop -t 60 "$SERVICE" >/dev/null
   [ "$(docker inspect -f '{{.State.Status}}' "$MANAGED_CONTAINER_ID")" = "exited" ] || {
     echo "Managed Emby did not fully stop before backup." >&2; exit 1;
@@ -337,6 +342,7 @@ PY
   python3 "$HELPER" publish-metadata "$metadata_temporary" "$metadata" "$BACKUP_ROOT"
   archive_validated=true
   compose start "$SERVICE" >/dev/null
+  managed_stop_attempted=false
   verify_replacement >/dev/null
   wait_router_polling
   "$SCRIPT_DIR/mac-mini-test" smoke >/dev/null
@@ -356,7 +362,7 @@ PY
   [ "$scripts_after_locks" = "$scripts_before_locks" ] || { echo "Database lock or traceback count changed during managed backup." >&2; exit 1; }
   echo "Managed backup passed: archive=$archive metadata=$metadata container_id=$post_id restart_count=$post_restart_count identity=$pre_identity polling=healthy"
   python3 -c 'from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:]]' \
-    "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after" \
+    "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after" "$compose_evidence" \
     >/dev/null 2>&1 || true
   if ! rmdir "$backup_claim" >/dev/null 2>&1; then
     echo "Managed backup claim cleanup failed: $backup_claim" >&2
