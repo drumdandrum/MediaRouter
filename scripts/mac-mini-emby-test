@@ -261,21 +261,21 @@ managed_backup() {
     if [ "$managed_needs_restart" = true ]; then
       compose start "$SERVICE" >/dev/null 2>&1 || echo "Best-effort managed Emby restart failed." >&2
     fi
-    if [ "$archive_validated" != true ]; then
-      claim_option=
-      [ "$backup_claim_owned" != true ] || claim_option=--claim-owned
-      python3 "$HELPER" cleanup-unpublished-backup \
-        "$archive" "$metadata" "$metadata_temporary" "$BACKUP_ROOT" $claim_option \
-        >/dev/null 2>&1 || echo "Managed backup artifact cleanup failed; exact current paths may remain." >&2
-    elif [ "$backup_claim_owned" = true ]; then
-      python3 -c 'from pathlib import Path; import sys; Path(sys.argv[1]).unlink(missing_ok=True)' \
-        "$metadata_temporary" >/dev/null 2>&1 || echo "Managed backup temporary metadata cleanup failed." >&2
-    fi
-    python3 -c 'from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:] if p]' \
-      "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after" \
-      >/dev/null 2>&1 || true
-    if [ "$backup_claim_owned" = true ] && ! rmdir "$backup_claim" >/dev/null 2>&1; then
-      echo "Managed backup claim cleanup failed: $backup_claim" >&2
+    if [ "$backup_claim_owned" = true ]; then
+      if [ "$archive_validated" != true ]; then
+        python3 "$HELPER" cleanup-unpublished-backup \
+          "$archive" "$metadata" "$metadata_temporary" "$BACKUP_ROOT" --claim-owned \
+          >/dev/null 2>&1 || echo "Managed backup artifact cleanup failed; exact current paths may remain." >&2
+      else
+        python3 -c 'from pathlib import Path; import sys; Path(sys.argv[1]).unlink(missing_ok=True)' \
+          "$metadata_temporary" >/dev/null 2>&1 || echo "Managed backup temporary metadata cleanup failed." >&2
+      fi
+      python3 -c 'from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:] if p]' \
+        "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after" \
+        >/dev/null 2>&1 || true
+      if ! rmdir "$backup_claim" >/dev/null 2>&1; then
+        echo "Managed backup claim cleanup failed: $backup_claim" >&2
+      fi
     fi
     exit "$status"
   }

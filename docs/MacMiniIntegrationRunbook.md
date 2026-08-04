@@ -383,7 +383,8 @@ directory beneath the protected backup root. A simultaneous same-name attempt is
 rejected before any per-run temporary file, archive, helper operation, service
 stop, or volume mount; it does not alter the owner's claim, archive, temporary
 metadata, or final metadata. Cleanup of every backup artifact requires
-process-local ownership of that claim. After ownership is established, metadata
+process-local ownership of that claim; a loser does not invoke artifact or
+evidence cleanup helpers. After ownership is established, metadata
 is validated and enriched in a mode-0600 temporary file, then published under
 the final name with an exclusive same-filesystem hard link, so an existing final
 name is never replaced and partially visible final metadata is impossible.
