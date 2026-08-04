@@ -326,11 +326,13 @@ PY
           managed_recovery_required=true
         fi
       fi
-      if recover_managed_service >/dev/null 2>&1; then
-        verify_replacement "$recovery_evidence" "$recovery_inspect" >/dev/null 2>&1 \
-          || echo "Best-effort managed Emby recovery verification failed." >&2
-      else
-        echo "Best-effort managed Emby restart failed." >&2
+      if [ "$managed_recovery_required" = true ]; then
+        if recover_managed_service >/dev/null 2>&1; then
+          verify_replacement "$recovery_evidence" "$recovery_inspect" >/dev/null 2>&1 \
+            || echo "Best-effort managed Emby recovery verification failed." >&2
+        else
+          echo "Best-effort managed Emby restart failed." >&2
+        fi
       fi
       if [ "$archive_validated" != true ]; then
         python3 "$HELPER" cleanup-unpublished-backup \

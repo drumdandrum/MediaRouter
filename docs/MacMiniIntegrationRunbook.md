@@ -398,6 +398,8 @@ pinned image, approved volume and mounts, security settings, and exclusive Docke
 ownership of port 8597. Missing, replaced, or conflicting state fails without a
 start. Recovery inspection and sanitized evidence use owner-specific temporary
 paths; managed backup does not overwrite the shared replacement evidence file.
+Failures before recovery responsibility is established do not invoke recovery
+inspection, service verification, or start operations.
 If an uncatchable crash leaves the managed service stopped, the operator must
 verify the exact managed container and claim before starting only that service.
 After ownership is established, metadata
