@@ -439,4 +439,6 @@ reached zero without a manual scan or direct database mutation. The original
 12-hour trigger was restored and verified, and no replacement library was created.
 A later natural scheduled scan completed successfully with an empty library
 inventory. Creating the two isolated Stage 4A libraries remains a separate,
-explicitly approved operation.
+explicitly approved operation. Restoring this backup or the retained original
+container would also restore the stale legacy library and its previous externally
+enabled metadata-provider state.

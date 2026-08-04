@@ -234,11 +234,14 @@ managed_backup() {
   metadata_temporary=$(mktemp "$BACKUP_ROOT/.managed-metadata.XXXXXX")
   archive=
   metadata=
+  backup_claim=
+  backup_claim_owned=false
   archive_validated=false
   managed_needs_restart=false
   managed_backup_exit() {
     status=$?
-    trap - EXIT HUP INT TERM
+    trap - EXIT
+    trap '' HUP INT TERM
     if [ "$managed_needs_restart" = true ]; then
       compose start "$SERVICE" >/dev/null 2>&1 || echo "Best-effort managed Emby restart failed." >&2
     fi
@@ -252,6 +255,7 @@ managed_backup() {
     python3 -c 'from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:] if p]' \
       "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after" \
       >/dev/null 2>&1 || true
+    [ "$backup_claim_owned" != true ] || rmdir "$backup_claim" >/dev/null 2>&1 || true
     exit "$status"
   }
   trap managed_backup_exit EXIT
@@ -267,9 +271,14 @@ managed_backup() {
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
   archive="$BACKUP_ROOT/managed-config-$stamp.tar.gz"
   metadata="$archive.metadata.json"
+  backup_claim="$BACKUP_ROOT/.managed-config-$stamp.lock"
   [ ! -e "$archive" ] && [ ! -L "$archive" ] && [ ! -e "$metadata" ] && [ ! -L "$metadata" ] || {
     echo "Managed backup destination already exists." >&2; exit 1;
   }
+  mkdir "$backup_claim" || {
+    echo "Managed backup destination is already claimed." >&2; exit 1;
+  }
+  backup_claim_owned=true
   python3 "$HELPER" validate-backup-location "$archive" "$BACKUP_ROOT"
   managed_needs_restart=true
   compose stop -t 60 "$SERVICE" >/dev/null
@@ -295,12 +304,12 @@ import json,sys
 path=sys.argv[1]; data=json.load(open(path))
 keys=("timestamp","container_id","image_id","volume_name","archive_filename","git_branch","git_head")
 data.update(dict(zip(keys,sys.argv[2:])))
-data.update(backup_mode="managed",compose_project="emby-mac-test",compose_service="emby",
+data.update(backup_mode="managed",backup_status="validated",
+            compose_project="emby-mac-test",compose_service="emby",
             helper_image="emby/embyserver@sha256:734a6f03c7c783a9e566b08d09a2b6376f41229ff29f032a7e00302e0be98f8a")
 with open(path,"w") as handle: json.dump(data,handle,indent=2,sort_keys=True); handle.write("\n")
 PY
-  mv "$metadata_temporary" "$metadata"
-  chmod 600 "$metadata"
+  python3 "$HELPER" publish-metadata "$metadata_temporary" "$metadata" "$BACKUP_ROOT"
   archive_validated=true
   compose start "$SERVICE" >/dev/null
   verify_replacement >/dev/null
@@ -321,7 +330,11 @@ PY
   [ "$scripts_after_runtime" = "$scripts_before_runtime" ] || { echo "Runtime requests occurred during managed backup." >&2; exit 1; }
   [ "$scripts_after_locks" = "$scripts_before_locks" ] || { echo "Database lock or traceback count changed during managed backup." >&2; exit 1; }
   echo "Managed backup passed: archive=$archive metadata=$metadata container_id=$post_id restart_count=$post_restart_count identity=$pre_identity polling=healthy"
-  python3 -c 'from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:]]' "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after"
+  python3 -c 'from pathlib import Path; import sys; [Path(p).unlink(missing_ok=True) for p in sys.argv[1:]]' \
+    "$ids_file" "$inspect_file" "$inspect_file.array" "$baseline_before" "$baseline_after" \
+    >/dev/null 2>&1 || true
+  rmdir "$backup_claim" >/dev/null 2>&1 || true
+  backup_claim_owned=false
   trap - EXIT HUP INT TERM
 }
 

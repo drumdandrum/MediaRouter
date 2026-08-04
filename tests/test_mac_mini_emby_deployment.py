@@ -18,7 +18,7 @@ from mac_mini_emby import (  # noqa: E402
     validate_backup_archive, validate_backup_location, validate_compose,
     validate_managed_local_root, validate_original_inspect,
     validate_replacement_inspect, validate_managed_service_ids,
-    validate_volume_name, sqlite_checks_from_backup,
+    validate_volume_name, sqlite_checks_from_backup, publish_metadata_exclusive,
 )
 
 
@@ -242,17 +242,45 @@ class ManagedMacMiniEmbyTests(unittest.TestCase):
         self.assertIn('compose start "$SERVICE"',managed)
         self.assertIn('metadata_temporary=$(mktemp "$BACKUP_ROOT/.managed-metadata.XXXXXX")',managed)
         self.assertIn('validate-backup "$archive" --require-emby --sqlite >"$metadata_temporary"',managed)
-        self.assertIn('mv "$metadata_temporary" "$metadata"',managed)
+        self.assertIn('backup_claim="$BACKUP_ROOT/.managed-config-$stamp.lock"',managed)
+        self.assertIn('mkdir "$backup_claim"',managed)
+        self.assertIn('backup_claim_owned=true',managed)
+        self.assertIn('backup_claim_owned=false',managed)
+        self.assertIn('[ "$backup_claim_owned" != true ] || rmdir "$backup_claim"',managed)
+        self.assertIn('publish-metadata "$metadata_temporary" "$metadata" "$BACKUP_ROOT"',managed)
+        self.assertNotIn('mv "$metadata_temporary" "$metadata"',managed)
         self.assertIn('archive_validated=true',managed)
-        self.assertIn('trap - EXIT HUP INT TERM',managed)
+        self.assertIn('trap - EXIT',managed)
+        self.assertIn("trap '' HUP INT TERM",managed)
         self.assertIn("trap 'exit 130' INT",managed)
         self.assertIn('exit "$status"',managed)
         self.assertIn('>/dev/null 2>&1 || true',managed)
         self.assertIn('backup_mode="managed"',managed)
+        self.assertIn('backup_status="validated"',managed)
         self.assertIn('compose_project="emby-mac-test"',managed)
         self.assertIn('MANAGED_VOLUME=emby-mac-test-config-v1',text)
         self.assertIn('helper_image="emby/embyserver@sha256:',managed)
         self.assertIn('volume_name',managed)
+
+    def test_metadata_publication_is_restrictive_atomic_and_no_overwrite(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            source=root/".managed-metadata.synthetic"
+            target=root/"managed-config-20260803T120000Z.tar.gz.metadata.json"
+            source.write_text('{"backup_status":"validated"}\n')
+            os.chmod(source,0o600)
+            publish_metadata_exclusive(source,target,root)
+            self.assertFalse(source.exists())
+            self.assertEqual(0o600,stat.S_IMODE(target.stat().st_mode))
+            self.assertEqual("validated",json.loads(target.read_text())["backup_status"])
+
+            second=root/".managed-metadata.second"
+            second.write_text("new metadata")
+            os.chmod(second,0o600)
+            with self.assertRaisesRegex(EmbyHarnessError,"already exists"):
+                publish_metadata_exclusive(second,target,root)
+            self.assertTrue(second.exists())
+            self.assertEqual("validated",json.loads(target.read_text())["backup_status"])
 
     def test_runbook_records_completed_legacy_cleanup(self):
         text=(ROOT/"docs/MacMiniIntegrationRunbook.md").read_text()

@@ -84,6 +84,27 @@ def validate_managed_service_ids(ids: list[str]) -> str:
     return cleaned[0]
 
 
+def publish_metadata_exclusive(source: Path, target: Path, backup_root: Path) -> None:
+    """Publish validated metadata atomically without replacing an existing name."""
+    if backup_root.is_symlink() or not backup_root.is_dir():
+        raise EmbyHarnessError("backup root must be a regular directory")
+    if (source.parent.resolve() != backup_root.resolve()
+            or target.parent.resolve() != backup_root.resolve()
+            or source.is_symlink() or not source.is_file()
+            or not source.name.startswith(".managed-metadata.")
+            or not target.name.startswith("managed-config-")
+            or not target.name.endswith(".tar.gz.metadata.json")
+            or stat.S_IMODE(source.stat().st_mode) != 0o600):
+        raise EmbyHarnessError("unsafe managed metadata publication path")
+    if os.path.lexists(target):
+        raise EmbyHarnessError("managed metadata destination already exists")
+    try:
+        os.link(source, target, follow_symlinks=False)
+    except OSError as exc:
+        raise EmbyHarnessError("managed metadata publication failed") from exc
+    source.unlink()
+
+
 def validate_compose(config: dict, repo_root: Path, volume_name: str) -> None:
     validate_volume_name(volume_name)
     if config.get("name") != PROJECT:
@@ -296,6 +317,9 @@ def main() -> None:
     backup.add_argument("--require-emby", action="store_true")
     service_ids = sub.add_parser("validate-managed-service-ids")
     service_ids.add_argument("path")
+    publication = sub.add_parser("publish-metadata")
+    publication.add_argument("source"); publication.add_argument("target")
+    publication.add_argument("root")
     volume = sub.add_parser("validate-volume")
     volume.add_argument("name")
     local = sub.add_parser("validate-local-root")
@@ -326,6 +350,8 @@ def main() -> None:
         validate_backup_location(Path(args.path), Path(args.root))
     elif args.command == "validate-managed-service-ids":
         print(validate_managed_service_ids(json.loads(Path(args.path).read_text())))
+    elif args.command == "publish-metadata":
+        publish_metadata_exclusive(Path(args.source), Path(args.target), Path(args.root))
 
 
 if __name__ == "__main__":
