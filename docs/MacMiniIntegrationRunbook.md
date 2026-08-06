@@ -520,7 +520,8 @@ drops all capabilities, enables `no-new-privileges`, and has restart policy
 configuration, both read-only. It has no database, Emby configuration, output,
 secret, snapshot, backup, repository-root, production path, proxy, tunnel, or
 LAN-facing mount or endpoint. Its PID and client, proxy, FastCGI, uWSGI, and
-SCGI temporary paths are explicitly confined to the mode-1777 `/tmp` tmpfs;
+SCGI temporary paths are explicitly configured as direct, uniquely named
+children of the mode-1777 `/tmp` tmpfs, so no pre-created parent is required;
 the read-only root filesystem and stdout/stderr logging require no other
 writable runtime path.
 
