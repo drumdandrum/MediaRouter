@@ -1,0 +1,3 @@
+#EXTM3U
+#EXTINF:-1 CUID="lab-playback-movie-001" tvg-id="lab-playback-movie-001" tvg-name="MediaRouter Playback Test" group-title="LAB PLAYBACK",MediaRouter Playback Test
+http://host.docker.internal:18091/playback-test.mp4

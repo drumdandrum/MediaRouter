@@ -1,0 +1,33 @@
+name: mediarouter-mac-playback-fixture
+
+services:
+  playback-fixture:
+    image: nginxinc/nginx-unprivileged:1.27.5-alpine@sha256:025de0b541bcc6cfbf508e4201aaa37b51d34daaf6d52e5e2753e29a8ddaa869
+    platform: linux/arm64
+    container_name: mediarouter-mac-playback-fixture
+    restart: "no"
+    read_only: true
+    user: "101:101"
+    ports:
+      - "127.0.0.1:18091:8080"
+    volumes:
+      - type: bind
+        source: ${PLAYBACK_FIXTURE_MEDIA_PATH:?set PLAYBACK_FIXTURE_MEDIA_PATH}
+        target: /srv/media
+        read_only: true
+      - type: bind
+        source: ${PLAYBACK_FIXTURE_NGINX_CONFIG:?set PLAYBACK_FIXTURE_NGINX_CONFIG}
+        target: /etc/nginx/nginx.conf
+        read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 2s
+      retries: 6
+      start_period: 5s
