@@ -102,7 +102,7 @@ Normal runtime GET acquisition creates a provisional lease. Only provisional and
 | `PUT` | `/api/outputs/strm/settings` | Updates STRM output settings. |
 | `GET` | `/api/outputs/strm/validate-paths` | Validates output/data/import paths for readability and writability. |
 | `POST` | `/api/outputs/strm/dry-run` | Previews movie/episode STRM output changes without writing files. |
-| `POST` | `/api/outputs/strm/generate` | Starts a STRM generation job; Unlimited mode requires `{"confirm_unlimited": true}`. |
+| `POST` | `/api/outputs/strm/generate` | Starts a global or explicitly catalog-item-scoped STRM generation job; Unlimited mode requires `{"confirm_unlimited": true}`. |
 | `GET` | `/api/outputs/strm/history` | Lists recent STRM output runs. |
 | `GET` | `/api/outputs/strm/generated-files?limit=100&offset=0` | Lists a bounded page of tracked generated STRM files. |
 | `GET` | `/api/outputs/live-m3u/settings` | Reads Live TV M3U output settings. |
@@ -417,7 +417,29 @@ Validation covers the movies output directory, series output directory, `/data`,
 
 `POST /api/outputs/strm/dry-run` returns a summary and operation list showing files that would be created, updated, skipped, removed, or failed. Dry-run does not write STRM files.
 
-`POST /api/outputs/strm/generate` starts a background job. The job result contains created, updated, skipped, removed, failed, movie, episode, output path, and duration counts.
+`POST /api/outputs/strm/generate` starts a background job. Omitting
+`catalog_item_ids`, or setting it to `null`, preserves global generation. A
+bounded explicit scope generates only the named movie and episode catalog
+items:
+
+```json
+{
+  "catalog_item_ids": ["movie_example"],
+  "confirm_unlimited": false
+}
+```
+
+The list accepts 1–100 unique, bounded internal catalog IDs. Missing IDs and
+IDs for series or live channels are rejected before output mutation. Scoped
+runs never enumerate unrelated catalog items for generation, never reconcile
+orphans, and update generated-file tracking only for selected items. They use
+the configured movie/series roots and are not provider, account, source-feed,
+title, or path selectors. Deterministic processing is movie then episode while
+preserving request order within each media type.
+
+The job result contains created, updated, skipped, removed, failed, movie,
+episode, output path, duration, scope mode, requested count/IDs, and orphan
+cleanup metadata. The same bounded metadata is retained in output history.
 
 Progress results also contain total/processed items, percentage, current media type and batch, elapsed time, excluded-by-limit count, capped/unlimited state, worker count, items per second, and average milliseconds per item. They never contain an unbounded generated-file list. `POST /api/jobs/{job_id}/cancel` requests cancellation after the active batch; completed batch files and tracking rows remain committed and the job finishes as `cancelled`.
 
@@ -425,7 +447,9 @@ Each batch log includes catalog-query, path-building, directory-creation, filesy
 
 If generation fails, the job message and result include a friendly failure reason with the exact path that failed. STRM dry-run and generate start/completion, validation summaries, counts, and exceptions are logged to Docker logs and the Media Router Logs page.
 
-Orphan cleanup only applies to files already tracked as generated STRM outputs. Media Router does not delete arbitrary files in output folders.
+Orphan cleanup only applies to files already tracked as generated STRM outputs
+during global runs. It is always skipped for an explicit catalog-item scope.
+Media Router does not delete arbitrary files in output folders.
 
 Sprint 6 does not generate live TV STRM files, XMLTV, HDHomeRun output, media-server sync, proxy streams, or transcodes.
 
