@@ -82,6 +82,7 @@ class PlaybackFixtureTests(unittest.TestCase):
                     ],
                     "cap_drop": ["ALL"],
                     "security_opt": ["no-new-privileges:true"],
+                    "tmpfs": ["/tmp:size=16m,mode=1777"],
                     "healthcheck": {"test": ["CMD", "wget"]},
                 }
             },
@@ -147,7 +148,33 @@ class PlaybackFixtureTests(unittest.TestCase):
         self.assertTrue(all(row["read_only"] for row in service["volumes"]))
         self.assertIn("@sha256:", service["image"])
         self.assertEqual(["ALL"], service["cap_drop"])
+        self.assertEqual(["/tmp:size=16m,mode=1777"], service["tmpfs"])
         self.assertTrue(service["healthcheck"])
+
+    def test_nginx_runtime_writes_are_confined_to_tmpfs(self):
+        config = (ROOT / "deploy/mac-mini/playback-fixture.nginx.conf").read_text(encoding="utf-8")
+        expected = {
+            "pid": "/tmp/nginx.pid",
+            "client_body_temp_path": "/tmp/nginx/client_temp",
+            "proxy_temp_path": "/tmp/nginx/proxy_temp",
+            "fastcgi_temp_path": "/tmp/nginx/fastcgi_temp",
+            "uwsgi_temp_path": "/tmp/nginx/uwsgi_temp",
+            "scgi_temp_path": "/tmp/nginx/scgi_temp",
+        }
+        for directive, path in expected.items():
+            with self.subTest(directive=directive):
+                self.assertIn(f"{directive} {path};", config)
+        self.assertNotIn("/var/cache/nginx", config)
+        self.assertIn("access_log /dev/stdout;", config)
+        self.assertIn("error_log /dev/stderr warn;", config)
+
+    def test_compose_rejects_additional_or_missing_writable_tmpfs(self):
+        for tmpfs in ([], ["/tmp:size=16m,mode=1777", "/run"], ["/tmp:size=16m,mode=0755"]):
+            with self.subTest(tmpfs=tmpfs):
+                config = self.compose_config()
+                config["services"][fixture.SERVICE]["tmpfs"] = tmpfs
+                with self.assertRaisesRegex(fixture.FixtureError, "approved /tmp tmpfs"):
+                    fixture.validate_compose(config, self.repo)
 
     def test_compose_rejects_wildcard_wrong_mount_image_and_privilege(self):
         mutations = [

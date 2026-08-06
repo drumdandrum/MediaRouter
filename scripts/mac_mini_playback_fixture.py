@@ -265,6 +265,8 @@ def validate_compose(config: dict, repo_root: Path) -> None:
         raise FixtureError("fixture container must drop all capabilities")
     if "no-new-privileges:true" not in service.get("security_opt", []):
         raise FixtureError("fixture container must enable no-new-privileges")
+    if service.get("tmpfs") != ["/tmp:size=16m,mode=1777"]:
+        raise FixtureError("fixture container must use only the approved /tmp tmpfs")
     if service.get("restart") not in ("no", "none", None) or not service.get("healthcheck"):
         raise FixtureError("fixture restart and healthcheck policy is unsafe")
 
