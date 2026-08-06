@@ -15,8 +15,35 @@ HELPER="$SCRIPT_DIR/mac_mini_harness.py"
 COMPOSE_FILES="-f $REPO_ROOT/docker-compose.yml -f $REPO_ROOT/deploy/mac-mini/compose.test.yml"
 
 usage() {
-  echo "usage: scripts/mac-mini-test {init|config|start|stop|restart|status|health|logs|credential-status|snapshot NAME|restore NAME --confirm mac-mini-test|reset --confirm mac-mini-test|rollback-tag|smoke|destroy --confirm mac-mini-test}" >&2
+  echo "usage: scripts/mac-mini-test {init|config|start|stop|restart|status|health|logs|credential-status|snapshot NAME|restore NAME --confirm mac-mini-test|reset --confirm mac-mini-test|rollback-tag|smoke|destroy --confirm mac-mini-test|playback-fixture-generate [--overwrite]|playback-fixture-config|playback-fixture-start|playback-fixture-status|playback-fixture-health|playback-fixture-probe|playback-fixture-stop}" >&2
   exit 2
+}
+
+PLAYBACK_FIXTURE_PROJECT=mediarouter-mac-playback-fixture
+PLAYBACK_FIXTURE_SERVICE=playback-fixture
+PLAYBACK_FIXTURE_ROOT="$LOCAL_ROOT/playback-fixture"
+PLAYBACK_FIXTURE_MEDIA_PATH="$PLAYBACK_FIXTURE_ROOT/media"
+PLAYBACK_FIXTURE_NGINX_CONFIG="$REPO_ROOT/deploy/mac-mini/playback-fixture.nginx.conf"
+PLAYBACK_FIXTURE_COMPOSE="$REPO_ROOT/deploy/mac-mini/compose.playback-fixture.yml"
+PLAYBACK_FIXTURE_HELPER="$SCRIPT_DIR/mac_mini_playback_fixture.py"
+
+playback_fixture_compose() {
+  export PLAYBACK_FIXTURE_MEDIA_PATH PLAYBACK_FIXTURE_NGINX_CONFIG
+  if [ "${MAC_MINI_TEST_DRY_RUN:-0}" = "1" ]; then
+    printf '%s\n' "docker compose -p $PLAYBACK_FIXTURE_PROJECT -f $PLAYBACK_FIXTURE_COMPOSE $*"
+    return 0
+  fi
+  docker compose -p "$PLAYBACK_FIXTURE_PROJECT" -f "$PLAYBACK_FIXTURE_COMPOSE" "$@"
+}
+
+validate_playback_fixture_compose() {
+  python3 "$PLAYBACK_FIXTURE_HELPER" validate-media "$REPO_ROOT" >/dev/null
+  rendered=$(mktemp "$PLAYBACK_FIXTURE_ROOT/.compose.effective.XXXXXX")
+  trap 'rm -f -- "$rendered"' EXIT HUP INT TERM
+  playback_fixture_compose config --format json >"$rendered"
+  python3 "$PLAYBACK_FIXTURE_HELPER" validate-compose "$rendered" "$REPO_ROOT"
+  rm -f -- "$rendered"
+  trap - EXIT HUP INT TERM
 }
 
 compose() {
@@ -219,6 +246,35 @@ case "$command" in
   smoke)
     ensure_initialized
     "$SCRIPT_DIR/mac-mini-smoke" "$@"
+    ;;
+  playback-fixture-generate)
+    [ "$#" -le 1 ] || usage
+    if [ "$#" -eq 1 ]; then [ "$1" = "--overwrite" ] || usage; fi
+    python3 "$PLAYBACK_FIXTURE_HELPER" generate "$REPO_ROOT" "$@"
+    ;;
+  playback-fixture-config)
+    [ "$#" -eq 0 ] || usage
+    validate_playback_fixture_compose
+    playback_fixture_compose config
+    ;;
+  playback-fixture-start)
+    [ "$#" -eq 0 ] || usage
+    validate_playback_fixture_compose
+    playback_fixture_compose up -d "$PLAYBACK_FIXTURE_SERVICE"
+    ;;
+  playback-fixture-status)
+    [ "$#" -eq 0 ] || usage
+    playback_fixture_compose ps "$PLAYBACK_FIXTURE_SERVICE"
+    ;;
+  playback-fixture-health|playback-fixture-probe)
+    [ "$#" -eq 0 ] || usage
+    python3 "$PLAYBACK_FIXTURE_HELPER" validate-media "$REPO_ROOT" >/dev/null
+    python3 "$PLAYBACK_FIXTURE_HELPER" probe
+    ;;
+  playback-fixture-stop)
+    [ "$#" -eq 0 ] || usage
+    validate_playback_fixture_compose
+    playback_fixture_compose stop "$PLAYBACK_FIXTURE_SERVICE"
     ;;
   destroy)
     [ "$#" -eq 2 ] || usage
