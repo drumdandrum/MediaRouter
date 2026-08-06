@@ -519,7 +519,10 @@ drops all capabilities, enables `no-new-privileges`, and has restart policy
 `no`. Its only mounts are the generated media directory and committed nginx
 configuration, both read-only. It has no database, Emby configuration, output,
 secret, snapshot, backup, repository-root, production path, proxy, tunnel, or
-LAN-facing mount or endpoint.
+LAN-facing mount or endpoint. Its PID and client, proxy, FastCGI, uWSGI, and
+SCGI temporary paths are explicitly confined to the mode-1777 `/tmp` tmpfs;
+the read-only root filesystem and stdout/stderr logging require no other
+writable runtime path.
 
 ### Generate and operate the fixture
 
