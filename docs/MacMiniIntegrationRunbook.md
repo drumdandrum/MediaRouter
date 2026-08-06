@@ -485,7 +485,79 @@ through the Emby API with `RefreshLibrary=false`; its 4,999 stale movie items
 reached zero without a manual scan or direct database mutation. The original
 12-hour trigger was restored and verified, and no replacement library was created.
 A later natural scheduled scan completed successfully with an empty library
-inventory. Creating the two isolated Stage 4A libraries remains a separate,
-explicitly approved operation. Restoring this backup or the retained original
-container would also restore the stale legacy library and its previous externally
-enabled metadata-provider state.
+inventory. A subsequent explicitly approved Stage 4A operation created only
+`MediaRouter Lab Movies` and `MediaRouter Lab Series`, disabled their external
+providers, and ran one controlled scan. Restoring this backup or the retained
+original container would also restore the stale legacy library and its previous
+externally enabled metadata-provider state.
+
+## Playable-media fixture preparation
+
+The optional playable fixture prepares one synthetic movie for a later,
+separately approved end-to-end playback lifecycle test. It does not alter the
+existing nine-entry Stage 4A catalog fixture, import a playlist, generate STRM
+output, change an Emby library, scan Emby, or request a runtime route.
+
+### Runtime behavior and topology
+
+`GET /r/movie/{catalog_item_id}` and the episode equivalent ask the broker to
+select a source and create or reuse a reservation, then return HTTP 302 directly
+to the selected `source_availability.location_ref`. MediaRouter does not proxy
+the media body and does not relay the client's byte-range requests. Ticketed
+requests consume the same stored reservation and also redirect to its raw source
+locator. Consequently, Emby must be able to reach the fixture locator directly;
+MediaRouter needs it only as catalog data and does not fetch its media bytes.
+
+The fixture server is a separate Compose project,
+`mediarouter-mac-playback-fixture`, with service `playback-fixture` and container
+`mediarouter-mac-playback-fixture`. It uses the ARM64 image
+`nginxinc/nginx-unprivileged:1.27.5-alpine@sha256:025de0b541bcc6cfbf508e4201aaa37b51d34daaf6d52e5e2753e29a8ddaa869`.
+The only host binding is `127.0.0.1:18091:8080`; containers use
+`http://host.docker.internal:18091/playback-test.mp4`. Nginx serves only that
+file and `/healthz`, supports HTTP byte ranges, runs with a read-only root,
+drops all capabilities, enables `no-new-privileges`, and has restart policy
+`no`. Its only mounts are the generated media directory and committed nginx
+configuration, both read-only. It has no database, Emby configuration, output,
+secret, snapshot, backup, repository-root, production path, proxy, tunnel, or
+LAN-facing mount or endpoint.
+
+### Generate and operate the fixture
+
+Generation requires local FFmpeg and FFprobe and creates a 20-second, 1280x720,
+30-fps H.264/yuv420p MP4 with low-volume 440 Hz AAC stereo audio. Both inputs are
+FFmpeg-generated filters, so no downloaded or copyrighted media is used. The
+binary is written beneath the ignored
+`.local/mac-mini/playback-fixture/media/playback-test.mp4`; a mode-0600 local
+state file records its SHA-256, size, duration, codecs, and generation command.
+Symlinked or escaping roots are rejected, and an existing fixture is not replaced
+without `--overwrite`.
+
+```sh
+scripts/mac-mini-test playback-fixture-generate
+scripts/mac-mini-test playback-fixture-config
+scripts/mac-mini-test playback-fixture-start
+scripts/mac-mini-test playback-fixture-status
+scripts/mac-mini-test playback-fixture-health
+scripts/mac-mini-test playback-fixture-probe
+scripts/mac-mini-test playback-fixture-stop
+```
+
+The health/probe commands contact only `127.0.0.1:18091`; they do not follow
+redirects or contact MediaRouter or Emby. The probe performs HEAD plus a
+1,024-byte range request and requires HTTP 206, valid content length/range,
+`video/mp4`, and consistent ETag or Last-Modified values when supplied.
+
+The committed playlist and nonsecret expectation manifest live under
+`tests/fixtures/mac-mini/playback/`. They describe exactly one lab movie,
+`MediaRouter Playback Test`, with CUID and tvg-id
+`lab-playback-movie-001`. They remain separate from `vod-small.m3u`.
+
+An abrupt fixture-server failure is isolated from MediaRouter and Emby. Stop only
+the dedicated fixture service; never broaden its bind or substitute a production
+path. The lifecycle commands contain no import, output-generation, library,
+scan, playback, mapping, binding, or runtime-route action.
+
+The next stage must separately authorize and monitor one fixture import, one
+fixture STRM-generation action, one controlled Emby library addition or refresh,
+and one manual Play then Stop lifecycle. Runtime correlation, reservations,
+bindings, MediaRouter/Emby state, and cleanup must be explicitly handled there.
