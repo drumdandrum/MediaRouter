@@ -47,6 +47,11 @@ class _Opener:
         return _Response(206, headers, b"x" * 1024)
 
 
+class _RedirectingOpener:
+    def open(self, _request, _timeout=None, **_kwargs):
+        raise fixture.FixtureError("fixture probe refuses redirects")
+
+
 class PlaybackFixtureTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -166,6 +171,11 @@ class PlaybackFixtureTests(unittest.TestCase):
         with self.assertRaisesRegex(fixture.FixtureError, "loopback"):
             fixture.probe_fixture("http://host.docker.internal:18091/playback-test.mp4")
 
+    def test_probe_rejects_redirects(self):
+        with mock.patch.object(fixture, "build_opener", return_value=_RedirectingOpener()):
+            with self.assertRaisesRegex(fixture.FixtureError, "HTTP probe failed"):
+                fixture.probe_fixture()
+
     def test_committed_playlist_is_one_lab_only_movie(self):
         manifest = fixture.validate_committed_fixture(ROOT)
         self.assertEqual(1, manifest["expected_catalog_behavior"]["entry_count"])
@@ -175,6 +185,27 @@ class PlaybackFixtureTests(unittest.TestCase):
             "9a9b2d32942aa25fd81ab3b1c7c4d4d598be13f7a33417516abfda3b53c31eb5",
             hashlib.sha256(original.read_bytes()).hexdigest(),
         )
+
+    def test_committed_fixture_rejects_production_and_credentials(self):
+        target = self.repo / "tests/fixtures/mac-mini/playback"
+        target.mkdir(parents=True)
+        source = ROOT / "tests/fixtures/mac-mini/playback"
+        for name in ("playback-one.m3u", "fixture-manifest.json"):
+            (target / name).write_bytes((source / name).read_bytes())
+        playlist = target / "playback-one.m3u"
+        playlist.write_text(playlist.read_text() + "# production token=secret\n")
+        with self.assertRaisesRegex(fixture.FixtureError, "forbidden"):
+            fixture.validate_committed_fixture(self.repo)
+
+    def test_compose_rejects_forbidden_private_mount(self):
+        config = self.compose_config()
+        config["services"][fixture.SERVICE]["volumes"].append({
+            "source": str(self.repo / ".local/mac-mini/data"),
+            "target": "/data",
+            "read_only": True,
+        })
+        with self.assertRaisesRegex(fixture.FixtureError, "mount"):
+            fixture.validate_compose(config, self.repo)
 
     def test_lifecycle_commands_are_fixture_scoped_and_have_no_import_or_playback(self):
         script = (ROOT / "scripts/mac-mini-test").read_text(encoding="utf-8")
