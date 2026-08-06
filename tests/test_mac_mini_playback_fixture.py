@@ -155,11 +155,11 @@ class PlaybackFixtureTests(unittest.TestCase):
         config = (ROOT / "deploy/mac-mini/playback-fixture.nginx.conf").read_text(encoding="utf-8")
         expected = {
             "pid": "/tmp/nginx.pid",
-            "client_body_temp_path": "/tmp/nginx/client_temp",
-            "proxy_temp_path": "/tmp/nginx/proxy_temp",
-            "fastcgi_temp_path": "/tmp/nginx/fastcgi_temp",
-            "uwsgi_temp_path": "/tmp/nginx/uwsgi_temp",
-            "scgi_temp_path": "/tmp/nginx/scgi_temp",
+            "client_body_temp_path": "/tmp/nginx-client-temp",
+            "proxy_temp_path": "/tmp/nginx-proxy-temp",
+            "fastcgi_temp_path": "/tmp/nginx-fastcgi-temp",
+            "uwsgi_temp_path": "/tmp/nginx-uwsgi-temp",
+            "scgi_temp_path": "/tmp/nginx-scgi-temp",
         }
         for directive, path in expected.items():
             with self.subTest(directive=directive):
@@ -167,6 +167,7 @@ class PlaybackFixtureTests(unittest.TestCase):
         self.assertNotIn("/var/cache/nginx", config)
         self.assertIn("access_log /dev/stdout;", config)
         self.assertIn("error_log /dev/stderr warn;", config)
+        self.assertNotIn("/tmp/nginx/", config)
 
     def test_compose_rejects_additional_or_missing_writable_tmpfs(self):
         for tmpfs in ([], ["/tmp:size=16m,mode=1777", "/run"], ["/tmp:size=16m,mode=0755"]):
