@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 OutputAction = Literal["create", "update", "skip", "remove", "fail"]
@@ -39,6 +39,15 @@ class StrmSettingsUpdate(BaseModel):
 
 class StrmGenerateRequest(BaseModel):
     confirm_unlimited: bool = False
+    catalog_item_ids: list[
+        Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")]
+    ] | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def reject_duplicate_catalog_item_ids(self) -> "StrmGenerateRequest":
+        if self.catalog_item_ids is not None and len(set(self.catalog_item_ids)) != len(self.catalog_item_ids):
+            raise ValueError("catalog_item_ids must not contain duplicates")
+        return self
 
 
 class StrmOutputOperation(BaseModel):
@@ -74,6 +83,11 @@ class StrmOutputSummary(BaseModel):
     worker_count: int = 4
     items_per_second: float = 0
     average_ms_per_item: float = 0
+    scope_mode: Literal["global", "catalog_items"] = "global"
+    requested_catalog_item_count: int = 0
+    requested_catalog_item_ids: list[str] = Field(default_factory=list)
+    orphan_cleanup_performed: bool = False
+    orphan_cleanup_skipped_due_to_scope: bool = False
 
 
 class StrmOutputResult(BaseModel):

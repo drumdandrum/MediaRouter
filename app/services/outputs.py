@@ -34,7 +34,7 @@ from app.schemas.outputs import (
     StrmSettings,
     StrmSettingsUpdate,
 )
-from app.services.catalog import ensure_schema, get_summary, list_items
+from app.services.catalog import ensure_schema, get_item, get_summary, list_items
 from app.services.jobs import clear_job_cancel_request, is_job_cancel_requested, update_job
 from app.services.logs import add_log
 from app.services.runtime import public_runtime_base_url, route_for_media_type
@@ -48,6 +48,8 @@ LIVE_M3U_OUTPUT_TYPE = "live-m3u"
 LIVE_M3U_OUTPUT_ID = "live-m3u"
 MAX_OUTPUT_ROWS = 500
 MAX_OPERATION_PREVIEW = 500
+MAX_STRM_SCOPE_ITEMS = 100
+STRM_SCOPE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 STRM_GENERATION_PRESETS = {"Test": (500, 500), "Small": (2000, 2000), "Medium": (5000, 10000)}
 LIVE_GENERATION_PRESETS = {"Test": 500, "Small": 2000, "Medium": 5000}
 UVICORN_LOGGER = logging.getLogger("uvicorn.error")
@@ -628,7 +630,11 @@ def _generated_from_row(row: sqlite3.Row) -> GeneratedOutputFile:
     )
 
 
-def _summary_from_counts(mode: str, counts: dict[str, int], output_paths: list[str], duration_seconds: float, settings: StrmSettings, total_items: int = 0, excluded: int = 0) -> StrmOutputSummary:
+def _summary_from_counts(mode: str, counts: dict[str, int], output_paths: list[str], duration_seconds: float,
+                         settings: StrmSettings, total_items: int = 0, excluded: int = 0, *,
+                         catalog_item_ids: list[str] | None = None,
+                         orphan_cleanup_performed: bool = False) -> StrmOutputSummary:
+    scoped = catalog_item_ids is not None
     return StrmOutputSummary(
         mode=mode,
         created_count=counts.get("create", 0),
@@ -649,7 +655,54 @@ def _summary_from_counts(mode: str, counts: dict[str, int], output_paths: list[s
         worker_count=settings.worker_count,
         items_per_second=round((counts.get("movie", 0) + counts.get("episode", 0)) / duration_seconds, 2) if duration_seconds > 0 else 0,
         average_ms_per_item=round(duration_seconds * 1000 / (counts.get("movie", 0) + counts.get("episode", 0)), 3) if counts.get("movie", 0) + counts.get("episode", 0) else 0,
+        scope_mode="catalog_items" if scoped else "global",
+        requested_catalog_item_count=len(catalog_item_ids or []),
+        requested_catalog_item_ids=list(catalog_item_ids or []),
+        orphan_cleanup_performed=orphan_cleanup_performed,
+        orphan_cleanup_skipped_due_to_scope=scoped,
     )
+
+
+def validate_strm_catalog_item_ids(catalog_item_ids: list[str] | None) -> list[CatalogItem] | None:
+    """Resolve a bounded explicit STRM scope without broad catalog enumeration."""
+    if catalog_item_ids is None:
+        return None
+    if not 1 <= len(catalog_item_ids) <= MAX_STRM_SCOPE_ITEMS:
+        raise ValueError("STRM catalog item scope must contain between 1 and 100 IDs")
+    if len(set(catalog_item_ids)) != len(catalog_item_ids):
+        raise ValueError("STRM catalog item scope must not contain duplicate IDs")
+    malformed = [item_id for item_id in catalog_item_ids if not STRM_SCOPE_ID_PATTERN.fullmatch(item_id)]
+    if malformed:
+        raise ValueError(f"Invalid STRM catalog item scope: {', '.join(malformed)}")
+    resolved: list[CatalogItem] = []
+    invalid: list[str] = []
+    for catalog_item_id in catalog_item_ids:
+        item = get_item(catalog_item_id)
+        if item is None or item.media_type not in {"movie", "episode"}:
+            invalid.append(catalog_item_id)
+        else:
+            resolved.append(item)
+    if invalid:
+        raise ValueError(f"Invalid STRM catalog item scope: {', '.join(invalid)}")
+    return resolved
+
+
+def _protect_scoped_output_path(conn: sqlite3.Connection, output_path: Path, catalog_item_id: str) -> Path:
+    """Keep a selected item from taking a path tracked to an unselected item."""
+    row = conn.execute(
+        "SELECT catalog_item_id FROM output_generated_files WHERE output_type=? AND output_path=?",
+        (OUTPUT_TYPE, str(output_path)),
+    ).fetchone()
+    if row is None or row["catalog_item_id"] == catalog_item_id:
+        return output_path
+    suffixed = output_path.with_name(f"{output_path.stem} [{catalog_item_id}]{output_path.suffix}")
+    conflict = conn.execute(
+        "SELECT catalog_item_id FROM output_generated_files WHERE output_type=? AND output_path=?",
+        (OUTPUT_TYPE, str(suffixed)),
+    ).fetchone()
+    if conflict is not None and conflict["catalog_item_id"] != catalog_item_id:
+        raise OutputPathError("Scoped STRM output path conflicts with another tracked catalog item.")
+    return suffixed
 
 
 def _tracked_hashes_for_batch(conn: sqlite3.Connection, item_ids: list[str]) -> dict[tuple[str, str], tuple[str, float | None]]:
@@ -783,7 +836,8 @@ def _operation(action: str, item: CatalogItem | None, output_path: Path, runtime
     )
 
 
-def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True, job_id: str | None = None) -> StrmOutputResult:
+def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True, job_id: str | None = None,
+                       catalog_item_ids: list[str] | None = None) -> StrmOutputResult:
     started = time.monotonic()
     started_at = datetime.utcnow().isoformat()
     settings = get_strm_settings()
@@ -791,11 +845,21 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
     effective_dry_run = dry_run or settings.dry_run_mode
     mode = "dry_run" if effective_dry_run else "generate"
     runtime_base_url = public_runtime_base_url(request_base_url)
-    limits = {"movie": None if settings.generation_mode == "Unlimited" else settings.maximum_movies,
-              "episode": None if settings.generation_mode == "Unlimited" else settings.maximum_episodes}
-    catalog_summary = get_summary()
-    catalog_totals = {"movie": catalog_summary.movies, "episode": catalog_summary.episodes}
-    selected_totals = {kind: total if limits[kind] is None else min(total, limits[kind]) for kind, total in catalog_totals.items()}
+    scoped_items = validate_strm_catalog_item_ids(catalog_item_ids)
+    scoped = scoped_items is not None
+    scoped_by_type = {
+        media_type: [item for item in (scoped_items or []) if item.media_type == media_type]
+        for media_type in ("movie", "episode")
+    }
+    if scoped:
+        catalog_totals = {kind: len(scoped_by_type[kind]) for kind in ("movie", "episode")}
+        selected_totals = dict(catalog_totals)
+    else:
+        limits = {"movie": None if settings.generation_mode == "Unlimited" else settings.maximum_movies,
+                  "episode": None if settings.generation_mode == "Unlimited" else settings.maximum_episodes}
+        catalog_summary = get_summary()
+        catalog_totals = {"movie": catalog_summary.movies, "episode": catalog_summary.episodes}
+        selected_totals = {kind: total if limits[kind] is None else min(total, limits[kind]) for kind, total in catalog_totals.items()}
     total_items = sum(selected_totals.values())
     excluded = sum(catalog_totals.values()) - total_items
     add_log("info", "outputs", f"STRM {mode} started: generation_mode={settings.generation_mode}, maximum_movies={settings.maximum_movies}, maximum_episodes={settings.maximum_episodes}, batch_size={settings.batch_size}, worker_count={settings.worker_count}")
@@ -821,7 +885,8 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
                 batch_started = time.monotonic()
                 batch_limit = min(settings.batch_size, selected_totals[media_type] - offset)
                 query_started = time.monotonic()
-                items = list_items(media_type, limit=batch_limit, offset=offset)
+                items = (scoped_by_type[media_type][offset:offset + batch_limit] if scoped
+                         else list_items(media_type, limit=batch_limit, offset=offset))
                 catalog_query_seconds = time.monotonic() - query_started
                 if not items:
                     break
@@ -836,6 +901,9 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
                         output_path = _movie_output_path(item, settings) if item.media_type == "movie" else _episode_output_path(item, settings)
                         root = settings.movies_output_directory if item.media_type == "movie" else settings.series_output_directory
                         _ensure_output_path_inside_root(output_path, root)
+                        if scoped:
+                            output_path = _protect_scoped_output_path(conn, output_path, item.internal_id)
+                            _ensure_output_path_inside_root(output_path, root)
                         try:
                             conn.execute("INSERT INTO strm_desired_paths VALUES (?, ?)", (str(output_path), item.internal_id))
                         except sqlite3.IntegrityError:
@@ -897,7 +965,10 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
                 offset += len(items)
                 processed = counts["movie"] + counts["episode"]
                 progress = 100 if total_items == 0 else min(99, int(processed * 100 / total_items))
-                progress_result = {**_summary_from_counts(mode, counts, output_paths, time.monotonic() - started, settings, total_items, excluded).model_dump(), "current_media_type": media_type, "current_batch": batch_number, "percentage_complete": progress}
+                progress_result = {**_summary_from_counts(
+                    mode, counts, output_paths, time.monotonic() - started, settings, total_items, excluded,
+                    catalog_item_ids=catalog_item_ids,
+                ).model_dump(), "current_media_type": media_type, "current_batch": batch_number, "percentage_complete": progress}
                 progress_started = time.monotonic()
                 if job_id:
                     update_job(job_id, progress=progress, message=f"{media_type.title()} batch {batch_number}: {processed}/{total_items}", result=progress_result)
@@ -922,7 +993,8 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
             if cancelled:
                 break
 
-        if settings.remove_orphaned_files and not cancelled:
+        orphan_cleanup_performed = bool(settings.remove_orphaned_files and not cancelled and not scoped)
+        if orphan_cleanup_performed:
             orphan_rows = conn.execute("""
                 SELECT f.* FROM output_generated_files f
                 LEFT JOIN catalog_items c ON c.internal_id=f.catalog_item_id
@@ -968,7 +1040,10 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
                     )
                 )
 
-        summary = _summary_from_counts(mode, counts, output_paths, time.monotonic() - started, settings, total_items, excluded).model_copy(update={
+        summary = _summary_from_counts(
+            mode, counts, output_paths, time.monotonic() - started, settings, total_items, excluded,
+            catalog_item_ids=catalog_item_ids, orphan_cleanup_performed=orphan_cleanup_performed,
+        ).model_copy(update={
             "percentage_complete": 100 if not cancelled else (100 if total_items == 0 else int((counts["movie"] + counts["episode"]) * 100 / total_items)),
             "current_media_type": "cancelled" if cancelled else "complete",
             "current_batch": batch_number,
@@ -993,12 +1068,16 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
     return StrmOutputResult(settings=settings, runtime_base_url=runtime_base_url, summary=summary, operations=operations)
 
 
-def dry_run_strm_outputs(request_base_url: str | None = None) -> StrmOutputResult:
-    return build_strm_outputs(request_base_url=request_base_url, dry_run=True)
+def dry_run_strm_outputs(request_base_url: str | None = None,
+                         catalog_item_ids: list[str] | None = None) -> StrmOutputResult:
+    return build_strm_outputs(request_base_url=request_base_url, dry_run=True,
+                              catalog_item_ids=catalog_item_ids)
 
 
-def generate_strm_outputs(request_base_url: str | None = None) -> StrmOutputResult:
-    return build_strm_outputs(request_base_url=request_base_url, dry_run=False)
+def generate_strm_outputs(request_base_url: str | None = None,
+                          catalog_item_ids: list[str] | None = None) -> StrmOutputResult:
+    return build_strm_outputs(request_base_url=request_base_url, dry_run=False,
+                              catalog_item_ids=catalog_item_ids)
 
 
 def build_live_m3u_output(request_base_url: str | None = None, dry_run: bool = True, job_id: str | None = None) -> LiveM3uOutputResult:
@@ -1209,11 +1288,13 @@ def generate_live_m3u_output(request_base_url: str | None = None) -> LiveM3uOutp
     return build_live_m3u_output(request_base_url=request_base_url, dry_run=False)
 
 
-def run_strm_generate_job(job_id: str, request_base_url: str | None = None) -> None:
+def run_strm_generate_job(job_id: str, request_base_url: str | None = None,
+                          catalog_item_ids: list[str] | None = None) -> None:
     update_job(job_id, status="running", progress=10, message="Preparing STRM output generation")
     add_log("info", "outputs", f"STRM generate job {job_id} started")
     try:
-        result = build_strm_outputs(request_base_url, dry_run=False, job_id=job_id)
+        result = build_strm_outputs(request_base_url, dry_run=False, job_id=job_id,
+                                    catalog_item_ids=catalog_item_ids)
         failed_operations = [operation for operation in result.operations if operation.action == "fail"]
         failure_reason = failed_operations[0].reason if failed_operations else ""
         cancelled = is_job_cancel_requested(job_id)
@@ -1235,7 +1316,14 @@ def run_strm_generate_job(job_id: str, request_base_url: str | None = None) -> N
         add_log("info" if status in {"complete", "cancelled"} else "error", "outputs", message)
     except Exception as exc:
         UVICORN_LOGGER.exception("STRM generate job %s failed", job_id)
-        update_job(job_id, status="failed", progress=100, message=f"STRM generation failed: {exc}", result={"failed_count": 1, "failure_reason": str(exc)})
+        update_job(job_id, status="failed", progress=100, message=f"STRM generation failed: {exc}", result={
+            "failed_count": 1,
+            "failure_reason": str(exc),
+            "scope_mode": "catalog_items" if catalog_item_ids is not None else "global",
+            "requested_catalog_item_count": len(catalog_item_ids or []),
+            "requested_catalog_item_ids": list(catalog_item_ids or []),
+            "orphan_cleanup_skipped_due_to_scope": catalog_item_ids is not None,
+        })
         add_log("error", "outputs", f"STRM generation failed: {exc}")
     finally:
         clear_job_cancel_request(job_id)
