@@ -440,6 +440,10 @@ preserving request order within each media type.
 The job result contains created, updated, skipped, removed, failed, movie,
 episode, output path, duration, scope mode, requested count/IDs, and orphan
 cleanup metadata. The same bounded metadata is retained in output history.
+Existing per-item failure behavior is unchanged: a selected item failure is
+reported while successful selected items in committed batches remain applied;
+there is no whole-run filesystem rollback. Unselected files and tracking rows
+are never part of that failure handling.
 
 Progress results also contain total/processed items, percentage, current media type and batch, elapsed time, excluded-by-limit count, capped/unlimited state, worker count, items per second, and average milliseconds per item. They never contain an unbounded generated-file list. `POST /api/jobs/{job_id}/cancel` requests cancellation after the active batch; completed batch files and tracking rows remain committed and the job finishes as `cancelled`.
 

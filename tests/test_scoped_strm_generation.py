@@ -1,4 +1,5 @@
 import os
+import hashlib
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -115,6 +116,14 @@ class ScopedStrmGenerationTests(unittest.TestCase):
             ).fetchall()
         return files, tracking
 
+    def _protected_digest(self):
+        digest = hashlib.sha256()
+        for path in sorted(self.movies.glob("Existing Movie *.strm")):
+            digest.update(path.name.encode())
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+        return digest.hexdigest()
+
     def test_request_contract_rejects_empty_duplicate_large_and_malformed_scopes(self):
         self.assertIsNone(StrmGenerateRequest().catalog_item_ids)
         self.assertIsNone(StrmGenerateRequest(catalog_item_ids=None).catalog_item_ids)
@@ -167,6 +176,7 @@ class ScopedStrmGenerationTests(unittest.TestCase):
 
     def test_one_movie_changes_only_selected_output_and_tracking(self):
         before = self._protected_snapshot()
+        before_digest = self._protected_digest()
         result = generate_strm_outputs("http://localhost:8088", ["movie_playable"])
         self.assertEqual((result.summary.created_count, result.summary.movie_count,
                           result.summary.episode_count), (1, 1, 0))
@@ -175,6 +185,7 @@ class ScopedStrmGenerationTests(unittest.TestCase):
         self.assertTrue(result.summary.orphan_cleanup_skipped_due_to_scope)
         self.assertFalse(result.summary.orphan_cleanup_performed)
         self.assertEqual(before, self._protected_snapshot())
+        self.assertEqual(before_digest, self._protected_digest())
         content = (self.movies / "MediaRouter Playback Test.strm").read_text()
         self.assertEqual(content, "http://localhost:8088/r/movie/movie_playable\n")
         self.assertNotIn("host.docker.internal:18091", content)
@@ -182,6 +193,16 @@ class ScopedStrmGenerationTests(unittest.TestCase):
             self.assertEqual(conn.execute(
                 "SELECT COUNT(*) FROM output_generated_files WHERE catalog_item_id='movie_playable'"
             ).fetchone()[0], 1)
+
+    def test_selected_existing_file_updates_under_existing_overwrite_policy(self):
+        generate_strm_outputs("http://localhost:8088", ["movie_playable"])
+        target = self.movies / "MediaRouter Playback Test.strm"
+        target.write_text("selected external change\n")
+        before = self._protected_snapshot()
+        result = generate_strm_outputs("http://localhost:8088", ["movie_playable"])
+        self.assertEqual((result.summary.updated_count, result.summary.skipped_count), (1, 0))
+        self.assertEqual(target.read_text(), "http://localhost:8088/r/movie/movie_playable\n")
+        self.assertEqual(before, self._protected_snapshot())
 
     def test_scoped_run_never_stats_or_reads_unselected_files(self):
         protected = set(self.movies.glob("Existing Movie *.strm"))
