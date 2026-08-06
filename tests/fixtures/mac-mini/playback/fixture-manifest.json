@@ -1,0 +1,18 @@
+{
+  "cuid": "lab-playback-movie-001",
+  "expected_catalog_behavior": {
+    "entry_count": 1,
+    "media_type": "movie",
+    "new_catalog_items": 1,
+    "new_sources": 1
+  },
+  "expected_generated_media_relative_path": ".local/mac-mini/playback-fixture/media/playback-test.mp4",
+  "expected_locator_authority": "host.docker.internal:18091",
+  "fixture": "playback-one.m3u",
+  "fixture_version": 1,
+  "lab_only": true,
+  "media_type": "movie",
+  "title": "MediaRouter Playback Test",
+  "tvg_id": "lab-playback-movie-001"
+}
+
