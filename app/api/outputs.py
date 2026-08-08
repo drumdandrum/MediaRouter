@@ -29,6 +29,7 @@ from app.services.outputs import (
     preview_live_m3u_output,
     run_live_m3u_generate_job,
     run_strm_generate_job,
+    validate_strm_catalog_item_ids,
     update_live_m3u_settings,
     update_strm_settings,
     validate_live_m3u_paths,
@@ -78,8 +79,12 @@ def strm_generate(request: Request, background_tasks: BackgroundTasks, payload: 
     settings = get_strm_settings()
     if settings.generation_mode == "Unlimited" and not payload.confirm_unlimited:
         raise HTTPException(status_code=400, detail="Unlimited STRM generation requires explicit confirmation.")
+    try:
+        validate_strm_catalog_item_ids(payload.catalog_item_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     job = create_job("strm_generate")
-    background_tasks.add_task(run_strm_generate_job, job.id, _request_base_url(request))
+    background_tasks.add_task(run_strm_generate_job, job.id, _request_base_url(request), payload.catalog_item_ids)
     return job
 
 
