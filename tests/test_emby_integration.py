@@ -223,6 +223,10 @@ class EmbyIntegrationTests(unittest.TestCase):
                                     json={"catalog_id": "movie_one", "media_type": "movie"}).status_code, 400)
         self.assertEqual(client.delete(movie).status_code, 204)
         self.assertEqual(client.get(movie).status_code, 404)
+        self.assertEqual(client.get(movie.replace("server-a", "server-b")).status_code, 200)
+        self.assertEqual(client.get(
+            "/api/integrations/emby/vod-item-mappings/server-a/episode").status_code, 200)
+        self.assertEqual(client.delete(movie).status_code, 404)
         self.assertEqual(len(client.get("/api/integrations/emby/vod-item-mappings").json()), 2)
         client.close()
 
@@ -299,6 +303,10 @@ class EmbyIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(historical.released_at)
         self.assertEqual(historical.release_reason, "emby_session_disappeared")
         self.assertEqual(get_status().consuming_reservations, 0)
+        future = normalize_emby_sessions(self._vod_payload(session="future-session"), "server")
+        self.assertEqual(reconcile_emby_sessions(
+            future, server_id="server", release_grace_seconds=5), (0, 1))
+        self.assertEqual(future[0].unmatched_reason, "catalog_identity_unresolved")
 
     def test_mapped_episode_adopts_and_releases_exact_provisional(self):
         from app.services.emby import (link_emby_vod_item, list_emby_bindings,
