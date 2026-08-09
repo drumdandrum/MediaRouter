@@ -71,6 +71,16 @@ class EmbyIntegrationTests(unittest.TestCase):
             "PlayState": {"PlaySessionId": play, "MediaSourceId": "emby-media-source",
                 "PositionTicks": 1000, "IsPaused": False}}]
 
+    def _vod_payload(self, *, item_id="emby-movie", media_type="movie", session="vod-session",
+                     media_source="vod-media-source"):
+        item_type = "Movie" if media_type == "movie" else "Episode"
+        return [{"Id": session, "DeviceId": "vod-device", "DeviceName": "Lab",
+            "Client": "Emby Web", "UserId": "vod-user", "UserName": "Viewer",
+            "NowPlayingItem": {"Id": item_id, "Name": "Untrusted title", "Type": item_type,
+                "Path": f"/media/{item_id}.strm"},
+            "PlayState": {"MediaSourceId": media_source, "PositionTicks": 1000,
+                "IsPaused": False}}]
+
     def _live_payload(self, session="live-session-1", play="live-play-1"):
         return [{"Id": session, "DeviceId": "live-device", "DeviceName": "Living Room",
             "Client": "Emby Theater", "UserId": "user-1", "UserName": "Viewer",
@@ -177,6 +187,172 @@ class EmbyIntegrationTests(unittest.TestCase):
         for unsafe_url in ("http://user:password@emby.local", "http://emby.local?api_key=secret", "http://emby.local/#token"):
             with self.assertRaises(ValidationError):
                 EmbySettingsUpdate(server_url=unsafe_url)
+
+    def test_vod_mapping_crud_is_exact_server_scoped_and_validated(self):
+        from app.main import app
+        from app.services.emby import ensure_emby_schema
+        ensure_emby_schema()
+        ensure_emby_schema()
+        self._catalog_item("series_one", "series", "Series One")
+        client = TestClient(app)
+        movie = "/api/integrations/emby/vod-item-mappings/server-a/emby-movie"
+        created = client.put(movie, json={"catalog_id": "movie_one", "media_type": "movie",
+                                          "emby_media_source_id": "source-a"})
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual({key: created.json()[key] for key in
+            ("integration_id", "emby_item_id", "catalog_item_id", "media_type", "mapping_source")}, {
+            "integration_id": "server-a", "emby_item_id": "emby-movie",
+            "catalog_item_id": "movie_one", "media_type": "movie", "mapping_source": "manual"})
+        other = client.put(movie.replace("server-a", "server-b"),
+                           json={"catalog_id": "movie_two", "media_type": "movie"})
+        self.assertEqual(other.status_code, 200)
+        listed = client.get("/api/integrations/emby/vod-item-mappings").json()
+        self.assertEqual(len(listed), 2)
+        self.assertEqual(client.get(movie).json()["catalog_item_id"], "movie_one")
+        updated = client.put(movie, json={"catalog_id": "movie_two", "media_type": "movie"})
+        self.assertEqual((updated.status_code, updated.json()["catalog_item_id"]), (200, "movie_two"))
+        self.assertEqual(client.put(
+            "/api/integrations/emby/vod-item-mappings/server-a/episode",
+            json={"catalog_id": "episode_one", "media_type": "episode"}).status_code, 200)
+        for payload in ({"catalog_id": "missing", "media_type": "movie"},
+                        {"catalog_id": "live_one", "media_type": "movie"},
+                        {"catalog_id": "series_one", "media_type": "movie"},
+                        {"catalog_id": "movie_one", "media_type": "episode"}):
+            self.assertIn(client.put(movie, json=payload).status_code, {400, 404})
+        self.assertEqual(client.put("/api/integrations/emby/vod-item-mappings/server-a/" + "x" * 257,
+                                    json={"catalog_id": "movie_one", "media_type": "movie"}).status_code, 400)
+        self.assertEqual(client.delete(movie).status_code, 204)
+        self.assertEqual(client.get(movie).status_code, 404)
+        self.assertEqual(len(client.get("/api/integrations/emby/vod-item-mappings").json()), 2)
+        client.close()
+
+    def test_exact_vod_mapping_resolves_movie_and_episode_without_title_or_runtime_evidence(self):
+        from app.services.emby import link_emby_vod_item, normalize_emby_sessions, reconcile_emby_sessions
+        link_emby_vod_item("server", "emby-movie", "movie_one", "movie")
+        link_emby_vod_item("server", "emby-episode", "episode_one", "episode")
+        for item_id, media_type, catalog_id in (
+                ("emby-movie", "movie", "movie_one"),
+                ("emby-episode", "episode", "episode_one")):
+            sessions = normalize_emby_sessions(self._vod_payload(
+                item_id=item_id, media_type=media_type, session=f"session-{media_type}"), "server")
+            original_open = Path.open
+            def guarded_open(path, *args, **kwargs):
+                if path.suffix == ".strm":
+                    raise AssertionError("STRM files must not be opened")
+                return original_open(path, *args, **kwargs)
+            with patch.object(Path, "open", new=guarded_open):
+                matched, unmatched = reconcile_emby_sessions(
+                    sessions, server_id="server", release_grace_seconds=30)
+            self.assertEqual((matched, unmatched, sessions[0].catalog_item_id), (1, 0, catalog_id))
+            self.assertEqual(sessions[0].correlation_method, "emby_vod_item_mapping_manual")
+        unmapped = normalize_emby_sessions(self._vod_payload(item_id="unmapped"), "server")
+        self.assertEqual(reconcile_emby_sessions(
+            unmapped, server_id="server", release_grace_seconds=30), (0, 1))
+        self.assertEqual(unmapped[0].unmatched_reason, "catalog_identity_unresolved")
+        wrong_server = normalize_emby_sessions(self._vod_payload(item_id="emby-movie"), "other-server")
+        self.assertEqual(reconcile_emby_sessions(
+            wrong_server, server_id="other-server", release_grace_seconds=30), (0, 1))
+
+    def test_mapped_vod_adopts_exact_provisional_and_runs_binding_lifecycle(self):
+        from app.services.emby import (delete_emby_vod_item_mapping, link_emby_vod_item,
+            list_emby_bindings, normalize_emby_sessions, reconcile_emby_sessions)
+        provisional = resolve_source("movie_one", "movie", client_fingerprint="runtime-fingerprint",
+            allow_reservation_reuse=True, lifecycle_enabled=True).reservation
+        before_capacity = get_status().consuming_reservations
+        link_emby_vod_item("server", "emby-movie", "movie_one", "movie", "vod-media-source")
+        payload = self._vod_payload()
+        sessions = normalize_emby_sessions(payload, "server")
+        self.assertEqual(reconcile_emby_sessions(
+            sessions, server_id="server", release_grace_seconds=5), (1, 0))
+        adopted = next(row for row in list_reservations() if row.reservation_id == provisional.reservation_id)
+        self.assertEqual((adopted.reservation_id, adopted.source_availability_id, adopted.account_id),
+                         (provisional.reservation_id, provisional.source_availability_id, provisional.account_id))
+        self.assertEqual((adopted.identity_type, adopted.lifecycle_state,
+                          adopted.promotion_reason),
+                         ("explicit_session", "active", "emby_playback_confirmed"))
+        self.assertEqual(get_status().consuming_reservations, before_capacity)
+        binding = list_emby_bindings()[0]
+        self.assertEqual((binding.emby_server_id, binding.emby_session_id, binding.emby_item_id,
+                          binding.emby_media_source_id, binding.catalog_item_id, binding.media_type,
+                          binding.reservation_id, binding.correlation_method),
+                         ("server", "vod-session", "emby-movie", "vod-media-source", "movie_one",
+                          "movie", provisional.reservation_id, "emby_vod_item_mapping_manual"))
+        first_expiry = adopted.active_expires_at
+        reconcile_emby_sessions(normalize_emby_sessions(payload, "server"),
+                                server_id="server", release_grace_seconds=5)
+        heartbeat = next(row for row in list_reservations() if row.reservation_id == provisional.reservation_id)
+        self.assertEqual(heartbeat.last_confirmation_source, "emby_playback_heartbeat")
+        self.assertGreaterEqual(heartbeat.active_expires_at, first_expiry)
+        self.assertTrue(delete_emby_vod_item_mapping("server", "emby-movie"))
+        self.assertEqual(reconcile_emby_sessions(normalize_emby_sessions(payload, "server"),
+                                                server_id="server", release_grace_seconds=5), (1, 0))
+        self.assertIsNone(list_emby_bindings()[0].released_at)
+        reconcile_emby_sessions([], server_id="server", release_grace_seconds=5)
+        old = (datetime.utcnow() - timedelta(seconds=6)).isoformat()
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            conn.execute("UPDATE emby_playback_bindings SET missing_since=? WHERE released_at IS NULL", (old,))
+        reconcile_emby_sessions([], server_id="server", release_grace_seconds=5)
+        terminal = next(row for row in list_reservations() if row.reservation_id == provisional.reservation_id)
+        historical = list_emby_bindings()[0]
+        self.assertEqual((terminal.lifecycle_state, terminal.release_reason),
+                         ("released", "emby_session_disappeared"))
+        self.assertIsNotNone(historical.released_at)
+        self.assertEqual(historical.release_reason, "emby_session_disappeared")
+        self.assertEqual(get_status().consuming_reservations, 0)
+
+    def test_mapped_episode_adopts_and_releases_exact_provisional(self):
+        from app.services.emby import (link_emby_vod_item, list_emby_bindings,
+            normalize_emby_sessions, reconcile_emby_sessions)
+        provisional = resolve_source("episode_one", "episode",
+            client_fingerprint="episode-runtime-fingerprint",
+            allow_reservation_reuse=True, lifecycle_enabled=True).reservation
+        link_emby_vod_item("server", "emby-episode", "episode_one", "episode",
+                           "episode-media-source")
+        payload = self._vod_payload(item_id="emby-episode", media_type="episode",
+                                    session="episode-session",
+                                    media_source="episode-media-source")
+        sessions = normalize_emby_sessions(payload, "server")
+        self.assertEqual(reconcile_emby_sessions(
+            sessions, server_id="server", release_grace_seconds=5), (1, 0))
+        adopted = next(row for row in list_reservations()
+                       if row.reservation_id == provisional.reservation_id)
+        binding = list_emby_bindings()[0]
+        self.assertEqual((adopted.lifecycle_state, adopted.identity_type,
+                          binding.catalog_item_id, binding.media_type,
+                          binding.correlation_method),
+                         ("active", "explicit_session", "episode_one", "episode",
+                          "emby_vod_item_mapping_manual"))
+        reconcile_emby_sessions([], server_id="server", release_grace_seconds=5)
+        old = (datetime.utcnow() - timedelta(seconds=6)).isoformat()
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            conn.execute("UPDATE emby_playback_bindings SET missing_since=? WHERE released_at IS NULL",
+                         (old,))
+        reconcile_emby_sessions([], server_id="server", release_grace_seconds=5)
+        terminal = next(row for row in list_reservations()
+                        if row.reservation_id == provisional.reservation_id)
+        historical = list_emby_bindings()[0]
+        self.assertEqual((terminal.lifecycle_state, terminal.release_reason,
+                          historical.release_reason, get_status().consuming_reservations),
+                         ("released", "emby_session_disappeared",
+                          "emby_session_disappeared", 0))
+
+    def test_vod_mapping_does_not_change_channel_resolution_or_make_runtime_observations_authoritative(self):
+        from app.services.emby import (link_emby_vod_item, normalize_emby_sessions,
+                                       reconcile_emby_sessions)
+        link_emby_vod_item("server", "same-item", "movie_one", "movie")
+        live = self._mapped_live_payload("same-item", "live_one", "live-session", "live-source")
+        self._channel_mapping("same-item", "live_one", "live-source")
+        live_session = normalize_emby_sessions(live, "server")
+        self.assertEqual(reconcile_emby_sessions(
+            live_session, server_id="server", release_grace_seconds=30), (1, 0))
+        self.assertEqual(live_session[0].catalog_item_id, "live_one")
+        provisional = resolve_source("movie_two", "movie", client_fingerprint="runtime-only",
+            allow_reservation_reuse=True, lifecycle_enabled=True).reservation
+        self._observation(provisional)
+        unresolved = normalize_emby_sessions(self._vod_payload(item_id="no-map"), "server")
+        self.assertEqual(reconcile_emby_sessions(
+            unresolved, server_id="server", release_grace_seconds=30), (0, 1))
+        self.assertEqual(unresolved[0].unmatched_reason, "catalog_identity_unresolved")
 
     def test_disabled_polling_makes_no_network_request(self):
         from app.services.emby import poll_emby_once
