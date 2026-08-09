@@ -23,6 +23,7 @@ from app.schemas.integrations import (
     EmbyPlaybackSession, EmbySettingsRead, EmbySettingsUpdate,
     EmbyChannelMapping, EmbyChannelRefreshResult, EmbyChannelMappingPreview,
     EmbyChannelMappingPreviewItem, EmbyChannelMappingPage,
+    EmbyVodItemMapping,
 )
 from app.services.broker import (
     BrokerUnavailable, adopt_provisional_reservation, confirm_reservation,
@@ -201,6 +202,20 @@ def _ensure_emby_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_emby_channel_media_source
             ON emby_channel_mappings(emby_server_id, emby_media_source_id);
+        CREATE TABLE IF NOT EXISTS emby_vod_item_mappings (
+            integration_id TEXT NOT NULL,
+            emby_item_id TEXT NOT NULL,
+            emby_media_source_id TEXT,
+            catalog_item_id TEXT NOT NULL,
+            media_type TEXT NOT NULL CHECK(media_type IN ('movie','episode')),
+            mapping_source TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(integration_id, emby_item_id),
+            FOREIGN KEY(catalog_item_id) REFERENCES catalog_items(internal_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_emby_vod_mapping_catalog
+            ON emby_vod_item_mappings(catalog_item_id, integration_id);
     """)
     mapping_columns = {row[1] for row in conn.execute("PRAGMA table_info(emby_channel_mappings)").fetchall()}
     if "integration_id" not in mapping_columns:
@@ -570,6 +585,75 @@ def delete_emby_channel_mapping(integration_id: str, emby_item_id: str) -> bool:
     return bool(deleted)
 
 
+def _validated_mapping_id(value: str, label: str) -> str:
+    safe = _safe_id(value)
+    if not safe:
+        raise ValueError(f"{label} must be a nonempty identifier of at most 256 safe characters")
+    return safe
+
+
+def list_emby_vod_item_mappings() -> list[EmbyVodItemMapping]:
+    with closing(_connect()) as conn:
+        rows = conn.execute("""SELECT * FROM emby_vod_item_mappings
+            ORDER BY integration_id,emby_item_id""").fetchall()
+    return [EmbyVodItemMapping(**dict(row)) for row in rows]
+
+
+def get_emby_vod_item_mapping(integration_id: str, emby_item_id: str) -> EmbyVodItemMapping | None:
+    integration_id = _validated_mapping_id(integration_id, "Emby server ID")
+    emby_item_id = _validated_mapping_id(emby_item_id, "Emby item ID")
+    with closing(_connect()) as conn:
+        row = conn.execute("""SELECT * FROM emby_vod_item_mappings
+            WHERE integration_id=? AND emby_item_id=?""",
+            (integration_id, emby_item_id)).fetchone()
+    return EmbyVodItemMapping(**dict(row)) if row else None
+
+
+def link_emby_vod_item(integration_id: str, emby_item_id: str, catalog_item_id: str,
+                       media_type: str, emby_media_source_id: str | None = None) -> EmbyVodItemMapping:
+    integration_id = _validated_mapping_id(integration_id, "Emby server ID")
+    emby_item_id = _validated_mapping_id(emby_item_id, "Emby item ID")
+    catalog_item_id = _validated_mapping_id(catalog_item_id, "Catalog item ID")
+    if media_type not in {"movie", "episode"}:
+        raise ValueError("VOD mapping media type must be movie or episode")
+    if emby_media_source_id is not None:
+        emby_media_source_id = _validated_mapping_id(emby_media_source_id, "Emby media source ID")
+    now = _now().isoformat()
+    with closing(_connect()) as conn:
+        catalog = conn.execute("SELECT media_type FROM catalog_items WHERE internal_id=?",
+                               (catalog_item_id,)).fetchone()
+        if not catalog:
+            raise LookupError("Catalog item not found")
+        if catalog["media_type"] != media_type:
+            raise ValueError("Catalog item media type does not match VOD mapping media type")
+        conn.execute("""INSERT INTO emby_vod_item_mappings
+            (integration_id,emby_item_id,emby_media_source_id,catalog_item_id,media_type,
+             mapping_source,created_at,updated_at)
+            VALUES (?,?,?,?,?,'manual',?,?)
+            ON CONFLICT(integration_id,emby_item_id) DO UPDATE SET
+              emby_media_source_id=excluded.emby_media_source_id,
+              catalog_item_id=excluded.catalog_item_id,media_type=excluded.media_type,
+              mapping_source='manual',updated_at=excluded.updated_at""",
+            (integration_id, emby_item_id, emby_media_source_id, catalog_item_id,
+             media_type, now, now))
+        conn.commit()
+        row = conn.execute("""SELECT * FROM emby_vod_item_mappings
+            WHERE integration_id=? AND emby_item_id=?""",
+            (integration_id, emby_item_id)).fetchone()
+    return EmbyVodItemMapping(**dict(row))
+
+
+def delete_emby_vod_item_mapping(integration_id: str, emby_item_id: str) -> bool:
+    integration_id = _validated_mapping_id(integration_id, "Emby server ID")
+    emby_item_id = _validated_mapping_id(emby_item_id, "Emby item ID")
+    with closing(_connect()) as conn:
+        deleted = conn.execute("""DELETE FROM emby_vod_item_mappings
+            WHERE integration_id=? AND emby_item_id=?""",
+            (integration_id, emby_item_id)).rowcount
+        conn.commit()
+    return bool(deleted)
+
+
 def _catalog_from_identity_values(conn: sqlite3.Connection, values: set[str]) -> str | None:
     expanded = {value[3:] if value.lower().startswith("mr:") else value for value in values if value}
     if not expanded:
@@ -684,6 +768,21 @@ def refresh_emby_channel_mappings() -> EmbyChannelRefreshResult:
 
 def _resolve_durable_catalog_identity(conn: sqlite3.Connection, session: EmbyPlaybackSession) -> bool:
     """Resolve exact durable IDs only; titles are deliberately excluded."""
+    if session.media_type in {"movie", "episode"} and session.emby_item_id:
+        vod_mapping = conn.execute("""SELECT mappings.catalog_item_id,mappings.media_type,
+                mappings.mapping_source
+            FROM emby_vod_item_mappings mappings
+            JOIN catalog_items items ON items.internal_id=mappings.catalog_item_id
+            WHERE mappings.integration_id=? AND mappings.emby_item_id=?
+              AND mappings.media_type=? AND items.media_type=mappings.media_type""",
+            (session.emby_server_id or "unknown", session.emby_item_id,
+             session.media_type)).fetchone()
+        if vod_mapping:
+            session.catalog_item_id = vod_mapping["catalog_item_id"]
+            session.media_type = vod_mapping["media_type"]
+            session.direct_catalog_identity_available = True
+            session.correlation_method = f"emby_vod_item_mapping_{vod_mapping['mapping_source']}"
+            return True
     mapping = conn.execute("""SELECT catalog_item_id,mapping_source FROM emby_channel_mappings
         WHERE integration_id=? AND catalog_item_id IS NOT NULL AND
         (emby_item_id=? OR (? IS NOT NULL AND emby_media_source_id=?))
@@ -844,6 +943,19 @@ def _acquire_emby_reservation(session: EmbyPlaybackSession) -> None:
     with closing(_connect()) as conn:
         durable = _resolve_durable_catalog_identity(conn, session)
         if not durable:
+            existing = _active_binding(conn, _binding_key(session))
+            if (existing and session.emby_item_id == existing["emby_item_id"]
+                    and session.media_type == existing["media_type"]):
+                reservation = conn.execute("""SELECT * FROM broker_reservations
+                    WHERE reservation_id=? AND lifecycle_state IN ('provisional','active')""",
+                    (existing["reservation_id"],)).fetchone()
+                if reservation:
+                    session.catalog_item_id = existing["catalog_item_id"]
+                    session.media_type = existing["media_type"]
+                    session.direct_catalog_identity_available = True
+                    session.reservation_id = reservation["reservation_id"]
+                    session.correlation_method = "existing_binding"
+                    return
             session.unmatched_reason = "catalog_identity_unresolved"
             diagnostic = {
                 "item_id": session.emby_item_id, "channel_id": session.emby_channel_id,
@@ -869,7 +981,9 @@ def _acquire_emby_reservation(session: EmbyPlaybackSession) -> None:
     )
     if adoption.status == "adopted" and adoption.reservation:
         session.reservation_id = adoption.reservation.reservation_id
-        session.correlation_method = "emby_provisional_reservation_adopted"
+        if not (session.correlation_method and session.correlation_method.startswith(
+                ("emby_channel_mapping_", "emby_vod_item_mapping_"))):
+            session.correlation_method = "emby_provisional_reservation_adopted"
         add_log("info", "emby", (
             f"emby_provisional_adoption_succeeded reservation={adoption.reservation.reservation_id} "
             f"session={session.emby_session_id} catalog_item={session.catalog_item_id} "
@@ -906,7 +1020,8 @@ def _acquire_emby_reservation(session: EmbyPlaybackSession) -> None:
         session.unmatched_reason = "broker_reservation_unavailable"
         return
     session.reservation_id = decision.reservation.reservation_id
-    if not (session.correlation_method and session.correlation_method.startswith("emby_channel_mapping_")):
+    if not (session.correlation_method and session.correlation_method.startswith(
+            ("emby_channel_mapping_", "emby_vod_item_mapping_"))):
         session.correlation_method = "emby_explicit_session_reused" if decision.reservation_reused else "emby_explicit_session_created"
     event = "emby_reservation_reused" if decision.reservation_reused else "emby_reservation_created"
     add_log("info", "emby", f"{event} session={session.emby_session_id} reservation={decision.reservation.reservation_id} catalog_item={session.catalog_item_id} account={decision.reservation.account_name or decision.reservation.account_id}")
@@ -962,7 +1077,8 @@ def reconcile_emby_sessions(sessions: list[EmbyPlaybackSession], *, server_id: s
                     "rejected_for_client_context_count": 0}
             else:
                 reservation, method, confidence, diagnostics = _correlate(conn, session)
-                if session.correlation_method and session.correlation_method.startswith(("emby_recent_runtime_request", "emby_channel_mapping_")):
+                if session.correlation_method and session.correlation_method.startswith(
+                        ("emby_recent_runtime_request", "emby_channel_mapping_", "emby_vod_item_mapping_")):
                     method = session.correlation_method
             session.recent_runtime_observation_found = session.recent_runtime_observation_found or diagnostics["recent_runtime_observation_found"]
             session.correlation_candidate_count = max(session.correlation_candidate_count, diagnostics["candidate_count"])

@@ -158,6 +158,23 @@ class EmbyChannelMappingUpdate(BaseModel):
     emby_media_source_id: str | None = None
 
 
+class EmbyVodItemMapping(BaseModel):
+    integration_id: str
+    emby_item_id: str
+    emby_media_source_id: str | None = None
+    catalog_item_id: str
+    media_type: Literal["movie", "episode"]
+    mapping_source: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class EmbyVodItemMappingUpdate(BaseModel):
+    catalog_id: str = Field(min_length=1, max_length=256)
+    media_type: Literal["movie", "episode"]
+    emby_media_source_id: str | None = Field(default=None, max_length=256)
+
+
 class EmbyChannelRefreshResult(BaseModel):
     discovered: int
     mapped: int
