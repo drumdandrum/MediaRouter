@@ -527,12 +527,13 @@ writable runtime path.
 
 ### Generate and operate the fixture
 
-Generation requires local FFmpeg and FFprobe and creates a 20-second, 1280x720,
-30-fps H.264/yuv420p MP4 with low-volume 440 Hz AAC stereo audio. Both inputs are
-FFmpeg-generated filters, so no downloaded or copyrighted media is used. The
+Generation requires local FFmpeg and FFprobe and creates a 20-second by default,
+1280x720, 30-fps H.264/yuv420p MP4 with low-volume 440 Hz AAC stereo audio. Both
+inputs are FFmpeg-generated filters, so no downloaded or copyrighted media is used. The
 binary is written beneath the ignored
 `.local/mac-mini/playback-fixture/media/playback-test.mp4`; a mode-0600 local
-state file records its SHA-256, size, duration, codecs, and generation command.
+state file records its SHA-256, size, requested and observed duration, codecs,
+and generation command.
 Symlinked or escaping roots are rejected, and an existing fixture is not replaced
 without `--overwrite`.
 
@@ -545,6 +546,25 @@ scripts/mac-mini-test playback-fixture-health
 scripts/mac-mini-test playback-fixture-probe
 scripts/mac-mini-test playback-fixture-stop
 ```
+
+The optional integer `--duration-seconds` accepts 5 through 1800 seconds. Longer
+fixtures support bounded manual concurrency and recovery tests while the default
+remains 20 seconds. Replacing the existing lab-only file with a five-minute
+fixture requires an explicit overwrite:
+
+```sh
+scripts/mac-mini-test playback-fixture-generate \
+  --overwrite \
+  --duration-seconds 300
+```
+
+With the filename and fixture URL unchanged, MediaRouter source identity, the
+generated STRM target, and an exact Emby-item-to-catalog mapping do not depend on
+the MP4 duration or digest. Changing only the synthetic media therefore does not
+itself require a catalog import, STRM regeneration, VOD mapping change, or Emby
+library refresh. Emby may continue to display cached duration metadata until a
+separately authorized refresh; validate actual serving with the guarded direct
+probe instead of broadening this workflow.
 
 The health/probe commands contact only `127.0.0.1:18091`; they do not follow
 redirects or contact MediaRouter or Emby. The probe performs HEAD plus a
