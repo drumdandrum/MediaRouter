@@ -28,7 +28,10 @@ HOST_URL = "http://127.0.0.1:18091/playback-test.mp4"
 CONTAINER_URL = "http://host.docker.internal:18091/playback-test.mp4"
 MEDIA_NAME = "playback-test.mp4"
 LOCAL_MANIFEST_NAME = "fixture-state.json"
-EXPECTED_DURATION = 20.0
+DEFAULT_DURATION_SECONDS = 20
+MIN_DURATION_SECONDS = 5
+MAX_DURATION_SECONDS = 1800
+DURATION_TOLERANCE_SECONDS = 0.1
 EXPECTED_WIDTH = 1280
 EXPECTED_HEIGHT = 720
 EXPECTED_FRAME_RATE = "30/1"
@@ -82,15 +85,44 @@ def validate_fixture_root(repo_root: Path, *, create: bool = False) -> dict[str,
     return paths
 
 
-def generation_command(output: Path, *, overwrite: bool = False) -> list[str]:
+def validate_duration_seconds(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise FixtureError("fixture duration must be an integer number of seconds")
+    if not MIN_DURATION_SECONDS <= value <= MAX_DURATION_SECONDS:
+        raise FixtureError(
+            f"fixture duration must be between {MIN_DURATION_SECONDS} and "
+            f"{MAX_DURATION_SECONDS} seconds"
+        )
+    return value
+
+
+def _duration_argument(value: str) -> int:
+    try:
+        duration = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("duration must be an integer") from exc
+    try:
+        return validate_duration_seconds(duration)
+    except FixtureError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def generation_command(
+    output: Path,
+    *,
+    overwrite: bool = False,
+    duration_seconds: int = DEFAULT_DURATION_SECONDS,
+) -> list[str]:
+    duration = validate_duration_seconds(duration_seconds)
     return [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-        "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=20",
-        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=20",
+        "-f", "lavfi", "-i", f"testsrc2=size=1280x720:rate=30:duration={duration}",
+        "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=48000:duration={duration}",
         "-filter:a", "volume=0.05", "-c:v", "libx264", "-preset", "medium",
         "-pix_fmt", "yuv420p", "-profile:v", "high", "-level:v", "3.1",
         "-r", "30", "-g", "60", "-keyint_min", "60", "-sc_threshold", "0",
         "-c:a", "aac", "-b:a", "96k", "-ar", "48000", "-ac", "2",
+        "-t", str(duration),
         "-movflags", "+faststart", "-metadata", "title=MediaRouter Playback Test",
         "-metadata", "comment=synthetic lab-only fixture", "-y" if overwrite else "-n",
         str(output),
@@ -105,7 +137,12 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _probe_media(path: Path) -> dict[str, object]:
+def _probe_media(
+    path: Path,
+    *,
+    expected_duration_seconds: int = DEFAULT_DURATION_SECONDS,
+) -> dict[str, object]:
+    expected_duration = validate_duration_seconds(expected_duration_seconds)
     if shutil.which("ffprobe") is None:
         raise FixtureError("ffprobe is required to validate the synthetic fixture")
     result = subprocess.run([
@@ -126,8 +163,10 @@ def _probe_media(path: Path) -> dict[str, object]:
         raise FixtureError("fixture frame rate differs from 30 fps")
     if not audio or audio.get("codec_name") != "aac":
         raise FixtureError("fixture audio must be AAC")
-    if abs(duration - EXPECTED_DURATION) > 0.1:
-        raise FixtureError("fixture duration differs from 20 seconds")
+    if abs(duration - expected_duration) > DURATION_TOLERANCE_SECONDS:
+        raise FixtureError(
+            f"fixture duration differs materially from {expected_duration} seconds"
+        )
     return {
         "duration_seconds": duration,
         "format_name": data.get("format", {}).get("format_name"),
@@ -136,7 +175,13 @@ def _probe_media(path: Path) -> dict[str, object]:
     }
 
 
-def generate_fixture(repo_root: Path, *, overwrite: bool = False) -> dict[str, object]:
+def generate_fixture(
+    repo_root: Path,
+    *,
+    overwrite: bool = False,
+    duration_seconds: int = DEFAULT_DURATION_SECONDS,
+) -> dict[str, object]:
+    duration = validate_duration_seconds(duration_seconds)
     paths = validate_fixture_root(repo_root, create=True)
     if paths["file"].exists() and not overwrite:
         raise FixtureError("fixture media already exists; use --overwrite explicitly")
@@ -151,19 +196,29 @@ def generate_fixture(repo_root: Path, *, overwrite: bool = False) -> dict[str, o
     temporary_file = Path(temporary_name)
     temporary_file.unlink()
     temporary_manifest = paths["root"] / f".{LOCAL_MANIFEST_NAME}.{os.getpid()}.tmp"
-    command = generation_command(temporary_file, overwrite=False)
+    command = generation_command(
+        temporary_file,
+        overwrite=False,
+        duration_seconds=duration,
+    )
     try:
         subprocess.run(command, check=True)
         os.chmod(temporary_file, 0o644)
-        media = _probe_media(temporary_file)
+        media = _probe_media(
+            temporary_file,
+            expected_duration_seconds=duration,
+        )
         result = {
             "lab_only": True,
             "path": str(paths["file"].relative_to(repo_root.resolve())),
             "sha256": _sha256(temporary_file),
             "size_bytes": temporary_file.stat().st_size,
+            "requested_duration_seconds": duration,
+            "observed_duration_seconds": media["duration_seconds"],
             "generation_command": generation_command(
                 Path(".local/mac-mini/playback-fixture/media") / MEDIA_NAME,
                 overwrite=overwrite,
+                duration_seconds=duration,
             ),
             **media,
         }
@@ -229,7 +284,22 @@ def validate_generated_fixture(repo_root: Path) -> dict[str, object]:
     state = json.loads(paths["manifest"].read_text(encoding="utf-8"))
     if state.get("sha256") != _sha256(paths["file"]):
         raise FixtureError("generated fixture digest differs from local state")
-    current = _probe_media(paths["file"])
+    requested_duration = state.get(
+        "requested_duration_seconds",
+        state.get("duration_seconds", DEFAULT_DURATION_SECONDS),
+    )
+    if isinstance(requested_duration, float) and requested_duration.is_integer():
+        requested_duration = int(requested_duration)
+    requested_duration = validate_duration_seconds(requested_duration)
+    current = _probe_media(
+        paths["file"],
+        expected_duration_seconds=requested_duration,
+    )
+    if (
+        "observed_duration_seconds" in state
+        and current["duration_seconds"] != state["observed_duration_seconds"]
+    ):
+        raise FixtureError("generated fixture observed duration differs from local state")
     for key in ("duration_seconds", "format_name", "video", "audio"):
         if current[key] != state.get(key):
             raise FixtureError("generated fixture codec metadata differs from local state")
@@ -310,6 +380,12 @@ def _main() -> int:
     generate = sub.add_parser("generate")
     generate.add_argument("repo")
     generate.add_argument("--overwrite", action="store_true")
+    generate.add_argument(
+        "--duration-seconds",
+        type=_duration_argument,
+        default=DEFAULT_DURATION_SECONDS,
+        metavar="INTEGER",
+    )
     media = sub.add_parser("validate-media")
     media.add_argument("repo")
     compose = sub.add_parser("validate-compose")
@@ -323,7 +399,11 @@ def _main() -> int:
     if args.command == "validate-root":
         validate_fixture_root(Path(args.repo), create=False)
     elif args.command == "generate":
-        print(json.dumps(generate_fixture(Path(args.repo), overwrite=args.overwrite), indent=2, sort_keys=True))
+        print(json.dumps(generate_fixture(
+            Path(args.repo),
+            overwrite=args.overwrite,
+            duration_seconds=args.duration_seconds,
+        ), indent=2, sort_keys=True))
     elif args.command == "validate-media":
         print(json.dumps(validate_generated_fixture(Path(args.repo)), indent=2, sort_keys=True))
     elif args.command == "validate-compose":

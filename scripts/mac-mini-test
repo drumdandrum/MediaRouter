@@ -15,7 +15,7 @@ HELPER="$SCRIPT_DIR/mac_mini_harness.py"
 COMPOSE_FILES="-f $REPO_ROOT/docker-compose.yml -f $REPO_ROOT/deploy/mac-mini/compose.test.yml"
 
 usage() {
-  echo "usage: scripts/mac-mini-test {init|config|start|stop|restart|status|health|logs|credential-status|snapshot NAME|restore NAME --confirm mac-mini-test|reset --confirm mac-mini-test|rollback-tag|smoke|destroy --confirm mac-mini-test|playback-fixture-generate [--overwrite]|playback-fixture-config|playback-fixture-start|playback-fixture-status|playback-fixture-health|playback-fixture-probe|playback-fixture-stop}" >&2
+  echo "usage: scripts/mac-mini-test {init|config|start|stop|restart|status|health|logs|credential-status|snapshot NAME|restore NAME --confirm mac-mini-test|reset --confirm mac-mini-test|rollback-tag|smoke|destroy --confirm mac-mini-test|playback-fixture-generate [--overwrite] [--duration-seconds INTEGER]|playback-fixture-config|playback-fixture-start|playback-fixture-status|playback-fixture-health|playback-fixture-probe|playback-fixture-stop}" >&2
   exit 2
 }
 
@@ -248,8 +248,6 @@ case "$command" in
     "$SCRIPT_DIR/mac-mini-smoke" "$@"
     ;;
   playback-fixture-generate)
-    [ "$#" -le 1 ] || usage
-    if [ "$#" -eq 1 ]; then [ "$1" = "--overwrite" ] || usage; fi
     python3 "$PLAYBACK_FIXTURE_HELPER" generate "$REPO_ROOT" "$@"
     ;;
   playback-fixture-config)

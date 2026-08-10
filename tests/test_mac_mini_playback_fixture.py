@@ -98,6 +98,142 @@ class PlaybackFixtureTests(unittest.TestCase):
         self.assertNotIn("-y", command)
         self.assertEqual(command, fixture.generation_command(Path("out.mp4")))
 
+    def test_generation_command_uses_explicit_duration_for_both_inputs_and_output(self):
+        command = fixture.generation_command(
+            Path("out.mp4"), overwrite=True, duration_seconds=300
+        )
+        self.assertIn("testsrc2=size=1280x720:rate=30:duration=300", command)
+        self.assertIn("sine=frequency=440:sample_rate=48000:duration=300", command)
+        self.assertEqual("300", command[command.index("-t") + 1])
+        self.assertIn("-y", command)
+
+    def test_duration_bounds_accept_default_explicit_minimum_and_maximum(self):
+        for duration in (
+            fixture.DEFAULT_DURATION_SECONDS,
+            20,
+            300,
+            fixture.MIN_DURATION_SECONDS,
+            fixture.MAX_DURATION_SECONDS,
+        ):
+            with self.subTest(duration=duration):
+                self.assertEqual(duration, fixture.validate_duration_seconds(duration))
+
+    def test_duration_bounds_reject_invalid_values(self):
+        for duration in (0, -1, 4, 1801, 20.5, "20", True):
+            with self.subTest(duration=duration):
+                with self.assertRaises(fixture.FixtureError):
+                    fixture.validate_duration_seconds(duration)
+
+    def test_duration_cli_rejects_non_integer_and_unknown_arguments(self):
+        for arguments in (
+            ["--duration-seconds", "20.5"],
+            ["--duration-seconds", "0"],
+            ["--duration-seconds", "1801"],
+            ["--unknown-option"],
+        ):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(ROOT / "scripts/mac_mini_playback_fixture.py"),
+                        "generate",
+                        str(self.repo),
+                        *arguments,
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(2, result.returncode)
+
+    def test_wrapper_forwards_duration_and_overwrite_to_real_helper_contract(self):
+        fake_bin = Path(self.temp.name) / "fake-bin"
+        fake_bin.mkdir()
+        capture = Path(self.temp.name) / "python-arguments.json"
+        python = fake_bin / "python3"
+        python.write_text(
+            "#!/bin/sh\n"
+            "python_args_json='[\"'$(printf '%s' \"$*\" | sed 's/\"/\\\\\"/g; s/ /\",\"/g')'\"]'\n"
+            "printf '%s\\n' \"$python_args_json\" > \"$PLAYBACK_TEST_CAPTURE\"\n",
+            encoding="utf-8",
+        )
+        python.chmod(0o755)
+        result = subprocess.run(
+            [
+                str(ROOT / "scripts/mac-mini-test"),
+                "playback-fixture-generate",
+                "--overwrite",
+                "--duration-seconds",
+                "300",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "PLAYBACK_TEST_CAPTURE": str(capture),
+            },
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        arguments = json.loads(capture.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [
+                str(ROOT / "scripts/mac_mini_playback_fixture.py"),
+                "generate",
+                str(ROOT),
+                "--overwrite",
+                "--duration-seconds",
+                "300",
+            ],
+            arguments,
+        )
+
+    def test_probe_duration_tolerance_is_explicit_and_bounded(self):
+        def ffprobe(duration):
+            return {
+                "format": {
+                    "duration": str(duration),
+                    "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                },
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "codec_name": "h264",
+                        "width": 1280,
+                        "height": 720,
+                        "r_frame_rate": "30/1",
+                    },
+                    {"codec_type": "audio", "codec_name": "aac"},
+                ],
+            }
+
+        with mock.patch.object(fixture.shutil, "which", return_value="/test/ffprobe"), \
+             mock.patch.object(
+                 fixture.subprocess,
+                 "run",
+                 return_value=subprocess.CompletedProcess(
+                     ["ffprobe"], 0, json.dumps(ffprobe(300.05)), ""
+                 ),
+             ):
+            result = fixture._probe_media(
+                Path("fixture.mp4"), expected_duration_seconds=300
+            )
+        self.assertEqual(300.05, result["duration_seconds"])
+
+        with mock.patch.object(fixture.shutil, "which", return_value="/test/ffprobe"), \
+             mock.patch.object(
+                 fixture.subprocess,
+                 "run",
+                 return_value=subprocess.CompletedProcess(
+                     ["ffprobe"], 0, json.dumps(ffprobe(299.8)), ""
+                 ),
+             ):
+            with self.assertRaisesRegex(fixture.FixtureError, "materially"):
+                fixture._probe_media(
+                    Path("fixture.mp4"), expected_duration_seconds=300
+                )
+
     def test_root_and_media_symlinks_are_rejected(self):
         outside = Path(self.temp.name) / "outside"
         outside.mkdir()
@@ -113,9 +249,9 @@ class PlaybackFixtureTests(unittest.TestCase):
                 fixture.generate_fixture(self.repo)
         run.assert_not_called()
 
-    def test_generation_records_digest_codec_and_protected_state(self):
+    def test_generation_records_digest_codec_duration_and_protected_state(self):
         ffprobe = {
-            "format": {"duration": "20.000000", "format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
+            "format": {"duration": "300.000000", "format_name": "mov,mp4,m4a,3gp,3g2,mj2"},
             "streams": [
                 {"codec_type": "video", "codec_name": "h264", "width": 1280, "height": 720, "r_frame_rate": "30/1"},
                 {"codec_type": "audio", "codec_name": "aac"},
@@ -130,9 +266,16 @@ class PlaybackFixtureTests(unittest.TestCase):
 
         with mock.patch.object(fixture.shutil, "which", return_value="/test/tool"), \
              mock.patch.object(fixture.subprocess, "run", side_effect=fake_run):
-            result = fixture.generate_fixture(self.repo)
+            result = fixture.generate_fixture(self.repo, duration_seconds=300)
         paths = fixture.fixture_paths(self.repo)
         self.assertEqual(hashlib.sha256(b"synthetic-mp4").hexdigest(), result["sha256"])
+        self.assertEqual(300, result["requested_duration_seconds"])
+        self.assertEqual(300.0, result["observed_duration_seconds"])
+        self.assertEqual(300.0, result["duration_seconds"])
+        self.assertEqual(
+            result,
+            json.loads(paths["manifest"].read_text(encoding="utf-8")),
+        )
         self.assertEqual(0o600, stat.S_IMODE(paths["manifest"].stat().st_mode))
         self.assertEqual(0o644, stat.S_IMODE(paths["file"].stat().st_mode))
         with mock.patch.object(fixture.subprocess, "run") as run:
