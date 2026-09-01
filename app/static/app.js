@@ -223,7 +223,7 @@ function renderDashboard() {
   document.getElementById("wizard-progress").textContent = `${data.wizard_progress}%`;
   document.getElementById("jobs-count").textContent = `${data.jobs_total}`;
   document.getElementById("logs-count").textContent = `${data.logs_total}`;
-  document.getElementById("catalog-count").textContent = data.catalog_sources;
+  document.getElementById("catalog-count").textContent = data.catalog_items;
   document.getElementById("catalog-channels").textContent = data.catalog_channels;
   document.getElementById("catalog-movies").textContent = data.catalog_movies;
   document.getElementById("catalog-series").textContent = data.catalog_series;
@@ -330,6 +330,7 @@ function renderCatalogSummary() {
   document.getElementById("cat-summary-movies").textContent = summary.movies;
   document.getElementById("cat-summary-series").textContent = summary.series;
   document.getElementById("cat-summary-episodes").textContent = summary.episodes;
+  document.getElementById("cat-summary-total").textContent = summary.total_items;
   document.getElementById("cat-summary-sources").textContent = summary.sources;
   document.getElementById("cat-summary-last").textContent = formatDate(summary.last_import_time);
 }
@@ -347,7 +348,8 @@ function renderCatalog() {
         <div><span>Movies</span><strong>${state.catalogSummary.movies}</strong></div>
         <div><span>Series</span><strong>${state.catalogSummary.series}</strong></div>
         <div><span>Episodes</span><strong>${state.catalogSummary.episodes}</strong></div>
-        <div><span>Sources</span><strong>${state.catalogSummary.sources}</strong></div>
+        <div><span>Total Items</span><strong>${state.catalogSummary.total_items}</strong></div>
+        <div><span>Source Rows</span><strong>${state.catalogSummary.sources}</strong></div>
         <div><span>Last Import</span><strong>${formatDate(state.catalogSummary.last_import_time)}</strong></div>
       </div>
     `;
