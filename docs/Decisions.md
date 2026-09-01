@@ -10,6 +10,7 @@ Architecture decisions should be recorded as ADRs in `docs/adr/` when they requi
 | Python 3 and FastAPI | Accepted | Matches the target platform and provides clear API contracts. |
 | Docker Compose deployment | Accepted | Fits the target Ubuntu home-server environment. |
 | SQLite first | Accepted | Appropriate for a single-server home deployment; migration and backup hardening remain active work. |
+| Versioned startup migration boundary | Accepted | Startup upgrades SQLite before background services begin, records completion only after integrity checks, and refuses unknown newer schema versions. Historical additive initializers remain temporarily available for compatibility. |
 | Module-first architecture | Accepted | Catalog, providers, Broker, runtime, outputs, and integrations remain separate. |
 | UI-first configuration | Accepted | Normal operation should not require editing application YAML. |
 | IPTV Boss as editorial input | Accepted | Media Router reads exports but does not edit IPTV Boss-managed data. |

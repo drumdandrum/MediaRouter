@@ -402,13 +402,32 @@ Messages and metadata must be scrubbed before insert.
 
 ## Migration Plan
 
-1. Add migration tooling before Sprint 4 schema expansion.
-2. Formalize the Sprint 2 and Sprint 3 bootstrap tables as migration `0001`.
-3. Create settings and path mapping tables if JSON state moves into SQLite.
-4. Add encrypted secret storage or secret-provider integration.
-5. Add stream reservations.
-6. Add output plugin state.
-7. Add events/logging.
+Media Router now runs a centralized startup upgrade boundary before background
+polling begins. `schema_migrations` records consolidated schema version `1` only
+after all feature-owned additive initializers complete and both
+`PRAGMA integrity_check` and `PRAGMA foreign_key_check` pass. A failed attempt is
+not marked applied and may be retried. A database carrying a newer unknown version
+is refused rather than opened and rewritten.
+
+Version 1 consolidates the real schema history from the v0.3 catalog foundation
+through the current provider/account, source-availability, Broker, output,
+source-entry ledger, and Emby mapping/binding tables. Upgrade tests cover a fixture
+derived from the tagged v0.3 schema, unversioned current databases containing
+authoritative and historical rows, repeated application, failure/retry, future
+version refusal, and service read/write behavior after reopen.
+
+The underlying historical migrations remain additive and idempotent. Some
+feature-owned initializers still commit independently and are also called from
+normal service connection paths. Therefore version 1 deliberately records success
+last: interruption can leave a partially additive but unversioned schema, never a
+false successful version. The next persistence milestone is to move those schema
+writes fully out of request paths and give new versions explicit transaction
+boundaries.
+
+Future schema changes must increment `CURRENT_SCHEMA_VERSION`, add a deterministic
+migration step, preserve stable catalog and source IDs, and add a fixture covering
+the previous version. JSON settings remain outside SQLite and require backup as
+separate authoritative files.
 
 ## Open Decisions
 
