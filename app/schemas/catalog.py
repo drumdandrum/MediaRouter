@@ -8,6 +8,7 @@ class CatalogSummary(BaseModel):
     movies: int
     series: int
     episodes: int
+    total_items: int
     sources: int
     last_import_time: datetime | None = None
 

@@ -197,6 +197,9 @@ Deferred:
 - `POST /api/catalog/import`
 - `POST /api/catalog/clear-test-data`
 
+The catalog summary reports unique channel, movie, series, and episode counts,
+their `total_items` sum, and the separate `sources` availability-row count.
+
 ### Source Availability
 
 - `GET /api/sources`

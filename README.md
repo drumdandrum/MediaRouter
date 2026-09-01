@@ -114,7 +114,7 @@ Catalog identity and source availability are different measurements:
 - Catalog items are unique channels, movies, series, and episodes.
 - Source availability rows represent the provider/account sources that can satisfy those items.
 
-With four equivalent accounts, one catalog item can have four source-availability rows. The dashboard should present these as separate counts; a card showing the larger source-row total as “Catalog” is a known clarity issue.
+With four equivalent accounts, one catalog item can have four source-availability rows. The dashboard presents the unique catalog-item total and source-availability rows as separate counts.
 
 ## Runtime reservations
 

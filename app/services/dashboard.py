@@ -60,6 +60,7 @@ def get_dashboard_status() -> DashboardStatus:
         catalog_movies=catalog.movies,
         catalog_series=catalog.series,
         catalog_episodes=catalog.episodes,
+        catalog_items=catalog.total_items,
         catalog_sources=catalog.sources,
         providers_configured=providers["providers"],
         accounts_configured=providers["accounts"],

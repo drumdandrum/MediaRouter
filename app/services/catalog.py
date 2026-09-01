@@ -925,6 +925,7 @@ def get_summary() -> CatalogSummary:
         movies=counts.get("movie", 0),
         series=counts.get("series", 0),
         episodes=counts.get("episode", 0),
+        total_items=sum(counts.values()),
         sources=sources,
         last_import_time=datetime.fromisoformat(last) if last else None,
     )

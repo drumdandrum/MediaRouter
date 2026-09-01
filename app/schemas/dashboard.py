@@ -22,6 +22,7 @@ class DashboardStatus(BaseModel):
     catalog_movies: int
     catalog_series: int
     catalog_episodes: int
+    catalog_items: int
     catalog_sources: int
     providers_configured: int
     accounts_configured: int
