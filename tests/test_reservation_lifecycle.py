@@ -15,6 +15,11 @@ class ReservationLifecycleTests(unittest.TestCase):
         cls.temp_dir = Path(tempfile.mkdtemp())
         shutil.copy2(cls.original_data_dir / "media_router.db", cls.temp_dir / "media_router.db")
         get_settings().data_dir = cls.temp_dir
+        # Supersession behavior is independent of the operator's current lab
+        # capacity. Some cases intentionally retain three consuming
+        # reservations, so normalize only the copied fixture database.
+        with sqlite3.connect(cls.temp_dir / "media_router.db") as conn:
+            conn.execute("UPDATE accounts SET max_simultaneous_streams=3")
         from app.services.catalog import list_items
         cls.live = list_items("channel", limit=2)
         cls.movies = list_items("movie", limit=2)
