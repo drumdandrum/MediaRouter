@@ -581,7 +581,28 @@ the dedicated fixture service; never broaden its bind or substitute a production
 path. The lifecycle commands contain no import, output-generation, library,
 scan, playback, mapping, binding, or runtime-route action.
 
-The next stage must separately authorize and monitor one fixture import, one
-fixture STRM-generation action, one controlled Emby library addition or refresh,
-and one manual Play then Stop lifecycle. Runtime correlation, reservations,
-bindings, MediaRouter/Emby state, and cleanup must be explicitly handled there.
+### Five-minute fixture and capacity validation (2026-08-31)
+
+The guarded generator replaced the original 20-second media once with a
+300.000-second synthetic fixture. The resulting file is 121,753,600 bytes with
+SHA-256 `c13f39d4825ed71861fceb8306c81398df6bd4d0017698142338ba963b463fae`.
+Host, MediaRouter-container, and managed-Emby-container HEAD and range probes
+passed without changing the catalog item, source row, STRM bytes, Emby item, or
+manual VOD mapping.
+
+Stage 5A then validated the synthetic account's one-stream capacity. The first
+Emby Web session adopted and promoted one provisional reservation, created one
+binding, heartbeated at capacity 1/1, and released after the configured missing-
+session grace period. A distinct Safari Emby session received Emby's
+no-compatible-streams playback error while a distinct Emby-shaped runtime
+request returned HTTP 409 with `all_at_capacity`. Reservation and binding counts
+did not increase, the fixture received no second media request, and capacity
+never exceeded one. Emby's cached 20-second item metadata was left unchanged;
+the served fixture duration was verified directly instead of scanning the
+library.
+
+The original staged rollout separately authorized and monitored the fixture
+import, scoped STRM generation, controlled Emby library refresh, exact VOD
+mapping, and Play/Stop lifecycle before the capacity validation above. Future
+lab repetitions must retain the same explicit monitoring of runtime correlation,
+reservations, bindings, MediaRouter/Emby state, and cleanup.
