@@ -44,7 +44,7 @@ This backlog is organized by product milestone. Completed implementation history
 
 ### Operations
 
-- [ ] Backup and restore guidance/tooling.
+- [x] Backup and restore guidance/tooling.
 - [x] Database migration tests.
 - [ ] Move additive schema initialization out of nominal request paths after defining an explicit startup/upgrade migration boundary; avoid duplicate initialization such as the catalog summary path.
 - [ ] Review write-capable GET paths, including Broker expiry housekeeping, and define a clearer maintenance boundary without changing current expiry semantics.
@@ -104,7 +104,7 @@ This backlog is organized by product milestone. Completed implementation history
 ### Setup and release
 
 - [ ] Refine initial setup wizard for providers, accounts, imports, runtime URL, and outputs.
-- [ ] Add backup/restore acceptance tests.
+- [x] Add backup/restore acceptance tests.
 - [ ] Add migration and upgrade acceptance tests.
 - [ ] Publish supported Docker deployment guidance.
 - [ ] Publish Core v1.0 release notes.

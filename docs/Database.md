@@ -29,7 +29,15 @@ Current persisted files:
 - `/data/jobs.json`
 - `/data/outputs_strm_settings.json`
 - `/data/outputs_live_m3u_settings.json`
+- `/data/emby_integration_settings.json`
+- `/data/emby_integration_status.json` (disposable status cache)
+- `/data/.playback_ticket_secret`
 - `/data/media_router.db`
+
+The MediaRouter backup workflow includes the authoritative database, configuration
+JSON, integration settings, job history, and playback-ticket secret. It excludes
+the disposable integration-status cache and generated outputs. SQLite is copied
+through its online backup API and verified before archive publication.
 
 The JSON files remain the foundation and output settings stores. `media_router.db` stores catalog identity, providers, accounts/connections, source availability, legacy source mappings, import history, broker reservations, and generated output metadata.
 

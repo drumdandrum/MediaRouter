@@ -19,6 +19,7 @@ Architecture decisions should be recorded as ADRs in `docs/adr/` when they requi
 | Provider-agnostic availability | Accepted | Providers and accounts are separate from catalog identity and output presentation. |
 | Runtime URLs before outputs | Accepted | Clients consume stable Media Router URLs; providers remain hidden behind the Broker. |
 | Disposable outputs | Accepted | STRM and M3U files are rebuildable artifacts, not authoritative state. |
+| Consistency-safe state backups | Accepted | Backups use SQLite's online backup API, include authoritative `/data` configuration and key material, exclude generated outputs, and require protected archives plus empty-target restore. |
 | STRM outputs use runtime URLs | Accepted | Generated movie and episode STRM files never contain provider credentials or direct provider URLs. |
 | Live M3U uses runtime URLs | Accepted | Generated Live M3U entries route through `/r/live/{catalog_item_id}`. |
 | Decision-and-redirect runtime | Accepted | Media Router brokers and redirects playback but does not currently proxy or transcode media. |
