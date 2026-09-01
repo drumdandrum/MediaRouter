@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import logging
 import re
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 
 REDACTED = "[redacted]"
@@ -74,3 +75,20 @@ def redact_value(value):
     if isinstance(value, tuple):
         return tuple(redact_value(item) for item in value)
     return value
+
+
+class UvicornAccessRedactionFilter(logging.Filter):
+    """Sanitize Uvicorn's raw request-target argument before formatting."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and len(record.args) >= 3:
+            arguments = list(record.args)
+            arguments[2] = redact_text(unquote(str(arguments[2])))
+            record.args = tuple(arguments)
+        return True
+
+
+def install_uvicorn_access_redaction() -> None:
+    logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(item, UvicornAccessRedactionFilter) for item in logger.filters):
+        logger.addFilter(UvicornAccessRedactionFilter())

@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from pathlib import Path
 import tempfile
@@ -6,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from app.core.config import get_settings
-from app.core.redaction import REDACTED, redact_text, redact_value
+from app.core.redaction import REDACTED, UvicornAccessRedactionFilter, redact_text, redact_value
 from app.services.jobs import JOBS, create_job, get_job, update_job
 from app.services.logs import LOGS, add_log, list_logs
 
@@ -97,6 +98,33 @@ class SecretRedactionTests(unittest.TestCase):
         for secret in ("user", "pass", "token-value", "api-secret"):
             self.assertNotIn(secret, persisted)
         self.assertIn("movie-42", persisted)
+
+    def test_uvicorn_access_target_is_sanitized_before_formatting(self):
+        record = logging.LogRecord(
+            "uvicorn.access",
+            logging.INFO,
+            "",
+            0,
+            '%s - "%s %s HTTP/%s" %d',
+            (
+                "127.0.0.1:1234",
+                "GET",
+                "/api/catalog/movie-42?token=access-secret&item=2011768%0Aforged",
+                "1.1",
+                400,
+            ),
+            None,
+        )
+
+        self.assertTrue(UvicornAccessRedactionFilter().filter(record))
+
+        rendered = record.getMessage()
+        self.assertNotIn("access-secret", rendered)
+        self.assertNotIn("\nforged", rendered)
+        self.assertIn("movie-42", rendered)
+        self.assertIn("item=2011768", rendered)
+        self.assertIn("token=[redacted]", rendered)
+        self.assertIn("\\nforged", rendered)
 
 
 if __name__ == "__main__":

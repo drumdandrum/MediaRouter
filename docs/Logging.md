@@ -10,6 +10,9 @@ All in-memory and Uvicorn log messages pass through the shared diagnostic
 redactor. Job messages and structured job results are sanitized before they are
 written to `jobs.json`, including records restored from existing history. API
 handlers sanitize exception text before returning it as an HTTP error detail.
+Uvicorn access records sanitize the raw request target before its formatter runs,
+so sensitive query values and encoded newline content cannot bypass application
+logging through the access logger.
 
 The redactor removes or replaces:
 
