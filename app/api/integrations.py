@@ -2,6 +2,8 @@ import sqlite3
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.core.redaction import redact_text
+
 from app.schemas.integrations import (
     EmbyConnectionResult, EmbyIntegrationStatus, EmbyPlaybackBinding,
     EmbyPlaybackSession, EmbySettingsRead, EmbySettingsUpdate,
@@ -118,9 +120,9 @@ def emby_channel_mapping_update(emby_server_id: str, emby_item_id: str, payload:
     try:
         return link_emby_channel(emby_server_id, emby_item_id, payload.catalog_item_id, payload.emby_media_source_id)
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=redact_text(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
 
 
 @router.delete("/emby/channel-mappings/{integration_id}/{emby_item_id}", status_code=204)
@@ -139,7 +141,7 @@ def emby_vod_item_mapping(integration_id: str, emby_item_id: str) -> EmbyVodItem
     try:
         mapping = get_emby_vod_item_mapping(integration_id, emby_item_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
     if mapping is None:
         raise HTTPException(status_code=404, detail="Emby VOD item mapping not found")
     return mapping
@@ -152,9 +154,9 @@ def emby_vod_item_mapping_update(integration_id: str, emby_item_id: str,
         return link_emby_vod_item(integration_id, emby_item_id, payload.catalog_id,
                                   payload.media_type, payload.emby_media_source_id)
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=redact_text(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
 
 
 @router.delete("/emby/vod-item-mappings/{integration_id}/{emby_item_id}", status_code=204)
@@ -162,6 +164,6 @@ def emby_vod_item_mapping_delete(integration_id: str, emby_item_id: str) -> None
     try:
         deleted = delete_emby_vod_item_mapping(integration_id, emby_item_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
     if not deleted:
         raise HTTPException(status_code=404, detail="Emby VOD item mapping not found")

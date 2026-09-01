@@ -5,6 +5,7 @@ import json
 from uuid import uuid4
 
 from app.core.config import get_settings
+from app.core.redaction import redact_text, redact_value
 from app.schemas.jobs import JobRead
 from app.services.logs import add_log
 
@@ -57,11 +58,11 @@ def _load() -> None:
             status = "interrupted"
         job = Job(
             id=row["id"],
-            kind=row["kind"],
+            kind=redact_text(row["kind"]),
             status=status,
             progress=int(row.get("progress", 0)),
-            message=row.get("message", "Restored from history"),
-            result=row.get("result"),
+            message=redact_text(row.get("message", "Restored from history")),
+            result=redact_value(row.get("result")),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
@@ -93,9 +94,9 @@ def update_job(job_id: str, *, status: str | None = None, progress: int | None =
     if progress is not None:
         job.progress = progress
     if message is not None:
-        job.message = message
+        job.message = redact_text(message)
     if result is not None:
-        job.result = result
+        job.result = redact_value(result)
     job.updated_at = datetime.utcnow()
     _persist()
     return _read(job)

@@ -34,6 +34,7 @@ from app.services.source_entry_ledger import (
     start_import_run,
 )
 from app.services.sqlite_connection import connection_scope, rollback_and_close
+from app.core.redaction import redact_text
 
 
 EXTINF_RE = re.compile(r'^#EXTINF:[^,]*?(?P<attrs>(?:\s+[A-Za-z0-9_-]+="[^"]*")*)\s*,(?P<title>.*)$')
@@ -839,8 +840,9 @@ def run_catalog_import_job(
         )
         update_job(job_id, status="complete", progress=100, message=message, result=summary)
     except Exception as exc:
-        update_job(job_id, status="failed", progress=100, message=f"Catalog import failed: {exc}")
-        add_log("error", "catalog", f"Catalog import failed: {exc}")
+        safe_error = redact_text(exc)
+        update_job(job_id, status="failed", progress=100, message=f"Catalog import failed: {safe_error}")
+        add_log("error", "catalog", f"Catalog import failed: {safe_error}")
 
 
 def _rows(query: str, params: tuple = ()) -> list[sqlite3.Row]:

@@ -40,6 +40,7 @@ from app.services.logs import add_log
 from app.services.runtime import public_runtime_base_url, route_for_media_type
 from app.services.settings import get_app_settings
 from app.services.sqlite_connection import connection_scope, rollback_and_close
+from app.core.redaction import redact_text
 
 
 OUTPUT_TYPE = "strm"
@@ -780,7 +781,7 @@ def _process_strm_file(plan: _StrmFilePlan, *, dry_run: bool, overwrite: bool) -
             try:
                 unchanged = plan.output_path.stat().st_size == len(plan.content_bytes) and plan.output_path.read_bytes() == plan.content_bytes
             except OSError as exc:
-                raise OutputPathError(f"Could not inspect existing STRM file at {plan.output_path}: {exc}") from exc
+                raise OutputPathError(redact_text(f"Could not inspect existing STRM file at {plan.output_path}: {exc}")) from exc
         check_seconds = time.monotonic() - check_started
         if unchanged:
             return _StrmFileResult(plan, "skip", "Existing STRM content is unchanged.", not dry_run,
@@ -796,7 +797,7 @@ def _process_strm_file(plan: _StrmFilePlan, *, dry_run: bool, overwrite: bool) -
             write_seconds = time.monotonic() - write_started
         return _StrmFileResult(plan, action, reason, not dry_run, check_seconds, write_seconds)
     except Exception as exc:
-        return _StrmFileResult(plan, "fail", f"Failed to prepare STRM output: {exc}", False,
+        return _StrmFileResult(plan, "fail", redact_text(f"Failed to prepare STRM output: {exc}"), False,
                                time.monotonic() - check_started, write_seconds, exc)
 
 
@@ -923,8 +924,8 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
                         counts["fail"] = counts.get("fail", 0) + 1
                         failed_path = output_path if "output_path" in locals() else Path("")
                         if len(operations) < MAX_OPERATION_PREVIEW:
-                            operations.append(_operation("fail", item, failed_path, None, f"Failed to prepare STRM output: {exc}"))
-                        UVICORN_LOGGER.exception("STRM %s failed for catalog item %s at %s", mode, item.internal_id, failed_path)
+                            operations.append(_operation("fail", item, failed_path, None, redact_text(f"Failed to prepare STRM output: {exc}")))
+                        UVICORN_LOGGER.error("STRM %s failed for catalog item %s error=%s", mode, item.internal_id, type(exc).__name__)
                 path_construction_seconds = time.monotonic() - path_started
                 directory_started = time.monotonic()
                 if not effective_dry_run:
@@ -947,9 +948,8 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
                         operations.append(_operation(result.action, result.plan.item, result.plan.output_path,
                                                      result.plan.runtime_url if result.error is None else None, result.reason))
                     if result.error is not None:
-                        UVICORN_LOGGER.error("STRM %s failed for catalog item %s at %s", mode,
-                                             result.plan.item.internal_id, result.plan.output_path,
-                                             exc_info=(type(result.error), result.error, result.error.__traceback__))
+                        UVICORN_LOGGER.error("STRM %s failed for catalog item %s error=%s", mode,
+                                             result.plan.item.internal_id, type(result.error).__name__)
 
                 sqlite_started = time.monotonic()
                 if not effective_dry_run:
@@ -1018,10 +1018,10 @@ def build_strm_outputs(request_base_url: str | None = None, dry_run: bool = True
                                 title=None,
                                 output_path=row["output_path"],
                                 runtime_url=None,
-                                reason=f"Could not remove tracked orphaned STRM file: {exc}",
+                                reason=redact_text(f"Could not remove tracked orphaned STRM file: {exc}"),
                             )
                         )
-                        UVICORN_LOGGER.exception("STRM orphan cleanup failed at %s", tracked_path)
+                        UVICORN_LOGGER.error("STRM orphan cleanup failed error=%s", type(exc).__name__)
                         continue
                 if not effective_dry_run:
                     conn.execute("UPDATE output_generated_files SET status = 'removed' WHERE output_path = ?", (row["output_path"],))
@@ -1207,9 +1207,9 @@ def build_live_m3u_output(request_base_url: str | None = None, dry_run: bool = T
                 handle.close()
             if temp_path.exists():
                 temp_path.unlink()
-            UVICORN_LOGGER.exception("Live M3U %s failed at %s", mode, output_path)
+            UVICORN_LOGGER.error("Live M3U %s failed error=%s", mode, type(exc).__name__)
             if not effective_dry_run:
-                raise OutputPathError(f"Could not write Live M3U file at {output_path}: {exc}") from exc
+                raise OutputPathError(redact_text(f"Could not write Live M3U file at {output_path}: {exc}")) from exc
 
     summary = LiveM3uOutputSummary(
         mode=mode,
@@ -1313,7 +1313,7 @@ def run_strm_generate_job(job_id: str, request_base_url: str | None = None,
         )
         add_log("info" if status in {"complete", "cancelled"} else "error", "outputs", message)
     except Exception as exc:
-        UVICORN_LOGGER.exception("STRM generate job %s failed", job_id)
+        UVICORN_LOGGER.error("STRM generate job %s failed error=%s", job_id, type(exc).__name__)
         update_job(job_id, status="failed", progress=100, message=f"STRM generation failed: {exc}", result={
             "failed_count": 1,
             "failure_reason": str(exc),
@@ -1346,7 +1346,7 @@ def run_live_m3u_generate_job(job_id: str, request_base_url: str | None = None) 
         )
         add_log("info" if status == "complete" else "error", "outputs", message)
     except Exception as exc:
-        UVICORN_LOGGER.exception("Live M3U generate job %s failed", job_id)
+        UVICORN_LOGGER.error("Live M3U generate job %s failed error=%s", job_id, type(exc).__name__)
         update_job(job_id, status="failed", progress=100, message=f"Live M3U generation failed: {exc}", result={"failed_count": 1, "failure_reason": str(exc)})
         add_log("error", "outputs", f"Live M3U generation failed: {exc}")
 

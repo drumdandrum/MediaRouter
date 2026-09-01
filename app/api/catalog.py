@@ -1,5 +1,7 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
+from app.core.redaction import redact_text
+
 from app.schemas.catalog import CatalogImportAccepted, CatalogImportRequest, CatalogItem, CatalogSummary, ChannelPlacement, SourceAvailability, SourceAvailabilityUpdate
 from app.services.catalog import (
     clear_test_data,
@@ -85,11 +87,11 @@ def import_catalog(payload: CatalogImportRequest, background_tasks: BackgroundTa
         if account.provider_id != provider.id:
             raise ValueError("Selected account does not belong to the selected provider.")
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=redact_text(exc)) from exc
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+        raise HTTPException(status_code=403, detail=redact_text(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
     job = create_job("catalog_import")
     background_tasks.add_task(
         run_catalog_import_job, job.id, paths, payload.source_name,

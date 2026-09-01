@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 from urllib.parse import quote
 
+from app.core.redaction import redact_text
 from app.schemas.broker import BrokerDecision, BrokerReleaseRequest, BrokerReservation, BrokerResolveRequest, BrokerStatus, DuplicateRepairResult
 from app.services.broker import BrokerUnavailable, confirm_reservation, expire_now, force_expire_reservation, get_status, heartbeat_reservation, list_reservations, release_all_active, release_reservation, repair_duplicate_reservations, resolve_source
 from app.services.logs import add_log
@@ -63,7 +64,7 @@ def broker_confirm(reservation_id: str) -> BrokerReservation:
     try:
         return _reservation_or_404(confirm_reservation(reservation_id))
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=redact_text(exc)) from exc
 
 
 @router.post("/reservations/{reservation_id}/heartbeat", response_model=BrokerReservation)
