@@ -3,4 +3,13 @@ set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
-exec "${PYTHON:-python3}" -m app.operations.backup "$@"
+
+if [ -n "${PYTHON:-}" ]; then
+  python_runtime=$PYTHON
+elif [ -x "$repo_root/.venv/bin/python" ]; then
+  python_runtime="$repo_root/.venv/bin/python"
+else
+  python_runtime=python3
+fi
+
+exec "$python_runtime" -m app.operations.backup "$@"

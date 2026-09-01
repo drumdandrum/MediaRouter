@@ -43,6 +43,10 @@ scripts/media-router-backup validate \
   /protected/backups/mediarouter-20260901T050000Z.tar.gz
 ```
 
+The launcher uses `PYTHON` when explicitly set, otherwise the repository
+`.venv/bin/python` when present, and finally `python3`. The selected runtime must
+have the dependencies from `requirements.txt` installed.
+
 The destination must not already exist. Avoid configuration edits and output jobs
 during backup so the small JSON files describe one coherent operator state. The
 SQLite copy itself is transactionally consistent while MediaRouter remains
