@@ -424,10 +424,13 @@ derived from the tagged v0.3 schema, unversioned current databases containing
 authoritative and historical rows, repeated application, failure/retry, future
 version refusal, and service read/write behavior after reopen.
 
-The underlying historical migrations remain additive and idempotent. Feature-owned
-initializers still commit independently while consolidated version 1 is being
-applied, so version 1 deliberately records success last: interruption can leave a
-partially additive but unversioned schema, never a false successful version.
+The underlying historical migrations remain additive and idempotent. During a
+version transition, a migration-only connection facade executes schema statements
+without Python `executescript()` implicit commits and defers feature-helper
+`commit()` calls to the version runner. Each version runs under `BEGIN IMMEDIATE`;
+integrity checks, foreign-key checks, and the corresponding `schema_migrations`
+row are part of the same transaction. Failure rolls the version back as a unit and
+retry starts deterministically from the last recorded version.
 Initializers are no longer called by feature connections or ordinary catalog,
 provider/account, Broker, output, or Emby requests. A missing table after startup
 is an operational failure and is not silently repaired by the request that found
@@ -439,6 +442,11 @@ migration step, preserve stable catalog and source IDs, and add a fixture coveri
 the previous version. New application data bootstrap belongs in explicit migration
 or service mutation code, never a connection constructor. JSON settings remain
 outside SQLite and require backup as separate authoritative files.
+
+SQLite supports transactional table/index creation and `ALTER TABLE ADD COLUMN`
+used by the current migration. Future operations that SQLite cannot perform inside
+this boundary must be explicitly staged and documented rather than added to the
+transactional helper scripts.
 
 ## Open Decisions
 

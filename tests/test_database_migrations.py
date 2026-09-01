@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.db.migrations import CURRENT_SCHEMA_VERSION, DatabaseMigrationError, migrate_database
+from app.db import migrations
 from app.core.config import get_settings
 from app.schemas.providers import ProviderCreate
 
@@ -161,6 +162,48 @@ class DatabaseMigrationTests(unittest.TestCase):
         with sqlite3.connect(self.db) as conn:
             self.assertEqual(0, conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0])
         self.assertEqual(CURRENT_SCHEMA_VERSION, migrate_database(self.db))
+
+    def test_failure_after_partial_schema_rolls_back_entire_version(self):
+        with patch(
+            "app.services.outputs.ensure_outputs_schema",
+            side_effect=sqlite3.OperationalError("synthetic late migration failure"),
+        ):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "synthetic late migration failure"):
+                migrate_database(self.db)
+        with sqlite3.connect(self.db) as conn:
+            tables = {
+                row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                )
+            }
+            self.assertEqual({"schema_migrations"}, tables)
+            self.assertEqual(0, conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0])
+        self.assertEqual(CURRENT_SCHEMA_VERSION, migrate_database(self.db))
+
+    def test_integrity_failure_rolls_back_and_version_is_recorded_last(self):
+        original_verify = migrations._verify_database
+        observed_versions = []
+
+        def fail_verification(connection):
+            observed_versions.append(
+                connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
+            )
+            raise DatabaseMigrationError("synthetic integrity failure")
+
+        with patch.object(migrations, "_verify_database", side_effect=fail_verification):
+            with self.assertRaisesRegex(DatabaseMigrationError, "synthetic integrity failure"):
+                migrate_database(self.db)
+        self.assertEqual([0], observed_versions)
+        with sqlite3.connect(self.db) as conn:
+            self.assertEqual(0, conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0])
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='catalog_items'"
+            ).fetchone()[0])
+
+        with patch.object(migrations, "_verify_database", side_effect=original_verify):
+            migrate_database(self.db)
+        with sqlite3.connect(self.db) as conn:
+            self.assertEqual(1, conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0])
 
     def test_newer_schema_is_refused(self):
         with sqlite3.connect(self.db) as conn:
