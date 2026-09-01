@@ -11,8 +11,8 @@ from app.services.system import get_system_info
 from app.services.wizard import get_wizard_state, get_wizard_steps
 
 
-SPRINT_SCOPE = ["Foundation", "Wizard", "Settings", "Dashboard", "Job System", "Logs", "About/System", "Catalog Engine", "Providers", "Accounts", "Source Availability", "Broker Decision Engine", "Runtime URLs", "STRM Output", "Live TV M3U Output"]
-DEFERRED_SCOPE = ["XMLTV Output", "HDHomeRun Output", "Integrations", "Playback", "Proxy Streaming", "Transcoding"]
+IMPLEMENTED_CAPABILITIES = ["Foundation", "Wizard", "Settings", "Dashboard", "Job System", "Logs", "About/System", "Catalog Engine", "Providers", "Accounts", "Source Availability", "Broker Routing and Leases", "Runtime URLs", "STRM Output", "Live TV M3U Output", "Emby Playback Lifecycle"]
+PLANNED_CAPABILITIES = ["XMLTV Output", "HDHomeRun Output", "Proxy Streaming", "Transcoding"]
 
 
 def get_dashboard_status() -> DashboardStatus:
@@ -47,7 +47,7 @@ def get_dashboard_status() -> DashboardStatus:
         setup_status="ready" if wizard.setup_complete else "needs_setup",
         setup_status_label="Ready" if wizard.setup_complete else "Needs setup",
         services_status="ready" if services_configured else "not_configured",
-        services_status_label="Ready" if services_configured else "Not configured",
+        services_status_label="Configured" if services_configured else "Not configured",
         database_status=system.database_status,
         database_status_label=system.database_label,
         setup_complete=wizard.setup_complete,
@@ -73,6 +73,6 @@ def get_dashboard_status() -> DashboardStatus:
         broker_expired_reservations=broker.expired_reservations,
         broker_accounts_at_capacity=broker.accounts_at_capacity,
         broker_available_accounts=broker.available_accounts,
-        sprint_scope=SPRINT_SCOPE,
-        deferred_scope=DEFERRED_SCOPE,
+        sprint_scope=IMPLEMENTED_CAPABILITIES,
+        deferred_scope=PLANNED_CAPABILITIES,
     )

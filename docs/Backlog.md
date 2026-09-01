@@ -40,7 +40,7 @@ This backlog is organized by product milestone. Completed implementation history
 
 - [x] Fix or relabel the dashboard Catalog card so unique catalog items are not confused with source-availability rows.
 - [x] Show unique channels, movies, series, episodes, total catalog items, and source rows as distinct metrics.
-- [ ] Review status labels for production clarity.
+- [x] Review status labels for production clarity.
 
 ### Operations
 
