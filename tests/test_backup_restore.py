@@ -3,6 +3,8 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -122,6 +124,22 @@ class BackupRestoreTests(unittest.TestCase):
         with self.assertRaisesRegex(BackupError, "must not exist or must be an empty"):
             restore_backup(self.archive, destination)
         self.assertEqual("keep", (destination / "keep.txt").read_text())
+
+    def test_cli_launcher_uses_configured_python_runtime(self):
+        create_backup(self.data, self.archive)
+        script = Path(__file__).resolve().parents[1] / "scripts" / "media-router-backup"
+        environment = os.environ.copy()
+        environment["PYTHON"] = sys.executable
+
+        result = subprocess.run(
+            [str(script), "validate", str(self.archive)],
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn('"format_version": 1', result.stdout)
 
 
 if __name__ == "__main__":
