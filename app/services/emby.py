@@ -98,13 +98,7 @@ def _db_path() -> Path:
 
 def _connect() -> sqlite3.Connection:
     from app.services.broker import _connect as broker_connect
-    conn = broker_connect()
-    try:
-        ensure_emby_schema(conn)
-    except BaseException:
-        rollback_and_close(conn)
-        raise
-    return conn
+    return broker_connect()
 
 
 def ensure_emby_schema(conn: sqlite3.Connection | None = None) -> None:

@@ -424,18 +424,21 @@ derived from the tagged v0.3 schema, unversioned current databases containing
 authoritative and historical rows, repeated application, failure/retry, future
 version refusal, and service read/write behavior after reopen.
 
-The underlying historical migrations remain additive and idempotent. Some
-feature-owned initializers still commit independently and are also called from
-normal service connection paths. Therefore version 1 deliberately records success
-last: interruption can leave a partially additive but unversioned schema, never a
-false successful version. The next persistence milestone is to move those schema
-writes fully out of request paths and give new versions explicit transaction
-boundaries.
+The underlying historical migrations remain additive and idempotent. Feature-owned
+initializers still commit independently while consolidated version 1 is being
+applied, so version 1 deliberately records success last: interruption can leave a
+partially additive but unversioned schema, never a false successful version.
+Initializers are no longer called by feature connections or ordinary catalog,
+provider/account, Broker, output, or Emby requests. A missing table after startup
+is an operational failure and is not silently repaired by the request that found
+it. Explicit initializer functions remain available only to the migration runner
+and migration-focused test fixtures.
 
 Future schema changes must increment `CURRENT_SCHEMA_VERSION`, add a deterministic
 migration step, preserve stable catalog and source IDs, and add a fixture covering
-the previous version. JSON settings remain outside SQLite and require backup as
-separate authoritative files.
+the previous version. New application data bootstrap belongs in explicit migration
+or service mutation code, never a connection constructor. JSON settings remain
+outside SQLite and require backup as separate authoritative files.
 
 ## Open Decisions
 

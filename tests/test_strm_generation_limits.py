@@ -9,6 +9,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 from app.core.config import get_settings
+from app.db.migrations import migrate_database
 from app.schemas.outputs import StrmSettingsUpdate
 from app.services.catalog import ensure_schema, import_paths, list_channel_placements
 from app.services.outputs import (_atomic_write_strm, _db_path, dry_run_strm_outputs, generate_strm_outputs, generate_live_m3u_output,
@@ -21,7 +22,7 @@ class StrmGenerationLimitTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         os.environ["MEDIA_ROUTER_DATA_DIR"] = str(Path(self.temp.name) / "data")
         get_settings.cache_clear()
-        ensure_schema()
+        migrate_database()
         now = datetime.utcnow().isoformat()
         with sqlite3.connect(_db_path()) as conn:
             rows = []
@@ -115,7 +116,7 @@ class LiveM3uGenerationLimitTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         os.environ["MEDIA_ROUTER_DATA_DIR"] = str(Path(self.temp.name) / "data")
         get_settings.cache_clear()
-        ensure_schema()
+        migrate_database()
         now = datetime.utcnow().isoformat()
         with sqlite3.connect(_db_path()) as conn:
             for index in range(7):
@@ -129,6 +130,9 @@ class LiveM3uGenerationLimitTests(unittest.TestCase):
                     conn.execute("""INSERT INTO source_availability
                         (catalog_internal_id,location_ref,media_type,enabled,last_seen_at,created_at,updated_at)
                         VALUES (?, ?, 'channel', 1, ?, ?, ?)""", (internal_id, "https://provider.invalid/secret", now, now, now))
+        # Direct fixture inserts bypass the importer that normally creates
+        # editorial placements; invoke the explicit test bootstrap once.
+        ensure_schema()
         self.output = Path(self.temp.name) / "live" / "live.m3u"
 
     def tearDown(self):

@@ -58,8 +58,6 @@ def _db_path() -> Path:
 
 
 def _connect() -> sqlite3.Connection:
-    from app.services.catalog import ensure_schema
-
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -67,8 +65,6 @@ def _connect() -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 5000")
-        ensure_schema(conn)
-        ensure_broker_schema(conn)
     except BaseException:
         rollback_and_close(conn)
         raise

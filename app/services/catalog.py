@@ -68,7 +68,6 @@ def _connect() -> sqlite3.Connection:
     try:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        ensure_schema(conn)
     except BaseException:
         rollback_and_close(conn)
         raise
@@ -543,7 +542,6 @@ def _import_paths_authoritative(
     observation_spool: ObservationSpool | None = None,
     observation_failed: list[bool] | None = None,
 ) -> dict[str, Any]:
-    ensure_schema()
     paths = list(dict.fromkeys(paths))
     validate_media_type_hint(media_type_hint)
     validate_playlist_sources(paths)
@@ -730,7 +728,6 @@ def import_paths(
             )
         effective_provider_id = account.provider_id
     try:
-        ensure_schema()
         register_or_validate_source_feed(
             db_path, source_identity=source_identity,
             provider_id=effective_provider_id, account_id=account_id,
@@ -912,7 +909,6 @@ def _availability_from_row(row: sqlite3.Row) -> SourceAvailability:
 
 
 def get_summary() -> CatalogSummary:
-    ensure_schema()
     with connection_scope(_connect()) as conn:
         counts = {
             row["media_type"]: row["count"]
@@ -932,7 +928,6 @@ def get_summary() -> CatalogSummary:
 
 
 def list_items(media_type: str, limit: int = 100, offset: int = 0) -> list[CatalogItem]:
-    ensure_schema()
     limit = min(max(limit, 1), 500)
     offset = max(offset, 0)
     rows = _rows("SELECT * FROM catalog_items WHERE media_type = ? ORDER BY title LIMIT ? OFFSET ?", (media_type, limit, offset))
@@ -940,7 +935,6 @@ def list_items(media_type: str, limit: int = 100, offset: int = 0) -> list[Catal
 
 
 def list_all_items(limit: int = 200, offset: int = 0) -> list[CatalogItem]:
-    ensure_schema()
     limit = min(max(limit, 1), 500)
     offset = max(offset, 0)
     rows = _rows(
@@ -957,7 +951,6 @@ def list_all_items(limit: int = 200, offset: int = 0) -> list[CatalogItem]:
 
 
 def get_item(catalog_internal_id: str) -> CatalogItem | None:
-    ensure_schema()
     rows = _rows("SELECT * FROM catalog_items WHERE internal_id = ?", (catalog_internal_id,))
     return _item_from_row(rows[0]) if rows else None
 
@@ -984,7 +977,6 @@ def list_channel_placements(catalog_internal_id: str, limit: int = 100, offset: 
 
 
 def list_sources(limit: int = 100, offset: int = 0) -> list[CatalogSource]:
-    ensure_schema()
     limit = min(max(limit, 1), 500)
     offset = max(offset, 0)
     rows = _rows("SELECT * FROM catalog_sources ORDER BY last_seen_at DESC, source_name, id LIMIT ? OFFSET ?", (limit, offset))
@@ -992,7 +984,6 @@ def list_sources(limit: int = 100, offset: int = 0) -> list[CatalogSource]:
 
 
 def list_source_availability(catalog_internal_id: str | None = None, limit: int = 100, offset: int = 0) -> list[SourceAvailability]:
-    ensure_schema()
     limit = min(max(limit, 1), 500)
     offset = max(offset, 0)
     where = "WHERE source_availability.catalog_internal_id = ?" if catalog_internal_id else ""
@@ -1023,7 +1014,6 @@ def list_source_availability(catalog_internal_id: str | None = None, limit: int 
 
 
 def update_source_availability(source_id: int, payload: SourceAvailabilityUpdate) -> SourceAvailability | None:
-    ensure_schema()
     data = payload.model_dump(exclude_unset=True)
     if "enabled" in data:
         data["enabled"] = int(data["enabled"])
@@ -1063,7 +1053,6 @@ def list_source_availability_by_id(source_id: int) -> SourceAvailability | None:
 
 
 def delete_source_availability(source_id: int) -> bool:
-    ensure_schema()
     with connection_scope(_connect()) as conn:
         result = conn.execute("DELETE FROM source_availability WHERE id = ?", (source_id,))
         conn.commit()
@@ -1071,7 +1060,6 @@ def delete_source_availability(source_id: int) -> bool:
 
 
 def source_availability_summary() -> dict[str, float | int]:
-    ensure_schema()
     with connection_scope(_connect()) as conn:
         sources = conn.execute("SELECT COUNT(*) AS count FROM source_availability").fetchone()["count"]
         items = conn.execute("SELECT COUNT(*) AS count FROM catalog_items WHERE media_type IN ('channel', 'movie', 'episode')").fetchone()["count"]
@@ -1079,7 +1067,6 @@ def source_availability_summary() -> dict[str, float | int]:
 
 
 def count_enabled_source_availability(catalog_internal_id: str) -> int:
-    ensure_schema()
     with connection_scope(_connect()) as conn:
         row = conn.execute(
             "SELECT COUNT(*) AS count FROM source_availability WHERE catalog_internal_id = ? AND enabled = 1",
@@ -1089,7 +1076,6 @@ def count_enabled_source_availability(catalog_internal_id: str) -> int:
 
 
 def clear_test_data() -> CatalogSummary:
-    ensure_schema()
     with connection_scope(_connect()) as conn:
         conn.execute("DELETE FROM source_availability")
         conn.execute("DELETE FROM catalog_sources")

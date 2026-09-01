@@ -13,13 +13,13 @@ from urllib.error import URLError
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
+from app.db.migrations import migrate_database
 from app.schemas.integrations import EmbySettingsUpdate
 from app.schemas.providers import AccountCreate, ProviderCreate
 from app.services.broker import (
-    ensure_broker_schema, force_expire_reservation, get_status,
+    force_expire_reservation, get_status,
     list_reservations, release_reservation, resolve_source,
 )
-from app.services.catalog import ensure_schema
 from app.services.providers import create_account, create_provider
 from pydantic import ValidationError
 
@@ -29,10 +29,7 @@ class EmbyIntegrationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         os.environ["MEDIA_ROUTER_DATA_DIR"] = str(Path(self.temp.name) / "data")
         get_settings.cache_clear()
-        ensure_schema()
-        ensure_broker_schema()
-        from app.services.emby import ensure_emby_schema
-        ensure_emby_schema()
+        migrate_database()
         provider = create_provider(ProviderCreate(friendly_name="Provider"))
         self.account = create_account(AccountCreate(provider_id=provider.id, friendly_name="Stream", max_simultaneous_streams=2))
         now = datetime.utcnow().isoformat()
@@ -100,8 +97,8 @@ class EmbyIntegrationTests(unittest.TestCase):
         now = datetime.utcnow().isoformat()
         with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
             conn.execute("""INSERT INTO emby_channel_mappings
-                (emby_server_id,emby_item_id,emby_media_source_id,emby_channel_name,catalog_item_id,mapping_source,created_at,updated_at)
-                VALUES ('server',?,?,?,?, 'manual',?,?)""",
+                (emby_server_id,integration_id,emby_item_id,emby_media_source_id,emby_channel_name,catalog_item_id,mapping_source,created_at,updated_at)
+                VALUES ('server','server',?,?,?,?, 'manual',?,?)""",
                 (item_id, media_source, catalog_id, catalog_id, now, now))
 
     def _placement(self, catalog_id, display_title, index=0, active=1):
@@ -465,8 +462,8 @@ class EmbyIntegrationTests(unittest.TestCase):
         now = datetime.utcnow().isoformat()
         with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
             conn.execute("""INSERT INTO emby_channel_mappings
-                (emby_server_id,emby_item_id,emby_media_source_id,emby_channel_name,catalog_item_id,mapping_source,created_at,updated_at)
-                VALUES ('server','15747','source-opaque','24/7 EDDY MURPHY','live_one','manual',?,?)""", (now, now))
+                (emby_server_id,integration_id,emby_item_id,emby_media_source_id,emby_channel_name,catalog_item_id,mapping_source,created_at,updated_at)
+                VALUES ('server','server','15747','source-opaque','24/7 EDDY MURPHY','live_one','manual',?,?)""", (now, now))
         for item_id, media_source, session_id in (("15747", "different", "mapped-item"),
                                                    ("different-item", "source-opaque", "mapped-source")):
             payload = self._live_payload(session=session_id)

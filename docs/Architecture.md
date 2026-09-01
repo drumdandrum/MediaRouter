@@ -76,10 +76,10 @@ app/
 Application lifespan runs the database upgrade coordinator before starting the
 Emby poller. The coordinator applies the consolidated additive schema in dependency
 order, verifies SQLite integrity and foreign keys, and records the supported schema
-version only after verification. Unknown newer schemas stop startup. Feature
-services retain their existing defensive initialization calls temporarily; moving
-those remaining schema writes out of normal request paths is a separate hardening
-step.
+version only after verification. Unknown newer schemas stop startup. Feature and
+request connections assume this contract and perform no schema initialization,
+DDL, compatibility backfill, or migration-ledger writes. Missing/incomplete schema
+state after startup is surfaced as an operational database error.
 
 ## Playback Flow
 
