@@ -58,7 +58,21 @@ class DashboardCatalogMetricTests(unittest.TestCase):
         self.assertIn('data.catalog_items', javascript)
         self.assertNotIn('document.getElementById("catalog-count").textContent = data.catalog_sources', javascript)
         self.assertIn('<span>Catalog Items</span><strong id="catalog-count">', template)
+        self.assertIn('<span>Source Rows</span><strong id="availability-count">', template)
         self.assertIn('<span>Source Rows</span><strong id="cat-summary-sources">', template)
+
+    def test_dashboard_status_labels_describe_operator_state(self):
+        service = Path("app/services/dashboard.py").read_text(encoding="utf-8")
+        template = Path("app/templates/index.html").read_text(encoding="utf-8")
+
+        self.assertIn('services_status_label="Configured" if services_configured', service)
+        self.assertIn("External Services", template)
+        self.assertIn("Accounts Needing Attention", template)
+        self.assertIn("Routing + Leases", template)
+        self.assertIn("Implemented Capabilities", template)
+        self.assertIn("Planned Capabilities", template)
+        self.assertNotIn("Decision Only", template)
+        self.assertNotIn("Deferred Scope", template)
 
 
 if __name__ == "__main__":
