@@ -19,6 +19,7 @@ from app.api.sources import router as sources_router
 from app.api.system import router as system_router
 from app.api.wizard import router as wizard_router
 from app.core.config import get_settings
+from app.db.migrations import migrate_database
 from app.main_meta import APP_VERSION
 from app.services.emby_poller import EmbyPoller
 
@@ -26,6 +27,7 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    migrate_database()
     poller = EmbyPoller()
     await poller.start()
     try:
