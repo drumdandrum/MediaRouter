@@ -1,5 +1,7 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
+from app.core.redaction import redact_text
+
 from app.schemas.jobs import JobRead
 from app.schemas.outputs import (
     GeneratedOutputFile,
@@ -55,7 +57,7 @@ def write_strm_settings(payload: StrmSettingsUpdate) -> StrmSettings:
     try:
         return update_strm_settings(payload)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
 
 
 @router.post("/strm/dry-run", response_model=StrmOutputResult)
@@ -63,7 +65,7 @@ def strm_dry_run(request: Request) -> StrmOutputResult:
     try:
         return dry_run_strm_outputs(_request_base_url(request))
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
 
 
 @router.get("/strm/validate-paths", response_model=OutputPathValidationResult)
@@ -71,7 +73,7 @@ def strm_validate_paths() -> OutputPathValidationResult:
     try:
         return validate_strm_paths(create_missing=True)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
 
 
 @router.post("/strm/generate", response_model=JobRead, status_code=201)
@@ -82,7 +84,7 @@ def strm_generate(request: Request, background_tasks: BackgroundTasks, payload: 
     try:
         validate_strm_catalog_item_ids(payload.catalog_item_ids)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
     job = create_job("strm_generate")
     background_tasks.add_task(run_strm_generate_job, job.id, _request_base_url(request), payload.catalog_item_ids)
     return job
@@ -113,7 +115,7 @@ def write_live_m3u_settings(payload: LiveM3uSettingsUpdate) -> LiveM3uSettings:
     try:
         return update_live_m3u_settings(payload)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
 
 
 @router.get("/live-m3u/validate-paths", response_model=OutputPathValidationResult)
@@ -121,7 +123,7 @@ def live_m3u_validate_paths() -> OutputPathValidationResult:
     try:
         return validate_live_m3u_paths(create_missing=True)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
 
 
 @router.post("/live-m3u/dry-run", response_model=LiveM3uOutputResult)
@@ -129,7 +131,7 @@ def live_m3u_dry_run(request: Request) -> LiveM3uOutputResult:
     try:
         return dry_run_live_m3u_output(_request_base_url(request))
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
 
 
 @router.post("/live-m3u/generate", response_model=JobRead, status_code=201)
@@ -152,4 +154,4 @@ def live_m3u_preview(request: Request) -> LiveM3uOutputResult:
     try:
         return preview_live_m3u_output(_request_base_url(request))
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=redact_text(exc)) from exc

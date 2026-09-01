@@ -63,6 +63,17 @@ Media Router is middleware, not another full media server.
 
 ## Current operational decisions
 
+### Diagnostic redaction
+
+- Logs, HTTP exception details, and job history use one shared redaction policy.
+- Operational correlation identifiers remain visible, while credentials and
+  sensitive URL components are removed before diagnostics cross a logging, API,
+  or persistence boundary.
+- Runtime exception logging records sanitized summaries or exception classes,
+  not raw tracebacks from credential-bearing request and output paths.
+- The complete policy and extension rule are documented in
+  [Logging and Diagnostic Redaction](Logging.md).
+
 ### Development and production separation
 
 - Code changes are developed and tested in the development checkout.

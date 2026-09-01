@@ -50,7 +50,7 @@ This backlog is organized by product milestone. Completed implementation history
 - [ ] Review write-capable GET paths, including Broker expiry housekeeping, and define a clearer maintenance boundary without changing current expiry semantics.
 - [x] Upgrade notes and rollback procedure.
 - [ ] Health diagnostics page or report.
-- [ ] Review structured logging and secret scrubbing coverage.
+- [x] Review structured logging and secret scrubbing coverage.
 - [ ] Optional local-network UI authentication.
 - [ ] Document production and development environment separation.
 - [ ] Document local STRM output as the preferred same-host deployment model.
