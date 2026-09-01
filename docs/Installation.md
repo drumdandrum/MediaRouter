@@ -77,6 +77,11 @@ MEDIA_ROUTER_DATA_DIR=/data
 
 Settings, wizard state, and job history are stored in `/data` inside the container and `./data` on the host.
 
+Back up this state with the repository's `scripts/media-router-backup` command,
+not by copying a live `media_router.db` file. The backup contains credentials and
+key material and must remain protected. Generated output mounts are deliberately
+excluded because their files can be regenerated. See `docs/BackupRestore.md`.
+
 The compose file should mount output folders for implemented output modules as read-write container paths. IPTVBoss exports may be mounted read-only for imports.
 
 ## Future Production Shape

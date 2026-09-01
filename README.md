@@ -69,6 +69,13 @@ docker compose up --build -d
 
 Persistent application data is stored under `./data` and mounted into the container as `/data`.
 
+Create consistency-safe backups with `scripts/media-router-backup`; it uses
+SQLite's online backup API and includes the authoritative database, configuration,
+integration settings, job history, and playback-ticket key in a protected archive.
+Generated outputs are intentionally excluded and rebuildable. See
+[`docs/BackupRestore.md`](docs/BackupRestore.md) for validation, disposable restore,
+and rollback procedures.
+
 To force current Git metadata into the build:
 
 ```bash
