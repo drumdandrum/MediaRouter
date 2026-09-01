@@ -11,10 +11,10 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 from app.core.config import get_settings
+from app.db.migrations import migrate_database
 from app.schemas.settings import SettingsUpdate
 from app.schemas.providers import AccountCreate, ProviderCreate
-from app.services.broker import BrokerUnavailable, ensure_broker_schema, list_reservations, release_reservation, repair_duplicate_reservations, resolve_source
-from app.services.catalog import ensure_schema
+from app.services.broker import BrokerUnavailable, list_reservations, release_reservation, repair_duplicate_reservations, resolve_source
 from app.services.providers import create_account, create_provider
 from app.services.runtime import runtime_client_address, runtime_client_fingerprint
 from app.services.settings import update_app_settings
@@ -26,8 +26,7 @@ class RuntimeReservationReuseTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         os.environ["MEDIA_ROUTER_DATA_DIR"] = str(Path(self.temp.name) / "data")
         get_settings.cache_clear()
-        ensure_schema()
-        ensure_broker_schema()
+        migrate_database()
         provider = create_provider(ProviderCreate(friendly_name="Provider"))
         self.accounts = [
             create_account(AccountCreate(provider_id=provider.id, friendly_name="Stream 1", max_simultaneous_streams=1, weight=100)),
@@ -299,9 +298,11 @@ class RuntimeReservationReuseTests(unittest.TestCase):
             row = conn.execute("SELECT * FROM broker_reservations WHERE reservation_id=?", (first.reservation.reservation_id,)).fetchone()
             conn.execute("""INSERT INTO broker_reservations
                 (reservation_id,catalog_item_id,source_availability_id,provider_id,account_id,media_type,
-                 location_ref,status,created_at,expires_at,client_fingerprint,identity_type,last_seen_at,last_action)
-                VALUES ('duplicate',?,?,?,?,?,?,'active',?,?,?,?,?,'reservation_created')""",
-                (row[2], row[3], row[4], row[5], row[6], row[7], row[9], row[10], row[14], "derived_fingerprint", row[9]))
+                 location_ref,status,created_at,expires_at,client_fingerprint,identity_type,last_seen_at,last_action,
+                 lifecycle_state,active_expires_at,first_seen_at,request_count,distinct_activity_count)
+                VALUES ('duplicate',?,?,?,?,?,?,'active',?,?,?,?,?,'reservation_created','active',?,?,1,0)""",
+                (row[2], row[3], row[4], row[5], row[6], row[7], row[9], row[10], row[14],
+                 "derived_fingerprint", row[9], row[10], row[9]))
         repaired = repair_duplicate_reservations()
         self.assertEqual(repaired.released_reservations, 1)
         self.assertEqual(len([row for row in list_reservations() if row.lifecycle_state in {"provisional", "active"}]), 1)

@@ -46,7 +46,7 @@ This backlog is organized by product milestone. Completed implementation history
 
 - [x] Backup and restore guidance/tooling.
 - [x] Database migration tests.
-- [ ] Move additive schema initialization out of nominal request paths after defining an explicit startup/upgrade migration boundary; avoid duplicate initialization such as the catalog summary path.
+- [x] Move additive schema initialization out of nominal request paths after defining an explicit startup/upgrade migration boundary; avoid duplicate initialization such as the catalog summary path.
 - [ ] Review write-capable GET paths, including Broker expiry housekeeping, and define a clearer maintenance boundary without changing current expiry semantics.
 - [ ] Upgrade notes and rollback procedure.
 - [ ] Health diagnostics page or report.

@@ -9,10 +9,10 @@ from urllib.parse import urlsplit
 from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
+from app.db.migrations import migrate_database
 from app.main import app
 from app.schemas.providers import AccountCreate, ProviderCreate
-from app.services.broker import ensure_broker_schema, list_reservations, release_reservation
-from app.services.catalog import ensure_schema
+from app.services.broker import list_reservations, release_reservation
 from app.services.playback_tickets import issue_playback_ticket
 from app.services.providers import create_account, create_provider
 from app.services.logs import list_logs
@@ -24,8 +24,7 @@ class PlaybackTicketTests(unittest.TestCase):
         os.environ["MEDIA_ROUTER_DATA_DIR"] = str(Path(self.temp.name) / "data")
         os.environ["MEDIA_ROUTER_PLAYBACK_TICKET_SECRET"] = "test-secret-that-is-at-least-32-bytes-long"
         get_settings.cache_clear()
-        ensure_schema()
-        ensure_broker_schema()
+        migrate_database()
         provider = create_provider(ProviderCreate(friendly_name="Provider"))
         self.accounts = [create_account(AccountCreate(provider_id=provider.id, friendly_name=f"Stream {n}", max_simultaneous_streams=1)) for n in (2, 3)]
         now = datetime.utcnow().isoformat()

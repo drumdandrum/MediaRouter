@@ -2,7 +2,6 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
-import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -47,84 +46,43 @@ class SQLiteConnectionLifecycleTests(unittest.TestCase):
         os.environ.pop("MEDIA_ROUTER_DATA_DIR", None)
         self.temp.cleanup()
 
-    def test_connect_initialization_failure_rolls_back_closes_and_reraises(self):
+    def test_runtime_connectors_do_not_invoke_schema_initializers(self):
         cases = (
             (catalog, "ensure_schema"),
             (providers, "ensure_provider_schema"),
-            (outputs, "ensure_schema"),
+            (outputs, "ensure_outputs_schema"),
+            (broker, "ensure_broker_schema"),
         )
         for module, initializer in cases:
             with self.subTest(module=module.__name__):
                 connection = MagicMock()
-                primary = RuntimeError(f"{module.__name__} initialization failed")
                 with (
                     patch.object(module.sqlite3, "connect", return_value=connection),
-                    patch.object(module, initializer, side_effect=primary),
+                    patch.object(module, initializer) as schema_initializer,
                 ):
-                    with self.assertRaises(RuntimeError) as raised:
-                        module._connect()
-                self.assertIs(raised.exception, primary)
-                connection.rollback.assert_called_once_with()
-                connection.close.assert_called_once_with()
+                    opened = module._connect()
+                self.assertIs(connection, opened)
+                schema_initializer.assert_not_called()
 
         connection = MagicMock()
-        primary = RuntimeError("broker initialization failed")
-        with (
-            patch.object(broker.sqlite3, "connect", return_value=connection),
-            patch.object(catalog, "ensure_schema", side_effect=primary),
-        ):
-            with self.assertRaises(RuntimeError) as raised:
-                broker._connect()
-        self.assertIs(raised.exception, primary)
-        connection.rollback.assert_called_once_with()
-        connection.close.assert_called_once_with()
-
-        connection = MagicMock()
-        primary = RuntimeError("emby initialization failed")
         with (
             patch("app.services.broker._connect", return_value=connection),
-            patch.object(emby, "ensure_emby_schema", side_effect=primary),
+            patch.object(emby, "ensure_emby_schema") as schema_initializer,
         ):
-            with self.assertRaises(RuntimeError) as raised:
-                emby._connect()
-        self.assertIs(raised.exception, primary)
-        connection.rollback.assert_called_once_with()
-        connection.close.assert_called_once_with()
+            opened = emby._connect()
+        self.assertIs(connection, opened)
+        schema_initializer.assert_not_called()
 
-    def test_cleanup_failure_does_not_mask_initialization_failure(self):
+    def test_connection_configuration_failure_rolls_back_closes_and_reraises(self):
         connection = MagicMock()
-        connection.rollback.side_effect = KeyboardInterrupt("rollback cleanup interrupted")
-        connection.close.side_effect = SystemExit("close cleanup interrupted")
-        primary = ValueError("primary initialization failure")
-        with (
-            patch.object(catalog.sqlite3, "connect", return_value=connection),
-            patch.object(catalog, "ensure_schema", side_effect=primary),
-        ):
-            with self.assertRaises(ValueError) as raised:
+        primary = sqlite3.OperationalError("synthetic pragma failure")
+        connection.execute.side_effect = primary
+        with patch.object(catalog.sqlite3, "connect", return_value=connection):
+            with self.assertRaises(sqlite3.OperationalError) as raised:
                 catalog._connect()
-        self.assertIs(raised.exception, primary)
+        self.assertIs(primary, raised.exception)
         connection.rollback.assert_called_once_with()
         connection.close.assert_called_once_with()
-
-    def test_primary_base_exceptions_are_preserved_unchanged(self):
-        failures = (
-            RuntimeError("ordinary initialization failure"),
-            sqlite3.OperationalError("database is locked"),
-            KeyboardInterrupt("initialization interrupted"),
-            SystemExit("initialization exited"),
-        )
-        for primary in failures:
-            with self.subTest(primary=type(primary).__name__):
-                connection = MagicMock()
-                with (
-                    patch.object(catalog.sqlite3, "connect", return_value=connection),
-                    patch.object(catalog, "ensure_schema", side_effect=primary),
-                ):
-                    with self.assertRaises(type(primary)) as raised:
-                        catalog._connect()
-                self.assertIs(raised.exception, primary)
-                connection.rollback.assert_called_once_with()
-                connection.close.assert_called_once_with()
 
     def test_rollback_and_close_attempts_both_cleanup_operations(self):
         connection = MagicMock()
@@ -208,57 +166,6 @@ class SQLiteConnectionLifecycleTests(unittest.TestCase):
                 self.assertEqual(0, _TrackingConnection.live_count)
                 self.assertEqual(1, _TrackingConnection.opened_count)
                 self.assertEqual(1, _TrackingConnection.closed_count)
-
-    def test_commit_lock_failure_does_not_retain_writer_lock(self):
-        db_path = Path(self.temp.name) / "lock-regression.db"
-        setup = sqlite3.connect(db_path)
-        setup.execute("CREATE TABLE probe (value INTEGER)")
-        setup.commit()
-        setup.close()
-
-        blocker = sqlite3.connect(db_path)
-        blocker.execute("BEGIN")
-        blocker.execute("SELECT * FROM probe").fetchall()
-
-        real_connect = sqlite3.connect
-        failed_connections = []
-
-        def short_connect(*args, **kwargs):
-            connection = real_connect(*args, timeout=0.05, **kwargs)
-            failed_connections.append(connection)
-            return connection
-
-        def write_then_commit(connection):
-            connection.execute("INSERT INTO probe(value) VALUES (1)")
-            connection.commit()
-
-        started = time.monotonic()
-        with (
-            patch.object(catalog, "_db_path", return_value=db_path),
-            patch.object(catalog.sqlite3, "connect", side_effect=short_connect),
-            patch.object(catalog, "ensure_schema", side_effect=write_then_commit),
-        ):
-            with self.assertRaisesRegex(sqlite3.OperationalError, "locked"):
-                catalog._connect()
-        self.assertLess(time.monotonic() - started, 1)
-        self.assertEqual(1, len(failed_connections))
-        with self.assertRaises(sqlite3.ProgrammingError):
-            failed_connections[0].execute("SELECT 1")
-
-        blocker.rollback()
-        blocker.close()
-
-        third = real_connect(db_path, timeout=0.05)
-        try:
-            third.execute("INSERT INTO probe(value) VALUES (2)")
-            third.commit()
-            self.assertEqual(
-                [(2,)],
-                third.execute("SELECT value FROM probe ORDER BY value").fetchall(),
-            )
-        finally:
-            third.close()
-        self.assertFalse(Path(f"{db_path}-journal").exists())
 
     def test_representative_read_paths_close_every_connection(self):
         real_connect = sqlite3.connect

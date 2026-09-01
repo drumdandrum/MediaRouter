@@ -12,12 +12,11 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.core.config import get_settings
+from app.db.migrations import migrate_database
 from app.schemas.outputs import StrmGenerateRequest, StrmSettingsUpdate
-from app.services.catalog import ensure_schema
 from app.services.jobs import JOBS, create_job, get_job
 from app.services.outputs import (
     _db_path,
-    ensure_outputs_schema,
     generate_strm_outputs,
     list_output_history,
     run_strm_generate_job,
@@ -32,8 +31,7 @@ class ScopedStrmGenerationTests(unittest.TestCase):
         os.environ["MEDIA_ROUTER_DATA_DIR"] = str(Path(self.temp.name) / "data")
         get_settings.cache_clear()
         JOBS.clear()
-        ensure_schema()
-        ensure_outputs_schema()
+        migrate_database()
         self.output = Path(self.temp.name) / "outputs"
         self.movies = self.output / "movies"
         self.series = self.output / "series"

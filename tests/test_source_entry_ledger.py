@@ -10,6 +10,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from app.core.config import get_settings
+from app.db.migrations import migrate_database
 from app.services.catalog import ensure_schema, import_paths
 from app.schemas.outputs import LiveM3uSettingsUpdate, StrmSettingsUpdate
 from app.services.outputs import (
@@ -41,6 +42,7 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
         os.environ["MEDIA_ROUTER_DATA_DIR"] = str(Path(self.temp.name) / "data")
         os.environ.pop("MEDIA_ROUTER_SOURCE_ENTRY_SHADOW_LEDGER_ENABLED", None)
         get_settings.cache_clear()
+        migrate_database()
 
     def tearDown(self):
         get_settings.cache_clear()
@@ -1390,6 +1392,7 @@ class SourceEntryLedgerSchemaTests(unittest.TestCase):
                 "true" if enabled else "false"
             )
             get_settings.cache_clear()
+            migrate_database()
             summary = import_paths(
                 [str(path)], "Test", media_type_hint="movie",
                 source_feed_id=str(uuid4()),

@@ -93,8 +93,6 @@ def _connect() -> sqlite3.Connection:
     try:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        ensure_schema(conn)
-        ensure_outputs_schema(conn)
     except BaseException:
         rollback_and_close(conn)
         raise
