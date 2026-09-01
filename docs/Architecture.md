@@ -81,6 +81,12 @@ request connections assume this contract and perform no schema initialization,
 DDL, compatibility backfill, or migration-ledger writes. Missing/incomplete schema
 state after startup is surfaced as an operational database error.
 
+Each numbered migration runs in its own `BEGIN IMMEDIATE` transaction. A
+migration-only connection facade prevents legacy feature helpers from committing or
+triggering `executescript()`'s implicit transaction boundary. The version record is
+the final write before commit, so a failed version leaves neither its schema/data
+changes nor a misleading success marker.
+
 ## Playback Flow
 
 ```mermaid

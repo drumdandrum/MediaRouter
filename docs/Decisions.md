@@ -12,6 +12,7 @@ Architecture decisions should be recorded as ADRs in `docs/adr/` when they requi
 | SQLite first | Accepted | Appropriate for a single-server home deployment; migration and backup hardening remain active work. |
 | Versioned startup migration boundary | Accepted | Startup upgrades SQLite before background services begin, records completion only after integrity checks, and refuses unknown newer schema versions. Historical additive initializers remain temporarily available for compatibility. |
 | Requests never migrate schema | Accepted | Catalog, provider/account, Broker, output, and Emby request paths assume startup established a supported schema; missing schema is an operational error rather than a request-time repair trigger. |
+| One transaction per schema version | Accepted | Each supported version transition, integrity verification, and version record commit atomically under an immediate SQLite transaction; helper commits and `executescript` boundaries are suppressed only inside migrations. |
 | Module-first architecture | Accepted | Catalog, providers, Broker, runtime, outputs, and integrations remain separate. |
 | UI-first configuration | Accepted | Normal operation should not require editing application YAML. |
 | IPTV Boss as editorial input | Accepted | Media Router reads exports but does not edit IPTV Boss-managed data. |

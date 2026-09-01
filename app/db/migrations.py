@@ -15,8 +15,62 @@ class DatabaseMigrationError(RuntimeError):
     """Raised when the persistent database cannot be upgraded safely."""
 
 
+class _MigrationConnection:
+    """Defer helper commits and avoid executescript's implicit COMMIT."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def __getattr__(self, name: str):
+        return getattr(self._connection, name)
+
+    def commit(self) -> None:
+        # The version runner owns the transaction boundary.
+        return None
+
+    def executescript(self, script: str) -> None:
+        statement = ""
+        for character in script:
+            statement += character
+            if character == ";" and sqlite3.complete_statement(statement):
+                self._connection.execute(statement)
+                statement = ""
+        if statement.strip():
+            raise DatabaseMigrationError("Migration schema script ended with an incomplete SQL statement.")
+
+
 def database_path() -> Path:
     return get_settings().data_dir / "media_router.db"
+
+
+def _apply_version_1(conn: _MigrationConnection) -> None:
+    from app.services.catalog import ensure_schema
+    from app.services.broker import ensure_broker_schema
+    from app.services.outputs import ensure_outputs_schema
+    from app.services.emby import ensure_emby_schema
+    from app.services.source_entry_ledger import ensure_source_entry_schema
+
+    ensure_schema(conn)
+    # Catalog import deliberately treats this observation-only schema as
+    # fail-open. The startup migration boundary must still require it.
+    ensure_source_entry_schema(conn)
+    ensure_broker_schema(conn)
+    ensure_outputs_schema(conn)
+    ensure_emby_schema(conn)
+
+
+MIGRATIONS = {1: (CURRENT_MIGRATION_NAME, _apply_version_1)}
+
+
+def _verify_database(conn: sqlite3.Connection) -> None:
+    integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+    if integrity != "ok":
+        raise DatabaseMigrationError(f"SQLite integrity check failed: {integrity}")
+    foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if foreign_key_errors:
+        raise DatabaseMigrationError(
+            f"SQLite foreign-key check failed for {len(foreign_key_errors)} row(s)."
+        )
 
 
 def migrate_database(path: Path | None = None) -> int:
@@ -52,41 +106,25 @@ def migrate_database(path: Path | None = None) -> int:
                 f"Database schema version {max(unknown)} is newer than supported version {CURRENT_SCHEMA_VERSION}."
             )
 
-        if CURRENT_SCHEMA_VERSION not in applied:
-            # Imports are local to avoid making the persistence boundary part of
-            # each feature module's import graph.
-            from app.services.catalog import ensure_schema
-            from app.services.broker import ensure_broker_schema
-            from app.services.outputs import ensure_outputs_schema
-            from app.services.emby import ensure_emby_schema
-            from app.services.source_entry_ledger import ensure_source_entry_schema
+        if applied and applied != set(range(1, max(applied) + 1)):
+            raise DatabaseMigrationError("Database migration history is incomplete or non-contiguous.")
 
-            ensure_schema(conn)
-            # Catalog import deliberately treats this observation-only schema as
-            # fail-open. The startup migration boundary must still verify that a
-            # complete current schema can be installed before recording success.
-            ensure_source_entry_schema(conn)
-            ensure_broker_schema(conn)
-            ensure_outputs_schema(conn)
-            ensure_emby_schema(conn)
-
-            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
-            if integrity != "ok":
-                raise DatabaseMigrationError(f"SQLite integrity check failed: {integrity}")
-            foreign_key_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
-            if foreign_key_errors:
-                raise DatabaseMigrationError(
-                    f"SQLite foreign-key check failed for {len(foreign_key_errors)} row(s)."
+        current = max(applied, default=0)
+        conn.commit()
+        for version in range(current + 1, CURRENT_SCHEMA_VERSION + 1):
+            name, apply_migration = MIGRATIONS[version]
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                apply_migration(_MigrationConnection(conn))
+                _verify_database(conn)
+                conn.execute(
+                    "INSERT INTO schema_migrations(version,name,applied_at) VALUES (?,?,?)",
+                    (version, name, datetime.now(timezone.utc).isoformat()),
                 )
-            conn.execute(
-                "INSERT INTO schema_migrations(version,name,applied_at) VALUES (?,?,?)",
-                (
-                    CURRENT_SCHEMA_VERSION,
-                    CURRENT_MIGRATION_NAME,
-                    datetime.now(timezone.utc).isoformat(),
-                ),
-            )
-            conn.commit()
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
         return CURRENT_SCHEMA_VERSION
     except BaseException:
         conn.rollback()
