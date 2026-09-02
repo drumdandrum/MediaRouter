@@ -46,10 +46,10 @@ Build and run:
 docker compose up --build
 ```
 
-The app version is `v0.8.1`. Docker receives version and Git metadata through build/runtime environment values:
+The source-default app version is `v0.10.0-rc.2`. Docker receives version and Git metadata through build/runtime environment values. An explicit deployment value remains authoritative for the system metadata API:
 
 ```text
-MEDIA_ROUTER_APP_VERSION=v0.8.1
+MEDIA_ROUTER_APP_VERSION=v0.10.0-rc.2
 MEDIA_ROUTER_GIT_BRANCH=main
 MEDIA_ROUTER_GIT_COMMIT=<short commit>
 ```

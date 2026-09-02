@@ -2,7 +2,7 @@
 
 Media Router is a provider-agnostic media routing platform for home media systems. It centralizes catalog identity, provider/account availability, capacity-aware source selection, stable runtime URLs, and disposable client outputs for Live TV, movies, and series.
 
-The current `v0.8.1` build is a working platform under production validation. It is successfully brokering playback for Emby and Channels DVR, and its generated outputs have also been exercised with Jellyfin, VLC, and Kodi.
+The current source release is `v0.10.0-rc.2`. It is a working platform under production validation, successfully brokering playback for Emby and Channels DVR; its generated outputs have also been exercised with Jellyfin, VLC, and Kodi.
 
 Media Router resolves playback requests and returns the selected provider source with an HTTP `302` redirect. It does **not** currently proxy or transcode media streams.
 

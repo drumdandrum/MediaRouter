@@ -3,9 +3,9 @@ services:
     build:
       context: .
       args:
-        MEDIA_ROUTER_APP_VERSION: "v0.8.1"
+        MEDIA_ROUTER_APP_VERSION: "v0.10.0-rc.2"
         MEDIA_ROUTER_GIT_BRANCH: "${MEDIA_ROUTER_GIT_BRANCH:-main}"
-        MEDIA_ROUTER_GIT_COMMIT: "${MEDIA_ROUTER_GIT_COMMIT:-fdc842f}"
+        MEDIA_ROUTER_GIT_COMMIT: "${MEDIA_ROUTER_GIT_COMMIT:-Unavailable}"
     container_name: media-router
     restart: unless-stopped
     ports:
@@ -14,9 +14,9 @@ services:
       MEDIA_ROUTER_APP_PORT: "8088"
       MEDIA_ROUTER_PUBLIC_BASE_URL: "http://media-router:8088"
       MEDIA_ROUTER_DATA_DIR: "/data"
-      MEDIA_ROUTER_APP_VERSION: "v0.8.1"
+      MEDIA_ROUTER_APP_VERSION: "v0.10.0-rc.2"
       MEDIA_ROUTER_GIT_BRANCH: "${MEDIA_ROUTER_GIT_BRANCH:-main}"
-      MEDIA_ROUTER_GIT_COMMIT: "${MEDIA_ROUTER_GIT_COMMIT:-fdc842f}"
+      MEDIA_ROUTER_GIT_COMMIT: "${MEDIA_ROUTER_GIT_COMMIT:-Unavailable}"
     volumes:
       - ./data:/data
       - /Users/Shared/IPTVBoss/output:/iptvboss/outputs:ro

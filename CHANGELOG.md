@@ -6,6 +6,16 @@ All notable changes are documented here.
 
 ---
 
+# v0.10.0-rc.2 — Release Metadata Consistency
+
+## Fixed
+
+- Source, Docker, Compose, OpenAPI, and template defaults now identify the
+  `v0.10.0-rc.2` artifact consistently while preserving explicit deployment
+  version, branch, and commit metadata overrides.
+
+---
+
 # v0.9.0 — Stateful Reservation Management
 
 **Release Date:** July 2026
