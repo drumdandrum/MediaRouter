@@ -21,7 +21,7 @@ def get_system_info() -> SystemInfo:
     settings = get_app_settings()
     runtime_settings = get_settings()
     in_container = os.path.exists("/.dockerenv")
-    app_version = os.getenv("MEDIA_ROUTER_APP_VERSION", APP_VERSION)
+    app_version = os.getenv("MEDIA_ROUTER_APP_VERSION") or APP_VERSION
     git_branch = os.getenv("MEDIA_ROUTER_GIT_BRANCH") or _run(["git", "branch", "--show-current"])
     git_commit = os.getenv("MEDIA_ROUTER_GIT_COMMIT") or _run(["git", "rev-parse", "--short", "HEAD"])
     docker_version = _run(["docker", "version", "--format", "{{.Server.Version}}"])
