@@ -1076,6 +1076,198 @@ class EmbyIntegrationTests(unittest.TestCase):
         self.assertEqual((released.lifecycle_state, released.release_reason),
                          ("released", "emby_session_disappeared"))
 
+    def test_production_gateway_active_before_emby_poll_adopts_without_double_capacity(self):
+        """Regression for the RC3 production failure: one screen must use one account."""
+        from app.services.broker import confirm_reservation
+        from app.services.emby import (
+            list_emby_bindings, normalize_emby_sessions,
+            reconcile_emby_sessions, record_runtime_correlation_observation,
+        )
+
+        gateway = resolve_source(
+            "live_one", "channel", client_fingerprint="gateway-connection",
+            origin_identity="emby-host", request_profile="vlc",
+            allow_reservation_reuse=True, lifecycle_enabled=True,
+        ).reservation
+        record_runtime_correlation_observation(
+            reservation_id=gateway.reservation_id,
+            catalog_item_id="live_one", media_type="live", route_type="live",
+            request_identity_type="connection", request_identity="gateway-connection",
+            stable_emby_identifier=None, request_profile="vlc",
+            address_signature="emby-host", user_agent_signature="vlc",
+        )
+        confirm_reservation(gateway.reservation_id, source="live_gateway_upstream_connected")
+        self.assertEqual(get_status().consuming_reservations, 1)
+
+        reconcile_emby_sessions(
+            normalize_emby_sessions(self._live_payload(), "server"),
+            server_id="server", release_grace_seconds=30,
+        )
+
+        reservations = list_reservations()
+        bindings = [row for row in list_emby_bindings() if row.released_at is None]
+        self.assertEqual(len(reservations), 1)
+        self.assertEqual(get_status().consuming_reservations, 1)
+        self.assertEqual(bindings[0].reservation_id, gateway.reservation_id)
+        self.assertEqual(reservations[0].account_id, gateway.account_id)
+        self.assertEqual(reservations[0].source_availability_id,
+                         gateway.source_availability_id)
+        self.assertEqual(reservations[0].last_confirmation_source,
+                         "emby_playback_heartbeat")
+
+    def test_active_without_recent_gateway_evidence_is_not_adopted(self):
+        from app.services.broker import confirm_reservation
+        from app.services.emby import normalize_emby_sessions, reconcile_emby_sessions
+
+        unrelated = resolve_source(
+            "live_one", "channel", client_fingerprint="unrelated-active",
+            allow_reservation_reuse=True, lifecycle_enabled=True,
+        ).reservation
+        confirm_reservation(unrelated.reservation_id, source="manual_confirmation")
+        reconcile_emby_sessions(
+            normalize_emby_sessions(self._live_payload(), "server"),
+            server_id="server", release_grace_seconds=30,
+        )
+        rows = list_reservations()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(get_status().consuming_reservations, 2)
+        self.assertNotEqual(
+            next(row for row in rows if row.identity_type == "explicit_session").reservation_id,
+            unrelated.reservation_id,
+        )
+
+    def test_active_gateway_outside_correlation_window_is_not_stolen(self):
+        from app.services.broker import confirm_reservation
+        from app.services.emby import (
+            normalize_emby_sessions, reconcile_emby_sessions,
+            record_runtime_correlation_observation,
+        )
+
+        stale = resolve_source(
+            "live_one", "channel", client_fingerprint="stale-gateway",
+            allow_reservation_reuse=True, lifecycle_enabled=True,
+        ).reservation
+        record_runtime_correlation_observation(
+            reservation_id=stale.reservation_id, catalog_item_id="live_one",
+            media_type="live", route_type="live", request_identity_type="connection",
+            request_identity="stale-gateway", stable_emby_identifier=None,
+            request_profile="vlc", address_signature="emby-host",
+            user_agent_signature="vlc",
+        )
+        confirm_reservation(stale.reservation_id, source="live_gateway_upstream_connected")
+        old = (datetime.utcnow() - timedelta(minutes=3)).isoformat()
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            conn.execute(
+                "UPDATE broker_reservations SET created_at=?,first_seen_at=? WHERE reservation_id=?",
+                (old, old, stale.reservation_id),
+            )
+            conn.execute(
+                "UPDATE runtime_correlation_observations SET observed_at=? WHERE reservation_id=?",
+                (old, stale.reservation_id),
+            )
+        reconcile_emby_sessions(
+            normalize_emby_sessions(self._live_payload(), "server"),
+            server_id="server", release_grace_seconds=30,
+        )
+        self.assertEqual(len(list_reservations()), 2)
+        self.assertEqual(get_status().consuming_reservations, 2)
+
+    def test_correlated_gateway_and_emby_release_only_after_last_owner(self):
+        from email.message import Message
+        from app.services.broker import confirm_reservation
+        from app.services.emby import (
+            normalize_emby_sessions, reconcile_emby_sessions,
+            record_runtime_correlation_observation,
+        )
+        from app.services.live_gateway import LiveGatewaySession
+
+        class Upstream:
+            headers = Message()
+            status = 200
+            def close(self):
+                pass
+
+        def start_correlated(session_id):
+            reservation = resolve_source(
+                "live_one", "channel", client_fingerprint=session_id,
+                allow_reservation_reuse=True, lifecycle_enabled=True,
+            ).reservation
+            record_runtime_correlation_observation(
+                reservation_id=reservation.reservation_id,
+                catalog_item_id="live_one", media_type="live", route_type="live",
+                request_identity_type="connection", request_identity=session_id,
+                stable_emby_identifier=None, request_profile="vlc",
+                address_signature="emby-host", user_agent_signature="vlc",
+            )
+            confirm_reservation(reservation.reservation_id,
+                                source="live_gateway_upstream_connected")
+            gateway = LiveGatewaySession(
+                reservation.reservation_id, reservation.source_availability_id,
+                Upstream(), 200, {},
+            )
+            reconcile_emby_sessions(
+                normalize_emby_sessions(self._live_payload(session=session_id), "server"),
+                server_id="server", release_grace_seconds=5,
+            )
+            return reservation, gateway
+
+        reservation, gateway = start_correlated("gateway-first")
+        gateway.release("live_gateway_disconnect")
+        self.assertEqual(list_reservations()[0].lifecycle_state, "active")
+        reconcile_emby_sessions([], server_id="server", release_grace_seconds=5)
+        old = (datetime.utcnow() - timedelta(seconds=6)).isoformat()
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            conn.execute("UPDATE emby_playback_bindings SET missing_since=? WHERE released_at IS NULL", (old,))
+        reconcile_emby_sessions([], server_id="server", release_grace_seconds=5)
+        self.assertEqual(list_reservations()[0].lifecycle_state, "released")
+
+    def test_emby_disappearance_does_not_release_live_gateway_owner(self):
+        from email.message import Message
+        from app.services.broker import confirm_reservation
+        from app.services.emby import (
+            normalize_emby_sessions, reconcile_emby_sessions,
+            record_runtime_correlation_observation,
+        )
+        from app.services.live_gateway import LiveGatewaySession
+
+        class Upstream:
+            headers = Message()
+            status = 200
+            def close(self):
+                pass
+
+        reservation = resolve_source(
+            "live_one", "channel", client_fingerprint="emby-first",
+            allow_reservation_reuse=True, lifecycle_enabled=True,
+        ).reservation
+        record_runtime_correlation_observation(
+            reservation_id=reservation.reservation_id,
+            catalog_item_id="live_one", media_type="live", route_type="live",
+            request_identity_type="connection", request_identity="emby-first",
+            stable_emby_identifier=None, request_profile="vlc",
+            address_signature="emby-host", user_agent_signature="vlc",
+        )
+        confirm_reservation(reservation.reservation_id,
+                            source="live_gateway_upstream_connected")
+        gateway = LiveGatewaySession(
+            reservation.reservation_id, reservation.source_availability_id,
+            Upstream(), 200, {},
+        )
+        reconcile_emby_sessions(
+            normalize_emby_sessions(self._live_payload(session="emby-first"), "server"),
+            server_id="server", release_grace_seconds=5,
+        )
+        reconcile_emby_sessions([], server_id="server", release_grace_seconds=5)
+        old = (datetime.utcnow() - timedelta(seconds=6)).isoformat()
+        with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
+            conn.execute("UPDATE emby_playback_bindings SET missing_since=? WHERE released_at IS NULL", (old,))
+        reconcile_emby_sessions([], server_id="server", release_grace_seconds=5)
+        self.assertEqual(list_reservations()[0].lifecycle_state, "active")
+        gateway.release("live_gateway_disconnect")
+        current = list_reservations()[0]
+        self.assertEqual((current.lifecycle_state, current.release_reason),
+                         ("released", "live_gateway_disconnect"))
+
     def test_adoption_replaces_provisional_identity_and_alias_lifecycle_is_normal(self):
         import hashlib
         from app.services.emby import normalize_emby_sessions, reconcile_emby_sessions
@@ -1144,7 +1336,7 @@ class EmbyIntegrationTests(unittest.TestCase):
         self.assertEqual((rows[0].identity_type, rows[0].lifecycle_state),
                          ("explicit_session", "active"))
 
-    def test_multiple_recent_provisionals_are_ambiguous_and_fall_back(self):
+    def test_multiple_recent_provisionals_are_ambiguous_without_extra_capacity(self):
         from app.services.emby import normalize_emby_sessions, reconcile_emby_sessions
         from app.services.logs import list_logs
         with sqlite3.connect(get_settings().data_dir / "media_router.db") as conn:
@@ -1156,14 +1348,16 @@ class EmbyIntegrationTests(unittest.TestCase):
         reconcile_emby_sessions(normalize_emby_sessions(self._live_payload(), "server"),
                                 server_id="server", release_grace_seconds=30)
         rows = list_reservations()
-        self.assertEqual(len(rows), 3)
+        self.assertEqual(len(rows), 2)
         self.assertEqual({row.reservation_id for row in rows if row.lifecycle_state == "provisional"},
                          {first.reservation_id, second.reservation_id})
-        self.assertEqual(len([row for row in rows if row.identity_type == "explicit_session"]), 1)
+        self.assertEqual(len([row for row in rows if row.identity_type == "explicit_session"]), 0)
+        self.assertEqual(get_status().consuming_reservations, 2)
         messages = [row.message for row in list_logs()]
         self.assertTrue(any("emby_provisional_adoption_ambiguous" in message and
                             "candidate_count=2" in message for message in messages))
-        self.assertTrue(any("emby_provisional_adoption_fallback" in message for message in messages))
+        self.assertTrue(any("emby_adoption_ambiguous_capacity_preserved" in message
+                            for message in messages))
 
     def test_provisional_outside_startup_window_is_not_adopted(self):
         from app.services.emby import normalize_emby_sessions, reconcile_emby_sessions

@@ -766,6 +766,10 @@ function renderBrokerAccountUsage() {
 function renderBrokerReservations() {
   const filter = document.getElementById("broker-reservation-filter")?.value || "all";
   const reservations = state.brokerReservations.filter((reservation) => filter === "all" || (filter === "consuming" ? ["provisional", "active"].includes(reservation.lifecycle_state) : reservation.lifecycle_state === filter));
+  const authoritativeConsuming = Number(state.brokerStatus?.consuming_reservations || 0);
+  const visibleConsuming = reservations.filter((reservation) => ["provisional", "active"].includes(reservation.lifecycle_state)).length;
+  const summary = document.getElementById("broker-reservations-visible-summary");
+  if (summary) summary.textContent = `Showing ${reservations.length} reservation row(s); ${visibleConsuming} of ${authoritativeConsuming} capacity-consuming reservation(s) are visible with this filter.`;
   const rows = reservations.map((reservation) => `
     <tr>
       <td><code>${reservation.reservation_id}</code></td>

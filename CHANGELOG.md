@@ -6,6 +6,13 @@ All notable changes are documented here.
 
 ---
 
+# v0.10.0-rc.4 — Capacity-Neutral Emby Gateway Adoption
+
+- Adopt a unique recent gateway-owned reservation after it has promoted active, preventing one Emby playback from consuming two provider accounts.
+- Preserve independent generic client capacity and refuse ambiguous Emby adoption without allocating additional fallback capacity.
+- Keep a correlated reservation active until both gateway and Emby owners have departed.
+- Show visible versus authoritative consuming reservation counts in the Broker UI.
+
 # v0.10.0-rc.3 — Reservation-Aware Live Streaming Gateway
 
 ## Added

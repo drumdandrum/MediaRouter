@@ -2,7 +2,7 @@
 
 Media Router is a provider-agnostic media routing platform for home media systems. It centralizes catalog identity, provider/account availability, capacity-aware source selection, stable runtime URLs, and disposable client outputs for Live TV, movies, and series.
 
-The current source release is `v0.10.0-rc.3`. It is a working platform under production validation, successfully brokering playback for Emby and Channels DVR; its generated outputs have also been exercised with Jellyfin, VLC, and Kodi.
+The current source release is `v0.10.0-rc.4`. It is a working platform under production validation, successfully brokering playback for Emby and Channels DVR; its generated outputs have also been exercised with Jellyfin, VLC, and Kodi.
 
 Media Router resolves playback requests through its Broker. Live routes remain in the byte path through a reservation-aware streaming gateway; movie and episode routes continue to use HTTP `302` source redirects. Media Router does not transcode streams.
 
@@ -135,7 +135,7 @@ Defaults are 45 seconds provisional and four hours active for Live TV, 60 second
 
 Enable the adapter under Integrations and provide the Emby server URL and an API key. Media Router polls active Emby sessions; no Emby plugin, webhook, proxy, or transcoder is installed. It correlates Media Router runtime paths first, then existing bindings, then catalog identity plus Emby device/session evidence, and finally one recent unambiguous catalog candidate. It never matches by IP or title alone.
 
-An observed session with durable catalog identity reuses a compatible provisional reservation when possible; otherwise the Broker creates an explicit-session reservation. A recent runtime observation can disambiguate candidates but is not required. The reservation is promoted through the Broker’s confirmation service, and active or paused playback renews the same lease through heartbeat. A missing session starts the configured grace timer and is released only after successful polls continue to confirm absence. Failed polls retain bindings and do not advance release timers. The API key is stored locally using the project’s current secret convention and is never returned by read APIs; local encryption remains future hardening.
+An observed session with durable catalog identity reuses a compatible provisional reservation when possible. It may also adopt exactly one recent, unbound active live-gateway reservation when a persisted MediaRouter runtime observation proves gateway ownership; ambiguous candidates remain unmatched and do not allocate extra capacity. With no runtime candidate, the Broker creates an explicit-session reservation for the existing raw-tuner fallback path. The reservation is promoted through the Broker’s confirmation service, and active or paused playback renews the same lease through heartbeat. Correlated gateway and Emby owners keep that single reservation alive until the final owner departs. A missing session starts the configured grace timer and is released only after successful polls continue to confirm absence. Failed polls retain bindings and do not advance release timers. The API key is stored locally using the project’s current secret convention and is never returned by read APIs; local encryption remains future hardening.
 
 ## Validated clients
 

@@ -9,7 +9,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from app.services.broker import confirm_reservation, heartbeat_reservation, release_reservation
+from app.services.broker import (
+    confirm_reservation, heartbeat_reservation, release_gateway_reservation_if_unbound,
+    release_reservation,
+)
 from app.services.logs import add_log
 
 
@@ -21,6 +24,11 @@ LIVE_GATEWAY_MAX_REDIRECTS = 3
 
 _OWNER_LOCK = Lock()
 _RESERVATION_OWNERS: dict[str, int] = {}
+
+
+def has_live_gateway_owner(reservation_id: str) -> bool:
+    with _OWNER_LOCK:
+        return _RESERVATION_OWNERS.get(reservation_id, 0) > 0
 
 FORWARDED_REQUEST_HEADERS = {
     "accept": "Accept",
@@ -126,7 +134,7 @@ class LiveGatewaySession:
                 else:
                     _RESERVATION_OWNERS.pop(self.reservation_id, None)
             if remaining <= 0:
-                release_reservation(self.reservation_id, reason=reason)
+                release_gateway_reservation_if_unbound(self.reservation_id, reason=reason)
                 add_log("info", "gateway", f"live_gateway_released reservation={self.reservation_id} reason={reason}")
 
     def iter_bytes(self) -> Iterator[bytes]:
