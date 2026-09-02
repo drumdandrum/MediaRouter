@@ -4,7 +4,7 @@ Media Router is a provider-agnostic media routing platform for home media system
 
 The current source release is `v0.10.0-rc.2`. It is a working platform under production validation, successfully brokering playback for Emby and Channels DVR; its generated outputs have also been exercised with Jellyfin, VLC, and Kodi.
 
-Media Router resolves playback requests and returns the selected provider source with an HTTP `302` redirect. It does **not** currently proxy or transcode media streams.
+Media Router resolves playback requests through its Broker. Live routes remain in the byte path through a reservation-aware streaming gateway; movie and episode routes continue to use HTTP `302` source redirects. Media Router does not transcode streams.
 
 ## Current architecture
 
@@ -125,7 +125,7 @@ With four equivalent accounts, one catalog item can have four source-availabilit
 
 ## Runtime reservations
 
-Runtime reservation acquisition is atomic. A runtime GET starts a capacity-consuming provisional lease. Matching GET, HEAD, Range, reconnect, and startup requests reuse the same reservation instead of consuming additional capacity. Continued meaningful activity after the configured minimum age promotes that same ID to active.
+Runtime reservation acquisition is atomic. A live GET starts a capacity-consuming provisional lease before opening upstream, promotes it when upstream connects, and heartbeats it while bytes flow. Live HEAD is rejected without source resolution. Authoritative-session reconnects may reuse a reservation; generic live connections receive independent ownership so same-NAT clients do not collapse capacity.
 
 Media Router prefers an explicit `client_session`. Otherwise, it uses a privacy-safe derived fingerprint. A short, conservative startup-coalescing fallback can alias a changed Emby/ffmpeg fingerprint to exactly one recent same-origin reservation. The Emby adapter also uses its securely normalized session ID as an explicit identity when authoritative observed playback must acquire a reservation directly.
 

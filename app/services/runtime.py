@@ -236,6 +236,8 @@ def resolve_runtime(
     request_profile: str | None = None,
     reserve: bool = True,
     meaningful_activity: bool = True,
+    excluded_source_availability_ids: set[int] | None = None,
+    allow_startup_coalescing: bool = True,
 ) -> tuple[RuntimeResolveDebug, str]:
     catalog_item = _validate_route(get_item(catalog_item_id), route_media_type)
     runtime_settings = get_app_settings()
@@ -250,13 +252,16 @@ def resolve_runtime(
             origin_identity=origin_identity,
             stable_client_id=stable_client_id,
             request_profile=request_profile,
-            startup_coalescing_window_seconds=get_app_settings().startup_coalescing_window_seconds,
+            startup_coalescing_window_seconds=(
+                get_app_settings().startup_coalescing_window_seconds if allow_startup_coalescing else 0
+            ),
             allow_reservation_reuse=True,
             reuse_window_seconds=DEFAULT_REUSE_WINDOW_SECONDS,
             reserve=reserve,
             reservation_ttl_seconds=effective_ttl,
             lifecycle_enabled=reserve,
             meaningful_activity=meaningful_activity,
+            excluded_source_availability_ids=excluded_source_availability_ids,
         )
     except BrokerUnavailable as exc:
         detail: BrokerErrorDetail = exc.detail

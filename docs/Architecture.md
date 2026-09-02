@@ -102,9 +102,9 @@ sequenceDiagram
   API->>Broker: route request
   Broker->>Catalog: resolve internal ID
   Broker->>Accounts: choose healthy account with capacity
-  Broker->>Provider: validate or redirect to source URL
+  Broker->>Provider: open live source after reservation commit
   Broker-->>API: broker decision and reservation
-  API-->>Client: stream response or redirect
+  API-->>Client: proxy live bytes or redirect VOD
 ```
 
 ## Import Flow
@@ -139,7 +139,7 @@ Approved plugin-facing capabilities should include:
 
 ## Emby lifecycle evidence adapter
 
-The Emby adapter is application-managed integration code, not a plugin installed in Emby and not a second reservation subsystem. Its bounded poller normalizes active sessions and persists only correlation/binding metadata. Successful observations call the Broker confirmation, heartbeat, and release services. Unavailable or ambiguous observations do not mutate reservations. Direct provider redirects remain unchanged.
+The Emby adapter is application-managed integration code, not a plugin installed in Emby and not a second reservation subsystem. Its bounded poller normalizes active sessions and persists only correlation/binding metadata. Successful observations call the Broker confirmation, heartbeat, and release services. Unavailable or ambiguous observations do not mutate reservations. Live capacity authority remains the gateway reservation; Emby correlation only enriches that lifecycle.
 
 ## Identity Boundary
 

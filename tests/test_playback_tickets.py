@@ -5,6 +5,8 @@ import sqlite3
 import tempfile
 import unittest
 from urllib.parse import urlsplit
+from unittest.mock import patch
+from email.message import Message
 
 from fastapi.testclient import TestClient
 
@@ -34,8 +36,20 @@ class PlaybackTicketTests(unittest.TestCase):
                 for index, account in enumerate(self.accounts):
                     conn.execute("INSERT INTO source_availability(catalog_internal_id,provider_id,account_id,location_ref,media_type,enabled,last_seen_at,created_at,updated_at) VALUES (?,?,?,?,?,1,?,?,?)", (item, provider.id, account.id, f"https://provider.invalid/live/credential/password/{index}", "channel", now, now, now))
         self.client = TestClient(app, follow_redirects=False)
+        class FakeUpstream:
+            status = 200
+            headers = Message()
+            def __init__(self):
+                self._chunks = [b"live-bytes", b""]
+            def read(self, _size):
+                return self._chunks.pop(0)
+            def close(self):
+                pass
+        self.upstream_patch = patch("app.services.live_gateway._open_upstream", side_effect=lambda *_: FakeUpstream())
+        self.upstream_patch.start()
 
     def tearDown(self):
+        self.upstream_patch.stop()
         get_settings.cache_clear()
         os.environ.pop("MEDIA_ROUTER_DATA_DIR", None)
         os.environ.pop("MEDIA_ROUTER_PLAYBACK_TICKET_SECRET", None)
@@ -55,14 +69,14 @@ class PlaybackTicketTests(unittest.TestCase):
         self.assertNotIn("credential", url)
         path = urlsplit(url).path + "?" + urlsplit(url).query
         first = self.client.get(path)
-        second = self.client.get(path, headers={"user-agent": "different-player"})
-        self.assertEqual((first.status_code, second.status_code), (302, 302))
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.content, b"live-bytes")
         self.assertEqual(first.headers["x-media-router-reservation-id"], decision["reservation"]["reservation_id"])
-        self.assertEqual(first.headers["x-media-router-selected-account"], second.headers["x-media-router-selected-account"])
         reservations = list_reservations()
         self.assertEqual(len(reservations), 1)
         self.assertEqual(reservations[0].identity_type, "explicit_session")
         self.assertEqual(reservations[0].account_id, decision["reservation"]["account_id"])
+        self.assertEqual(reservations[0].lifecycle_state, "released")
         messages = [row.message for row in list_logs()]
         self.assertTrue(any("reservation_ticket_validated" in message for message in messages))
         self.assertTrue(any("ticketed_reservation_reused" in message for message in messages))
@@ -84,7 +98,8 @@ class PlaybackTicketTests(unittest.TestCase):
 
     def test_unticketed_runtime_retains_generic_behavior(self):
         response = self.client.get("/r/live/channel_one", headers={"user-agent": "generic-player"})
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("location", response.headers)
         reservation = list_reservations()[0]
         self.assertEqual(reservation.identity_type, "derived_fingerprint")
 

@@ -300,7 +300,7 @@ def _masked_identity(value: str | None) -> str | None:
 
 
 def _redact_ref(value: str) -> str:
-    return re.sub(r"(/(?:live|movie|series)/)[^/]+/[^/]+/", r"\1[redacted]/[redacted]/", value, flags=re.IGNORECASE)
+    return "[redacted-provider-url]" if value else value
 
 
 def _lease_policy(media_type: str | None, active_ttl_override: int | None = None) -> dict[str, int | bool]:
@@ -970,6 +970,7 @@ def resolve_source(
     reservation_ttl_seconds: int | None = None,
     lifecycle_enabled: bool = False,
     meaningful_activity: bool = True,
+    excluded_source_availability_ids: set[int] | None = None,
 ) -> BrokerDecision:
     if client_session:
         client_session = _identity_hash(client_session, "explicit_session")
@@ -994,6 +995,8 @@ def resolve_source(
         conn.execute("BEGIN IMMEDIATE")
         expire_reservations(conn, commit=False)
         rows = _source_rows(conn, catalog_item_id, media_type)
+        excluded_source_availability_ids = excluded_source_availability_ids or set()
+        rows = [row for row in rows if int(row["id"]) not in excluded_source_availability_ids]
         if media_type:
             decision_reasons.append(f"Filtered sources by media type {_normalize_media_type(media_type)}.")
         evaluated_candidates: list[BrokerEvaluatedCandidate] = []
