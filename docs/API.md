@@ -2,7 +2,7 @@
 
 ## Current Sprint 7 API
 
-Runtime URLs redirect to selected provider/source URLs; generated STRM and M3U outputs contain only Media Router runtime URLs. The optional Emby adapter observes sessions and supplies lifecycle evidence but does not proxy, transcode, control playback, or synchronize libraries.
+Live runtime URLs proxy selected provider bytes through a reservation-aware gateway; movie and episode runtime URLs redirect to their selected sources. Generated STRM and M3U outputs contain only Media Router runtime URLs. The optional Emby adapter observes sessions and supplies lifecycle evidence but does not transcode, control playback, or synchronize libraries.
 
 Runtime acquisition uses an immediate SQLite transaction and an active-playback unique key. Matching retries reuse the committed reservation before redirect construction and update `last_seen_at` and `reuse_count`. A uniqueness conflict is resolved by loading the winning reservation rather than returning an error.
 
@@ -91,17 +91,17 @@ Emby defaults to disabled. Poll interval defaults to 10 seconds (minimum 5), rel
 | `POST` | `/api/broker/reservations/{id}/release` | Idempotently releases a capacity-consuming lease. |
 | `POST` | `/api/broker/reservations/{id}/expire` | Explicitly expires a capacity-consuming lease for diagnostics/UI use. |
 
-Normal runtime GET acquisition creates a provisional lease. Only provisional and active states consume capacity. The `ttl` runtime query parameter overrides active TTL only. HEAD remains non-reserving. Defaults are Live 45s provisional/20s age/2 requests/14400s active, Movie 60s/20s/2/10800s, and Episode 60s/20s/2/7200s; sliding renewal and safe supersession are enabled.
+Normal runtime GET acquisition creates a provisional lease. Only provisional and active states consume capacity. The `ttl` runtime query parameter overrides active TTL only. Live GET promotes after an upstream connection and heartbeats during byte flow; live HEAD returns 405 without resolution. Movie and episode HEAD remain non-reserving. Defaults are Live 45s provisional/20s age/2 requests/14400s active, Movie 60s/20s/2/10800s, and Episode 60s/20s/2/7200s; sliding renewal and safe supersession are enabled.
 | `POST` | `/api/broker/resolve` | Chooses a source, creates a reservation, and returns a short-lived ticketed runtime URL. |
 | `POST` | `/api/broker/release` | Releases one active reservation. |
 | `POST` | `/api/broker/release-all` | Releases every active reservation. |
 | `POST` | `/api/broker/expire-now` | Expires stale reservations immediately for testing. |
 | `POST` | `/api/broker/repair-duplicates` | Releases redundant active reservations sharing the same catalog/media/hashed identity. |
 | `GET` | `/api/runtime/preview/{catalog_item_id}` | Returns the stable runtime URL, debug URL, catalog item, media type, and enabled source count. |
-| `GET` | `/r/live/{catalog_item_id}` | Resolves a live channel through the Broker and returns HTTP `302` to the selected source URL. |
+| `GET` | `/r/live/{catalog_item_id}` | Commits a Broker reservation, opens the selected source internally, and streams live bytes without exposing the provider URL. |
 | `GET` | `/r/movie/{catalog_item_id}` | Resolves a movie through the Broker and returns HTTP `302` to the selected source URL. |
 | `GET` | `/r/episode/{catalog_item_id}` | Resolves an episode through the Broker and returns HTTP `302` to the selected source URL. |
-| `HEAD` | `/r/live/{catalog_item_id}` | Resolves a live channel probe and returns the same redirect `Location` headers as `GET`. |
+| `HEAD` | `/r/live/{catalog_item_id}` | Returns `405 Method Not Allowed`; live HEAD never resolves or exposes an upstream target. |
 | `HEAD` | `/r/movie/{catalog_item_id}` | Resolves a movie probe and returns the same redirect `Location` headers as `GET`. |
 | `HEAD` | `/r/episode/{catalog_item_id}` | Resolves an episode probe and returns the same redirect `Location` headers as `GET`. |
 | `GET` | `/api/outputs/strm/settings` | Reads STRM output settings. |
@@ -339,7 +339,7 @@ User-facing runtime previews use this base URL priority:
 
 The Docker-internal hostname `media-router` is not shown in Catalog or Broker runtime previews. For local testing, set Runtime Public Base URL to `http://localhost:8088`.
 
-Default behavior is redirect mode. A request such as `GET /r/movie/{id}` calls the Broker, creates a temporary reservation, respects disabled providers/accounts/sources and account capacity, then returns HTTP `302` with the selected provider/source URL in the `Location` header.
+Movie and episode routes use redirect mode. A request such as `GET /r/movie/{id}` calls the Broker, creates a temporary reservation, respects disabled providers/accounts/sources and account capacity, then returns HTTP `302` with the selected provider/source URL in the `Location` header. Live GET instead streams internally and never returns an upstream `Location`.
 
 Debug mode is enabled with `debug=true`. A request such as `GET /r/movie/{id}?debug=true` creates the same reservation but returns JSON instead of redirecting. The response includes the catalog item, selected provider, selected account, selected source, reservation ID, expiration time, redacted stream/location reference, Broker decision reason, and evaluated candidates.
 

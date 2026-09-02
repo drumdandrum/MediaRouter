@@ -1,7 +1,8 @@
 import hashlib
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response, StreamingResponse
 
 from app.schemas.runtime import RuntimePreview, RuntimeResolveDebug
 from app.services.logs import add_log
@@ -9,6 +10,7 @@ from app.services.emby import record_runtime_correlation_observation
 from app.services.runtime import RuntimeResolveUnavailable, mask_runtime_target, preview_runtime, resolve_runtime, runtime_client_context, runtime_client_fingerprint
 from app.services.broker import consume_ticketed_reservation
 from app.services.playback_tickets import PlaybackTicketError, validate_playback_ticket
+from app.services.live_gateway import LiveGatewayError, open_live_gateway
 
 router = APIRouter(tags=["runtime"])
 
@@ -139,7 +141,95 @@ def _runtime_response(
     return RedirectResponse(raw_location_ref, status_code=302, headers=headers)
 
 
-@router.get("/r/live/{catalog_item_id}", response_model=RuntimeResolveDebug)
+def _live_stream_response(
+    request: Request,
+    catalog_item_id: str,
+    ttl: int | None,
+    client_label: str | None,
+    client_session: str | None,
+    ticket: str | None,
+) -> StreamingResponse:
+    context = runtime_client_context(request.client.host if request.client else None, request.headers)
+    stable_client_id = str(context["stable_client_id"]) if context["stable_client_id"] else None
+    # Generic clients receive connection-local ownership. Only explicit sessions or
+    # stable media-server identifiers may reuse capacity across reconnects.
+    connection_fingerprint = None if (client_session or stable_client_id) else uuid4().hex
+    ticket_claims = None
+    if ticket:
+        try:
+            ticket_claims = validate_playback_ticket(ticket)
+            if ticket_claims["c"] != catalog_item_id:
+                raise PlaybackTicketError("catalog_mismatch", "Playback ticket does not match this catalog item.", 409)
+        except PlaybackTicketError as exc:
+            add_log("warning", "runtime", f"reservation_ticket_rejected reason={exc.code} catalog_item={catalog_item_id} ticket=[redacted]")
+            raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+    ticket_consumed = False
+
+    def acquire(excluded: set[int]):
+        nonlocal ticket_consumed
+        if ticket_claims is not None and not ticket_consumed:
+            ticket_consumed = True
+            try:
+                result = consume_ticketed_reservation(
+                    str(ticket_claims["r"]), catalog_item_id, "channel"
+                )
+                add_log("info", "runtime", f"reservation_ticket_validated reservation={result[0].reservation_id} catalog_item={catalog_item_id} ticket=[redacted]")
+                add_log("info", "runtime", f"ticketed_reservation_reused reservation={result[0].reservation_id} catalog_item={catalog_item_id}")
+                return result
+            except LookupError as exc:
+                raise HTTPException(status_code=404, detail={"code": "missing_reservation", "message": "Playback reservation was not found."}) from exc
+            except ValueError as exc:
+                code = str(exc)
+                raise HTTPException(status_code=409 if code == "catalog_mismatch" else 410,
+                                    detail={"code": code, "message": "Playback reservation is no longer available."}) from exc
+        try:
+            payload, raw_location_ref = resolve_runtime(
+                "live", catalog_item_id, ttl, client_label,
+                client_session=client_session,
+                client_fingerprint=connection_fingerprint,
+                origin_identity=str(context["origin_identity"]),
+                stable_client_id=stable_client_id,
+                request_profile=str(context["user_agent_family"]),
+                reserve=True,
+                meaningful_activity=True,
+                excluded_source_availability_ids=excluded,
+                allow_startup_coalescing=False,
+            )
+        except RuntimeResolveUnavailable as exc:
+            raise _runtime_error(exc) from exc
+        reservation = payload.broker_decision.reservation
+        if reservation is None:
+            raise HTTPException(status_code=409, detail={"code": "missing_reservation", "message": "Playback reservation was not created."})
+        try:
+            record_runtime_correlation_observation(
+                reservation_id=reservation.reservation_id,
+                catalog_item_id=catalog_item_id,
+                media_type="live",
+                route_type="live",
+                request_identity_type=("explicit_session" if client_session else "stable_client_id" if stable_client_id else "connection"),
+                request_identity=client_session or stable_client_id or connection_fingerprint,
+                stable_emby_identifier=stable_client_id,
+                request_profile=str(context["user_agent_family"]),
+                address_signature=str(context["address_signature"]),
+                user_agent_signature=str(context["user_agent_signature"]),
+            )
+        except Exception as exc:
+            add_log("warning", "runtime", f"correlation_observation_failed reservation={reservation.reservation_id} error={type(exc).__name__}")
+        return reservation, raw_location_ref
+
+    try:
+        session = open_live_gateway(acquire, request.headers)
+    except LiveGatewayError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+    headers = dict(session.headers)
+    headers.update({
+        "X-Media-Router-Reservation-Action": "live_gateway",
+        "X-Media-Router-Reservation-Id": session.reservation_id,
+    })
+    return StreamingResponse(session.iter_bytes_async(), status_code=session.status_code, headers=headers)
+
+
+@router.get("/r/live/{catalog_item_id}", response_model=None)
 def resolve_live(
     request: Request,
     catalog_item_id: str,
@@ -148,8 +238,10 @@ def resolve_live(
     client_label: str | None = None,
     client_session: str | None = None,
     ticket: str | None = None,
-) -> RuntimeResolveDebug | RedirectResponse:
-    return _runtime_response(request, "GET", "live", catalog_item_id, debug, ttl, client_label, client_session, ticket)
+) -> StreamingResponse:
+    if debug:
+        raise HTTPException(status_code=400, detail={"code": "live_debug_disabled", "message": "Live debug responses are disabled to contain provider URLs."})
+    return _live_stream_response(request, catalog_item_id, ttl, client_label, client_session, ticket)
 
 
 @router.head("/r/live/{catalog_item_id}")
@@ -159,8 +251,10 @@ def resolve_live_head(
     ttl: int | None = Query(default=None, ge=1, le=86400),
     client_label: str | None = None,
     client_session: str | None = None,
-) -> RedirectResponse:
-    return _runtime_response(request, "HEAD", "live", catalog_item_id, False, ttl, client_label, client_session, reserve=False)
+) -> Response:
+    # HEAD is intentionally non-resolving: it must never reveal or contact the
+    # provider without owning a persisted capacity reservation.
+    return Response(status_code=405, headers={"Allow": "GET"})
 
 
 @router.get("/r/movie/{catalog_item_id}", response_model=RuntimeResolveDebug)

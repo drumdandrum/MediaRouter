@@ -1089,7 +1089,7 @@ def clear_test_data() -> CatalogSummary:
 
 
 def _redact_url(url: str) -> str:
-    return re.sub(r"(/(?:live|movie|series)/)[^/]+/[^/]+/", r"\1[redacted]/[redacted]/", url, flags=re.IGNORECASE)
+    return "[redacted-provider-url]" if url else url
 
 
 def _redact_playlist_reference(reference: str) -> str:

@@ -122,6 +122,8 @@ volumes:
 
 Generated Live TV M3U playlists are disposable. They contain Media Router runtime URLs such as `http://localhost:8088/r/live/channel_abc123`, not direct provider URLs or credentials.
 
+Capacity enforcement applies when consumers use these generated Media Router live URLs. Arbitrary external or legacy playlists containing raw provider URLs remain outside enforced mode and must not be presented as MediaRouter-served live output.
+
 ## STRM Generation Sizing
 
 For an 8 GB Mac mini development system, use Test mode (500 movies/500 episodes), batch size 250, and 4 file workers. Small mode is reasonable for controlled validation when other memory-heavy services are quiet.

@@ -1,0 +1,3 @@
+#EXTM3U
+#EXTINF:-1 CUID="lab-live-gateway-001" tvg-id="lab-live-gateway-001" tvg-name="MediaRouter Live Gateway Test" group-title="LAB LIVE",MediaRouter Live Gateway Test
+http://host.docker.internal:18091/playback-test.mp4
