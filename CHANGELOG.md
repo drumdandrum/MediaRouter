@@ -6,6 +6,26 @@ All notable changes are documented here.
 
 ---
 
+# v0.10.0-rc.3 — Reservation-Aware Live Streaming Gateway
+
+## Added
+
+- Live playback now remains in MediaRouter's byte path through a bounded,
+  reservation-aware streaming gateway with Range support, internal redirects,
+  activity heartbeats, prompt terminal release, and accountable failover.
+- Generic live connections have independent capacity ownership while explicit
+  sessions and stable media-server identities retain authoritative reconnect
+  reuse.
+
+## Security
+
+- MediaRouter-served live responses, public source surfaces, errors, and logs
+  no longer expose raw upstream provider targets.
+- Live `HEAD` requests return `405` without reserving capacity or resolving an
+  upstream URL.
+
+---
+
 # v0.10.0-rc.2 — Release Metadata Consistency
 
 ## Fixed
