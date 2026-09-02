@@ -74,6 +74,14 @@ class DashboardCatalogMetricTests(unittest.TestCase):
         self.assertNotIn("Decision Only", template)
         self.assertNotIn("Deferred Scope", template)
 
+    def test_broker_reservation_table_discloses_visible_vs_authoritative_capacity(self):
+        javascript = Path("app/static/app.js").read_text(encoding="utf-8")
+        template = Path("app/templates/index.html").read_text(encoding="utf-8")
+
+        self.assertIn("broker-reservations-visible-summary", template)
+        self.assertIn("authoritativeConsuming", javascript)
+        self.assertIn("capacity-consuming reservation(s) are visible", javascript)
+
 
 if __name__ == "__main__":
     unittest.main()

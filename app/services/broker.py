@@ -38,6 +38,7 @@ class ProvisionalAdoptionResult:
     status: str
     candidate_count: int
     reservation: BrokerReservation | None = None
+    candidate_lifecycle: str | None = None
 
 
 class BrokerUnavailable(Exception):
@@ -496,7 +497,11 @@ def adopt_provisional_reservation(
     *,
     startup_window_seconds: int = 90,
 ) -> ProvisionalAdoptionResult:
-    """Atomically claim one recent, unbound provisional for an Emby session."""
+    """Atomically claim one recent, unbound runtime reservation for an Emby session.
+
+    Active reservations are eligible only when a live gateway observation proves
+    that the reservation was created by a recent MediaRouter runtime request.
+    """
     normalized_media_type = _normalize_media_type(media_type)
     if not catalog_item_id or not normalized_media_type or not emby_session_id or startup_window_seconds <= 0:
         return ProvisionalAdoptionResult(status="no_candidate", candidate_count=0)
@@ -510,21 +515,30 @@ def adopt_provisional_reservation(
         conn.execute("BEGIN IMMEDIATE")
         expire_reservations(conn, commit=False)
         candidates = conn.execute(
-            """SELECT reservations.reservation_id
+            """SELECT reservations.reservation_id,reservations.lifecycle_state
                FROM broker_reservations reservations
                WHERE reservations.catalog_item_id=?
                  AND reservations.media_type=?
-                 AND reservations.lifecycle_state='provisional'
+                 AND reservations.lifecycle_state IN ('provisional','active')
                  AND reservations.released_at IS NULL
                  AND reservations.created_at>=?
                  AND reservations.client_session IS NULL
+                 AND (reservations.lifecycle_state='provisional' OR EXISTS (
+                     SELECT 1 FROM runtime_correlation_observations observations
+                     WHERE observations.reservation_id=reservations.reservation_id
+                       AND observations.catalog_item_id=reservations.catalog_item_id
+                       AND observations.media_type=reservations.media_type
+                       AND observations.route_type='live'
+                       AND observations.observed_at>=?
+                       AND observations.expires_at>?
+                 ))
                  AND NOT EXISTS (
                      SELECT 1 FROM emby_playback_bindings bindings
                      WHERE bindings.reservation_id=reservations.reservation_id
                        AND bindings.released_at IS NULL
                  )
                ORDER BY reservations.created_at DESC, reservations.id DESC""",
-            (catalog_item_id, normalized_media_type, cutoff),
+            (catalog_item_id, normalized_media_type, cutoff, cutoff, now_value),
         ).fetchall()
         candidate_count = len(candidates)
         if candidate_count != 1:
@@ -534,6 +548,7 @@ def adopt_provisional_reservation(
                 candidate_count=candidate_count,
             )
         reservation_id = candidates[0]["reservation_id"]
+        candidate_lifecycle = candidates[0]["lifecycle_state"]
         try:
             updated = conn.execute(
                 """UPDATE broker_reservations
@@ -545,7 +560,7 @@ def adopt_provisional_reservation(
                    WHERE reservation_id=?
                      AND catalog_item_id=?
                      AND media_type=?
-                     AND lifecycle_state='provisional'
+                     AND lifecycle_state=?
                      AND released_at IS NULL
                      AND created_at>=?
                      AND client_session IS NULL
@@ -555,7 +570,7 @@ def adopt_provisional_reservation(
                            AND bindings.released_at IS NULL
                      )""",
                 (identity_hash, identity_key, now_value, reservation_id,
-                 catalog_item_id, normalized_media_type, cutoff),
+                 catalog_item_id, normalized_media_type, candidate_lifecycle, cutoff),
             ).rowcount
             if updated != 1:
                 conn.rollback()
@@ -579,7 +594,8 @@ def adopt_provisional_reservation(
             reservation = _reservation_from_row(detail)
             conn.commit()
             return ProvisionalAdoptionResult(
-                status="adopted", candidate_count=1, reservation=reservation)
+                status="adopted", candidate_count=1, reservation=reservation,
+                candidate_lifecycle=candidate_lifecycle)
         except sqlite3.IntegrityError:
             conn.rollback()
             return ProvisionalAdoptionResult(status="race_lost", candidate_count=1)
@@ -1342,6 +1358,34 @@ def release_reservation(reservation_id: str, reason: str = "explicit_release") -
     add_log("info", "broker", f"reservation_released reservation={reservation_id} reason={reason}")
     rows = _reservation_query("WHERE broker_reservations.reservation_id = ?", (reservation_id,))
     return rows[0] if rows else None
+
+
+def release_gateway_reservation_if_unbound(
+    reservation_id: str, reason: str = "live_gateway_disconnect",
+) -> BrokerReservation | None:
+    """Release gateway ownership unless an active Emby binding still owns it."""
+    with closing(_connect()) as conn:
+        emby_owner = conn.execute(
+            """SELECT 1 FROM broker_reservations reservations
+               WHERE reservations.reservation_id=?
+                 AND reservations.lifecycle_state IN ('provisional','active')
+                 AND (reservations.last_action='emby_provisional_adopted' OR EXISTS (
+                     SELECT 1 FROM emby_playback_bindings bindings
+                     WHERE bindings.reservation_id=reservations.reservation_id
+                       AND bindings.released_at IS NULL
+                 )) LIMIT 1""",
+            (reservation_id,),
+        ).fetchone()
+    if emby_owner:
+        heartbeat_reservation(reservation_id, source="emby_binding_owner")
+        add_log("info", "broker", (
+            f"reservation_release_deferred reservation={reservation_id} "
+            f"departing_owner=live_gateway remaining_owner=emby_binding"
+        ))
+        rows = _reservation_query(
+            "WHERE broker_reservations.reservation_id=?", (reservation_id,))
+        return rows[0] if rows else None
+    return release_reservation(reservation_id, reason=reason)
 
 
 def release_all_active() -> BrokerStatus:

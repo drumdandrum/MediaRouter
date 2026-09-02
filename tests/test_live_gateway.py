@@ -244,7 +244,7 @@ class LiveGatewayLifecycleTests(unittest.TestCase):
         session = LiveGatewaySession("reservation", 1, upstream, 200, {}, heartbeat_interval_seconds=1)
         with patch("app.services.live_gateway.time.monotonic", side_effect=[0, 2, 2.5]), \
              patch("app.services.live_gateway.heartbeat_reservation") as heartbeat, \
-             patch("app.services.live_gateway.release_reservation") as release:
+             patch("app.services.live_gateway.release_gateway_reservation_if_unbound") as release:
             self.assertEqual(b"".join(session.iter_bytes()), b"onetwo")
             session.release("duplicate")
         heartbeat.assert_called_once_with("reservation", source="live_gateway_activity")
@@ -256,7 +256,7 @@ class LiveGatewayLifecycleTests(unittest.TestCase):
         second_upstream = _FakeUpstream([b"second"])
         first = LiveGatewaySession("shared-reservation", 1, first_upstream, 200, {})
         second = LiveGatewaySession("shared-reservation", 1, second_upstream, 200, {})
-        with patch("app.services.live_gateway.release_reservation") as release:
+        with patch("app.services.live_gateway.release_gateway_reservation_if_unbound") as release:
             first.release("first_connection_closed")
             release.assert_not_called()
             second.release("last_connection_closed")
@@ -273,7 +273,7 @@ class LiveGatewayLifecycleTests(unittest.TestCase):
             with self.subTest(label=label):
                 upstream = _FakeUpstream(chunks)
                 session = LiveGatewaySession("reservation", 1, upstream, 200, {})
-                with patch("app.services.live_gateway.release_reservation") as release:
+                with patch("app.services.live_gateway.release_gateway_reservation_if_unbound") as release:
                     iterator = session.iter_bytes()
                     if label == "disconnect":
                         self.assertEqual(next(iterator), b"one")
@@ -305,7 +305,7 @@ class LiveGatewayAsyncLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_async_cancellation_releases_once(self):
         upstream = _FakeUpstream([b"one", b"two"])
         session = LiveGatewaySession("async-reservation", 1, upstream, 200, {})
-        with patch("app.services.live_gateway.release_reservation") as release:
+        with patch("app.services.live_gateway.release_gateway_reservation_if_unbound") as release:
             iterator = session.iter_bytes_async()
             self.assertEqual(await anext(iterator), b"one")
             await iterator.aclose()

@@ -981,7 +981,8 @@ def _acquire_emby_reservation(session: EmbyPlaybackSession) -> None:
         add_log("info", "emby", (
             f"emby_provisional_adoption_succeeded reservation={adoption.reservation.reservation_id} "
             f"session={session.emby_session_id} catalog_item={session.catalog_item_id} "
-            f"candidate_count={adoption.candidate_count}"
+            f"candidate_count={adoption.candidate_count} "
+            f"candidate_lifecycle={adoption.candidate_lifecycle or 'provisional'}"
         ))
         return
     event = {
@@ -993,6 +994,15 @@ def _acquire_emby_reservation(session: EmbyPlaybackSession) -> None:
         f"{event} reservation=none session={session.emby_session_id} "
         f"catalog_item={session.catalog_item_id} candidate_count={adoption.candidate_count}"
     ))
+    if adoption.status == "ambiguous":
+        session.unmatched_reason = "ambiguous_runtime_reservations"
+        session.correlation_candidate_count = adoption.candidate_count
+        session.recent_runtime_observation_found = True
+        add_log("warning", "emby", (
+            f"emby_adoption_ambiguous_capacity_preserved session={session.emby_session_id} "
+            f"catalog_item={session.catalog_item_id} candidate_count={adoption.candidate_count}"
+        ))
+        return
     add_log("info", "emby", (
         f"emby_provisional_adoption_fallback reservation=none session={session.emby_session_id} "
         f"catalog_item={session.catalog_item_id} candidate_count={adoption.candidate_count}"
@@ -1063,7 +1073,7 @@ def reconcile_emby_sessions(sessions: list[EmbyPlaybackSession], *, server_id: s
                 lifecycle_actions.append(("release", old["reservation_id"], "emby_playback_stopped"))
                 old = None
                 add_log("info", "emby", f"emby_channel_switched session={session.emby_session_id} old_catalog={old_catalog} new_catalog={session.catalog_item_id} item_id={session.emby_item_id or 'none'} media_source_id={session.emby_media_source_id or 'none'}")
-            if session.unmatched_reason in {"catalog_identity_unresolved", "no_sources", "all_disabled", "all_unhealthy", "all_at_capacity", "broker_reservation_unavailable"}:
+            if session.unmatched_reason in {"catalog_identity_unresolved", "no_sources", "all_disabled", "all_unhealthy", "all_at_capacity", "broker_reservation_unavailable", "ambiguous_runtime_reservations"}:
                 reservation, method, confidence = None, session.unmatched_reason, "none"
                 diagnostics = {"recent_runtime_observation_found": False, "candidate_count": 0,
                     "unmatched_reason": session.unmatched_reason, "rejected_for_age_count": 0,
@@ -1158,8 +1168,16 @@ def reconcile_emby_sessions(sessions: list[EmbyPlaybackSession], *, server_id: s
         elif action == "heartbeat":
             heartbeat_reservation(reservation_id, source="emby_playback_heartbeat")
         else:
-            release_reservation(reservation_id, reason=reason)
-            add_log("info", "emby", f"emby_reservation_released reservation={reservation_id} reason={reason}")
+            from app.services.live_gateway import has_live_gateway_owner
+            if has_live_gateway_owner(reservation_id):
+                heartbeat_reservation(reservation_id, source="live_gateway_owner")
+                add_log("info", "emby", (
+                    f"emby_reservation_release_deferred reservation={reservation_id} "
+                    f"remaining_owner=live_gateway reason={reason}"
+                ))
+            else:
+                release_reservation(reservation_id, reason=reason)
+                add_log("info", "emby", f"emby_reservation_released reservation={reservation_id} reason={reason}")
     return matched, unmatched
 
 
