@@ -18,15 +18,15 @@ class VersionMetadataTests(unittest.TestCase):
         dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
         compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
 
-        self.assertIn("ARG MEDIA_ROUTER_APP_VERSION=v0.10.0-rc.2", dockerfile)
-        self.assertEqual(2, compose.count('MEDIA_ROUTER_APP_VERSION: "v0.10.0-rc.2"'))
+        self.assertIn("ARG MEDIA_ROUTER_APP_VERSION=v0.10.0-rc.3", dockerfile)
+        self.assertEqual(2, compose.count('MEDIA_ROUTER_APP_VERSION: "v0.10.0-rc.3"'))
         self.assertEqual(2, compose.count("${MEDIA_ROUTER_GIT_COMMIT:-Unavailable}"))
         self.assertNotIn("v0.8.1", dockerfile)
         self.assertNotIn("v0.8.1", compose)
         self.assertNotIn("fdc842f", compose)
 
     def test_source_openapi_and_template_use_release_default(self):
-        self.assertEqual("v0.10.0-rc.2", APP_VERSION)
+        self.assertEqual("v0.10.0-rc.3", APP_VERSION)
         self.assertNotEqual("v0.8.1", APP_VERSION)
         self.assertEqual(APP_VERSION, app.version)
         self.assertEqual(APP_VERSION, app.openapi()["info"]["version"])
