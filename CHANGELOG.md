@@ -6,6 +6,33 @@ All notable changes are documented here.
 
 ---
 
+# v0.10.0 — Reservation-Aware Live Routing
+
+## Added
+
+- Route live media through a reservation-aware gateway that keeps provider URLs
+  server-side, commits capacity before opening upstream, enforces independent
+  direct-client capacity, supports Range requests, and performs bounded
+  source/account failover.
+- Maintain gateway heartbeats and last-owner release semantics while allowing
+  Emby to attach capacity-neutrally to the same authoritative reservation.
+- Provide schema-v1 migration hardening and validated backup/restore tooling.
+
+## Fixed and hardened
+
+- Correct the RC3 race in which Emby could miss an already-active gateway
+  reservation and consume a second account; RC4 production validation proved
+  one playback, one reservation, and one consuming account across repeated polls.
+- Keep release metadata consistent across source, OpenAPI, UI, Docker, Compose,
+  and backup manifests while preserving explicit deployment overrides.
+- Redact credentials and provider targets from public surfaces, errors, and logs.
+
+## Validation
+
+- Production validation confirmed commit-before-upstream enforcement, provider
+  URL containment, Range-capable playback, stable heartbeats, clean owner handoff,
+  capacity recovery, database integrity, and stable runtime resources.
+
 # v0.10.0-rc.4 — Capacity-Neutral Emby Gateway Adoption
 
 - Adopt a unique recent gateway-owned reservation after it has promoted active, preventing one Emby playback from consuming two provider accounts.
