@@ -97,6 +97,11 @@ All notable changes are documented here.
 
 ## Added
 
+- Native `GET /live/playlist.m3u` media-client distribution from authoritative
+  catalog state, with deterministic UTF-8 output, stable ETags, safe configured
+  runtime URL authority, and zero reservation/provider activity on playlist reads.
+- A canonical Live M3U document builder shared by disk generation and native HTTP
+  distribution so eligibility, ordering, metadata, and gateway URLs cannot drift.
 - MediaRouter-side Emby session polling adapter with redacted configuration, connection testing, health status, normalized observed playback, and persistent reservation bindings.
 - Authoritative Emby playback confirmation and heartbeat evidence feeding the existing Broker lifecycle, plus grace-delayed release after confirmed disappearance.
 - Integrations UI for Emby configuration, health, observed playback, correlation diagnostics, and binding history.
@@ -109,7 +114,6 @@ All notable changes are documented here.
 
 ## Planned
 
-- Native HTTP-served Live M3U.
 - XMLTV strategy and HTTP-served XMLTV.
 - Provider/account health monitoring.
 - Backup, restore, migration, and upgrade hardening.

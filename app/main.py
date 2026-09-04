@@ -6,6 +6,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.api.broker import router as broker_router
 from app.api.dashboard import router as dashboard_router
+from app.api.distribution import router as distribution_router
 from app.api.catalog import router as catalog_router
 from app.api.foundation import router as foundation_router
 from app.api.jobs import router as jobs_router
@@ -40,7 +41,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Media Router",
-    description="Sprint 7 Live TV M3U output generator for a modular home media orchestration platform.",
+    description="Provider-agnostic media routing, capacity enforcement, and native Live TV distribution.",
     version=APP_VERSION,
     lifespan=lifespan,
 )
@@ -50,6 +51,7 @@ templates = Jinja2Templates(directory="app/templates")
 app.include_router(broker_router)
 app.include_router(catalog_router)
 app.include_router(dashboard_router)
+app.include_router(distribution_router)
 app.include_router(foundation_router)
 app.include_router(jobs_router)
 app.include_router(integrations_router)

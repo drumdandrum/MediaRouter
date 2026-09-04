@@ -38,6 +38,7 @@ Emby / Channels DVR / Jellyfin / Kodi / VLC
 - Conservative Emby startup coalescing when probe and playback requests use different User-Agent families.
 - Movie and episode STRM generation with dry-run, configurable limits, batched processing, bounded file concurrency, tracking, cleanup, cancellation, and benchmark logging.
 - Live TV M3U generation with channel-number, group, metadata, source-order, and repeated editorial-placement preservation.
+- Native `GET /live/playlist.m3u` distribution generated from the same canonical Live M3U representation without reading the disk artifact or reserving capacity.
 - Paginated APIs and UI tables for large catalogs.
 - Persistent wizard, settings, jobs, logs, and operational metadata.
 - Optional MediaRouter-side Emby session polling that confirms, renews, and grace-releases existing Broker reservations without requiring an Emby plugin.
@@ -46,7 +47,7 @@ Emby / Channels DVR / Jellyfin / Kodi / VLC
 
 - Redirect mode cannot observe byte-level disconnects; explicit lifecycle APIs are available, while media-server event integrations and optional proxy observation remain future work.
 - XMLTV is currently supplied externally, such as from IPTV Boss or another web server.
-- Generated outputs are files on disk; native HTTP-served M3U and XMLTV endpoints are planned for v1.0.
+- STRM and Live M3U disk outputs remain supported. Live M3U also has a native HTTP endpoint; native XMLTV remains future work.
 - Proxy streaming, transcoding, HDHomeRun emulation, encrypted secret storage, and formal media-server adapters are not yet implemented.
 - Kodi IPTV Simple may apply its own channel ordering or duplicate-placement behavior even when using the original IPTV Boss playlist. A Kodi-specific output profile is a post-1.0 compatibility idea, not a core-output blocker.
 
@@ -114,6 +115,16 @@ The output paths configured in the UI are container paths, for example:
 
 Use **Outputs → Validate Paths** before generation.
 
+Media clients may alternatively consume the native Live M3U URL:
+
+```text
+http://<media-router-host>:8088/live/playlist.m3u
+```
+
+Configure Live M3U Runtime Client Access URL or Runtime Public Base URL to a
+client-reachable address first. Playlist retrieval reads current catalog state and
+does not reserve capacity; selecting one of its `/r/live/{id}` URLs does.
+
 ## Catalog counts
 
 Catalog identity and source availability are different measurements:
@@ -147,10 +158,9 @@ An observed session with durable catalog identity reuses a compatible provisiona
 
 ## Road to v1.0
 
-The current focus is production readiness and the remaining Core v1.0 capabilities:
+The current focus is Native Live TV Distribution and the remaining Core v1.0 capabilities:
 
 - Runtime URL configuration polish.
-- HTTP-served Live M3U.
 - XMLTV strategy and HTTP-served XMLTV.
 - Provider health monitoring.
 - Reservation lifecycle operational validation and client-integration follow-up.

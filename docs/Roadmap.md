@@ -30,7 +30,7 @@ and tests at that commit. A documented intention is not counted as delivered.
 | Security/redaction | Partial | Shared recursive redaction, provider URL containment, secret-preserving updates, and archive/path safeguards are tested. UI authentication is not implemented. |
 | Dashboard/operator UI | Partial | Core CRUD, outputs, jobs, logs, integration state, mappings, and corrected catalog/capacity metrics are available. Several recovery and diagnostic workflows still require API/CLI use. |
 | Plugin architecture | Foundational only | An abstract output interface and design rules exist, but current outputs/integrations are service modules; there is no loader, metadata validation, capability context, isolation, or third-party SDK. |
-| Channels DVR integration | Partial | Generated generic M3U ingestion and capacity-enforced live playback are validated. There is no native output URL, XMLTV endpoint, Channels profile, tuner contract, or Channels-side management. |
+| Channels DVR integration | Partial | Generated generic M3U ingestion and capacity-enforced live playback are validated, and native HTTP M3U distribution is implemented in v0.11.0 Phase 1. XMLTV, a Channels profile, tuner contract, and Channels-side management remain absent. |
 | Automation/API maturity | Partial | Broad typed HTTP APIs and background output jobs exist. Jobs are process-local, no scheduler/event stream is present, and write-capable GET expiry housekeeping remains. |
 | Source-entry identity ledger | Foundational only | The opt-in shadow ledger records privacy-safe VOD feed observations and drift without affecting authoritative import or runtime behavior. |
 
@@ -52,7 +52,7 @@ that the capability will never evolve.
 | Consolidated health diagnostics | Still relevant. |
 | Optional local-network UI authentication | Still relevant; not a prerequisite for the bounded v0.11.0 output milestone. |
 | Stale-reservation policy and non-Emby lifecycle adapters | Still relevant, deferred ecosystem/lifecycle work. |
-| Native HTTP Live M3U and stable output URLs | Still relevant and promoted into v0.11.0. |
+| Native HTTP Live M3U and stable output URLs | Done in v0.11.0 Phase 1. |
 | XMLTV strategy and native endpoint | Still relevant and promoted into v0.11.0. |
 | Separate temporary port-8090 file server | Superseded as the desired delivery topology; retained only as a v0.10.0 compatibility path until native endpoints ship. |
 | “Emby adapter” as post-1.0 work | Superseded by the application-side Emby adapter delivered before v0.10.0. Client-installed stop-event enhancements remain future work. |

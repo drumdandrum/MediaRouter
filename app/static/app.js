@@ -1016,7 +1016,7 @@ function renderOutputs() {
   renderStrmPathValidation();
   document.getElementById("live-m3u-runtime-base").textContent = state.liveM3uSettings?.runtime_client_access_url || publicBaseUrl();
   document.getElementById("live-m3u-output-file").textContent = state.liveM3uSettings?.output_file_path || "-";
-  document.getElementById("live-m3u-playlist-url").textContent = "Future hosted playlist URL";
+  document.getElementById("live-m3u-playlist-url").textContent = `${window.location.origin.replace(/\/$/, "")}/live/playlist.m3u`;
   const liveLastRun = state.liveM3uHistory[0];
   const liveLastGenerate = state.liveM3uHistory.find((run) => run.mode === "generate");
   const liveSummary = state.liveM3uResult?.summary || liveLastRun?.summary || null;

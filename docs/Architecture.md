@@ -52,7 +52,7 @@ flowchart LR
 | Catalog | Permanent internal IDs and source mappings for movies, episodes, and live channels. |
 | Broker | Stream routing, account selection, balancing, failover, and reservation creation. |
 | Streams | Active stream reservations, expiry, and usage reporting. |
-| Outputs | Built-in STRM and Live M3U generation plus the future distribution/plugin boundary for XMLTV, HDHomeRun, REST, and other outputs. |
+| Outputs | Built-in STRM and Live M3U generation, canonical native HTTP M3U distribution, plus the future distribution/plugin boundary for XMLTV, HDHomeRun, REST, and other outputs. |
 | Integrations | Adapters for Emby, Jellyfin, NextPVR, Channels DVR, IPTV Boss, and future services. |
 
 ## Backend Layout
@@ -155,5 +155,16 @@ episode playback remains redirect-based.
 
 The plugin layout is still foundational. Built-in outputs and the Emby adapter are
 service modules and are not dynamically discovered plugins. XMLTV, native HTTP output
-distribution, HDHomeRun emulation, and third-party plugin loading are not implemented.
+distribution for XMLTV, HDHomeRun emulation, and third-party plugin loading are not implemented.
 New feature APIs should continue to preserve module and service-layer boundaries.
+
+## Native Live M3U boundary
+
+`GET /live/playlist.m3u` is a media distribution route, not a JSON management API.
+The handler calls the output service and never accesses SQLite or generated files.
+The output service builds one canonical, deterministic playlist representation from
+catalog placements and source eligibility; both native HTTP delivery and disk
+publication consume that representation. The read path uses one bounded connection,
+performs no reservation or provider operation, and closes the connection before the
+response is returned. Explicit configured runtime/public URLs outrank a fixed safe
+fallback; request host and forwarding headers are not URL authority.
