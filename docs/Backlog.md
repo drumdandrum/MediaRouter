@@ -1,131 +1,145 @@
 # Backlog
 
-This backlog is organized by product milestone. Completed implementation history remains available in Git tags and the changelog.
+This backlog reflects the implementation at `v0.10.0` (`88da1bc`). Completed history
+also remains in release notes and Git. Proposed work is not described as implemented.
 
-## Core Platform — Complete ✅
+## Delivered through v0.10.0
 
-- [x] FastAPI and Docker foundation.
-- [x] Persistent settings, setup wizard, jobs, logs, and About/System metadata.
-- [x] SQLite catalog engine and stable internal IDs.
-- [x] M3U import for live channels, movies, series, and episodes.
-- [x] Provider and account management.
-- [x] Source availability and multi-account deduplication.
-- [x] Capacity-aware Broker with priorities, weights, reservations, expiry, and release.
-- [x] Broker explanations, candidate diagnostics, live polling, and Release All Active.
-- [x] Stable runtime URLs and HTTP redirects.
-- [x] GET, HEAD, Range, reconnect, and slow-start reservation reuse.
-- [x] Atomic SQLite reservation reuse-or-create.
-- [x] Trusted-proxy-aware client identity.
-- [x] Emby startup identity coalescing and aliases.
-- [x] Provisional and active capacity leases with evidence-based promotion.
-- [x] Sliding active renewal and explicit lifecycle APIs.
-- [x] Atomic same-identity Live switching and conservative provisional VOD supersession.
-- [x] MediaRouter-side Emby session polling, correlation, health, bindings, and lifecycle evidence.
-- [x] STRM generation for movies and episodes.
-- [x] STRM path validation, dry-run, tracking, cleanup, cancellation, and history.
-- [x] Configurable STRM presets and custom limits.
-- [x] Batched, paginated, memory-stable STRM generation.
-- [x] Bounded concurrent atomic STRM writes and benchmark logging.
-- [x] Live TV M3U generation.
-- [x] Live M3U path validation, dry-run, preview, history, and configurable limits.
-- [x] Channel-number, group, metadata, source-order, and repeated-placement preservation.
-- [x] Emby Live TV and STRM movie playback validation.
-- [x] Channels DVR Live TV ingestion and playback validation.
-- [x] Jellyfin runtime STRM playback exercise.
-- [x] VLC runtime playback exercise.
+- [x] Provider/account management and provider-specific source availability.
+- [x] Canonical catalog IDs with separate source rows and editorial live placements.
+- [x] M3U import for channels, movies, series, and episodes.
+- [x] Atomic capacity-aware Broker with provisional/active leases, renewal, expiry,
+  release, supersession, explanations, and operator controls.
+- [x] Stable runtime URLs and VOD redirects with conservative identity reuse.
+- [x] Reservation-aware live gateway with provider URL containment, Range support,
+  bounded failover, heartbeat, and disconnect/EOF release.
+- [x] STRM movie/episode generation, scoped builds, path safety, bounded concurrency,
+  tracking/history, cleanup, cancellation, and benchmarks.
+- [x] Live M3U generation, placement preservation, preview/dry-run, bounds, and history.
+- [x] Emby polling, status, normalized observations, durable bindings, correlation,
+  lifecycle evidence, reservation adoption, and failure-safe release grace.
+- [x] Automatic/manual live channel mappings and exact manual VOD mapping CRUD.
+- [x] Read-only bounded Emby mapping audit with production operating limits.
+- [x] Dashboard catalog/source and visible/authoritative capacity clarity.
+- [x] Shared diagnostic redaction and secret-safe public runtime behavior.
+- [x] Versioned transactional startup migrations and request-schema boundary tests.
+- [x] Consistency-safe backup, validation, empty-target restore, and acceptance tests.
+- [x] Production/development separation, local STRM storage, upgrade, and rollback
+  guidance.
+- [x] Channels DVR generic Live M3U ingestion and gateway playback validation.
 
-## Production Readiness — Current 🚧
+## v0.11.0 — Native Live TV Distribution
 
-### Dashboard and clarity
+### Guide contract and identity
 
-- [x] Fix or relabel the dashboard Catalog card so unique catalog items are not confused with source-availability rows.
-- [x] Show unique channels, movies, series, episodes, total catalog items, and source rows as distinct metrics.
-- [x] Review status labels for production clarity.
+- [ ] Record an accepted XMLTV ownership decision: IPTV Boss remains editorial source;
+  Media Router validates and publishes a disposable derived guide artifact.
+- [ ] Define supported XMLTV encodings, namespaces, timestamps, maximum sizes/counts,
+  malformed-input behavior, and freshness policy.
+- [ ] Define deterministic `tvg-id` joins and diagnostics for duplicates, missing guide
+  channels, guide-only channels, and repeated playlist placements.
+- [ ] Decide whether v0.11.0 preserves complete source XMLTV or emits a bounded filtered
+  representation; document the choice before implementation.
 
-### Operations
+### Output publication boundary
 
-- [x] Backup and restore guidance/tooling.
-- [x] Database migration tests.
-- [x] Move additive schema initialization out of nominal request paths after defining an explicit startup/upgrade migration boundary; avoid duplicate initialization such as the catalog summary path.
-- [ ] Review write-capable GET paths, including Broker expiry housekeeping, and define a clearer maintenance boundary without changing current expiry semantics.
-- [x] Upgrade notes and rollback procedure.
-- [ ] Health diagnostics page or report.
-- [x] Review structured logging and secret scrubbing coverage.
-- [ ] Optional local-network UI authentication.
-- [ ] Document production and development environment separation.
-- [ ] Document local STRM output as the preferred same-host deployment model.
+- [ ] Extract format-neutral published-artifact access from the existing combined
+  output service without changing STRM or M3U generation behavior.
+- [ ] Publish M3U/XMLTV atomically and retain the last known-good pair after a failed or
+  cancelled rebuild.
+- [ ] Record bounded build history, content digest, source freshness, counts, warnings,
+  and active artifact metadata.
+- [ ] Ensure concurrent reads and regeneration never expose a partial artifact.
 
-### Emby mapping-audit hardening
+### Native HTTP delivery
 
-- [ ] Add resumable or cursor-based movie auditing beyond the 10,000-item cap without raising the per-run safety bound.
-- [ ] Replace full episode-detail retention with lower-memory streaming aggregation and a bounded detail window.
-- [ ] Add a reusable deterministic audit integrity-hash helper with complete stable ordering.
-- [ ] Consider an optional audit UI or downloadable, sanitized report after the operator API workflow is established.
-- [ ] Design durable movie, series, and episode crosswalks separately; VOD persistence and application remain explicitly deferred.
+- [ ] Serve the current Live M3U artifact at one stable Media Router URL.
+- [ ] Serve the current XMLTV artifact at one stable Media Router URL.
+- [ ] Implement correct content types, GET/HEAD, conditional responses, bounded error
+  contracts, and provider/path/secret redaction.
+- [ ] Do not accept arbitrary filesystem paths through delivery routes.
+- [ ] Preserve filesystem output as the v0.10.0 compatibility and rollback path.
 
-### Provider health
+### Operator workflow
 
-- [ ] Define provider/account health scoring.
-- [ ] Add periodic provider/account health checks.
-- [ ] Integrate health into Broker eligibility and explanations.
-- [ ] Add health history and last-check visibility.
+- [ ] Add XMLTV source/output configuration and non-mutating validation/preview.
+- [ ] Show stable M3U/XMLTV URLs, last successful build, artifact freshness, join counts,
+  warnings, and sanitized failures in the UI/API.
+- [ ] Provide explicit manual regeneration with progress/cancellation consistent with
+  existing output jobs.
+- [ ] Update installation guidance to remove the temporary static server from the
+  recommended Channels topology only after validation.
 
-### Reservation policy
+### Verification and release
 
-- [x] Make runtime TTL configurable by media type.
-- [x] Make startup-coalescing window configurable and visible.
-- [x] Document explicit session, fingerprint, and alias behavior.
-- [x] Add provisional TTL, promotion, sliding renewal, and supersession policy.
-- [ ] Define stale-reservation cleanup policy.
-- [x] Add client-agnostic confirm, heartbeat, and release endpoints.
-- [x] Connect Emby playback observation to lifecycle endpoints through polling.
-- [ ] Design media-type-aware abandoned-session cleanup after Emby lifecycle support covers live channels, movies, and series episodes. Evaluate polling gaps, pause and seek behavior, reconnects, client crashes, channel changes, long-form movies and episodes, and grace periods by media type and available session evidence. Keep this separate from the full-library mapping audit; do not change current release timing as part of mapping work.
-- [ ] Add stronger explicit Emby stop events only if a future plugin/webhook phase is approved.
-- [ ] Connect Jellyfin/Kodi events to lifecycle endpoints.
-- [ ] Evaluate optional proxy byte/disconnect observation.
+- [ ] Add deterministic parser/join/publication/API tests with sanitized fixtures.
+- [ ] Add large-guide memory/time bounds and malformed/hostile XML tests.
+- [ ] Test atomic failure, cancellation, concurrent delivery, restart, migration, and
+  backup/restore behavior.
+- [ ] Validate M3U and XMLTV ingestion on an isolated Channels instance.
+- [ ] Validate channel/guide identity, Range playback, capacity refusal, failover,
+  heartbeat, disconnect release, regeneration, and restart through Channels.
+- [ ] Document opt-in production validation and configuration-only rollback.
+- [ ] Publish v0.11.0 release notes only after all completion criteria pass.
 
-### Catalog and output polish
+## Near-term structural and operational work
 
-- [ ] Add configurable title normalization rules for provider/language/quality prefixes.
-- [ ] Improve movie and series filename normalization.
-- [ ] Validate large local STRM generation and scan performance.
-- [ ] Add clear warnings for network-backed STRM output paths where detectable.
+- [ ] Move Broker expiry housekeeping out of write-capable GET/list paths into an
+  explicit maintenance boundary without changing expiration semantics.
+- [ ] Add a consolidated sanitized health report for database, migrations, Broker,
+  outputs, jobs, and integration polling.
+- [ ] Define interrupted background-job reporting and restart behavior before adding
+  unattended scheduled imports or builds.
+- [ ] Define provider/account health scoring, checks, eligibility effects, explanations,
+  and bounded history.
+- [ ] Define a stale-reservation cleanup policy from production evidence.
+- [ ] Add optional local-network UI authentication.
+- [ ] Refine setup for providers, accounts, imports, runtime URL, and outputs.
 
-## Core v1.0
+## Catalog and Emby follow-up
 
-### Native HTTP outputs
+- [ ] Keep the VOD source-entry ledger shadow-only until identity evidence and migration
+  rules justify authoritative reconciliation.
+- [ ] Define configurable title/filename normalization without mutating editorial input.
+- [ ] Add resumable/cursor-based movie audit beyond the 10,000-item per-run bound.
+- [ ] Replace full episode-detail audit retention with bounded streaming aggregation.
+- [ ] Add a deterministic audit hash helper with complete stable ordering.
+- [ ] Design durable movie, series, and episode crosswalks separately from the read-only
+  audit; never bulk-apply ambiguous title matches.
+- [ ] Design media-type-aware abandoned-session handling after live, movie, and episode
+  polling evidence is broad enough to tune it safely.
+- [ ] Consider a sanitized downloadable audit report after the API workflow stabilizes.
 
-- [ ] Serve generated Live M3U directly from Media Router over HTTP.
-- [ ] Establish XMLTV ingestion/generation strategy.
-- [ ] Serve XMLTV directly from Media Router over HTTP.
-- [ ] Provide stable client-facing output URLs.
-- [ ] Retire the temporary static file server from the recommended deployment.
+## Deferred ecosystem work
 
-### Setup and release
-
-- [ ] Refine initial setup wizard for providers, accounts, imports, runtime URL, and outputs.
-- [x] Add backup/restore acceptance tests.
-- [ ] Add migration and upgrade acceptance tests.
-- [ ] Publish supported Docker deployment guidance.
-- [ ] Publish Core v1.0 release notes.
-
-## Post-1.0 Ecosystem
-
-- [ ] Runtime proxy mode for clients that cannot reliably consume redirects.
-- [ ] HDHomeRun emulation.
-- [ ] Emby adapter.
-- [ ] Jellyfin adapter.
-- [ ] Channels DVR enhancements.
-- [ ] IPTV Boss import watcher.
-- [ ] Local media providers.
-- [ ] Cloud or remote-storage providers.
+- [ ] VOD proxy mode and byte/disconnect observation.
+- [ ] Jellyfin and Kodi playback lifecycle adapters.
+- [ ] Optional stronger Emby stop events through an approved plugin/webhook design.
+- [ ] HDHomeRun emulation and tuner discovery.
+- [ ] Channels-specific enhancements beyond standards-based M3U/XMLTV consumption.
+- [ ] IPTV Boss export watcher and unattended regeneration.
+- [ ] Local and cloud/remote-storage providers.
 - [ ] Existing STRM scanner/importer.
-- [ ] Output plugin registry and formal plugin SDK.
-- [ ] WebSockets or Server-Sent Events for Broker updates.
 - [ ] Kodi-specific M3U compatibility profile.
+- [ ] Formal plugin capability contracts, registry, metadata validation, dynamic loading,
+  isolation, and third-party SDK.
+- [ ] WebSockets or Server-Sent Events if polling proves insufficient.
+
+## Superseded or no longer aligned
+
+- [x] Post-1.0 “Emby adapter” placeholder: superseded by the built-in polling adapter.
+- [x] Generic future “runtime proxy mode”: superseded for Live TV by the v0.10.0 live
+  gateway; only optional VOD proxying remains.
+- [x] NextPVR as a required aggregation hop: no longer aligned with the accepted client-
+  DVR ownership boundary.
+- [x] Direct Channels `/dvr/*` configuration automation: rejected unless Channels
+  publishes a supported contract; v0.11.0 uses consumer-facing standards instead.
 
 ## Known client behavior
 
-- Emby and Channels DVR consume the Live M3U output successfully.
-- Kodi IPTV Simple can play the output but may apply its own channel order or duplicate-placement behavior.
-- The same Kodi behavior occurs with the original IPTV Boss playlist, so it is not currently treated as a Media Router core-output defect.
+- Emby and Channels DVR consume the generated Live M3U successfully.
+- Kodi IPTV Simple can play the output but may apply its own channel order or repeated-
+  placement behavior; the same behavior occurs with the original IPTV Boss playlist.
+- Unmapped Emby VOD playback can reserve and promote through its STRM runtime request,
+  but polling cannot release it promptly unless the Emby item is correlated to the
+  Media Router catalog item. Exact VOD mappings are currently item-level and manual.

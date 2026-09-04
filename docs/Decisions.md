@@ -24,7 +24,7 @@ Architecture decisions should be recorded as ADRs in `docs/adr/` when they requi
 | Consistency-safe state backups | Accepted | Backups use SQLite's online backup API, include authoritative `/data` configuration and key material, exclude generated outputs, and require protected archives plus empty-target restore. |
 | STRM outputs use runtime URLs | Accepted | Generated movie and episode STRM files never contain provider credentials or direct provider URLs. |
 | Live M3U uses runtime URLs | Accepted | Generated Live M3U entries route through `/r/live/{catalog_item_id}`. |
-| Decision-and-redirect runtime | Accepted | Media Router brokers and redirects playback but does not currently proxy or transcode media. |
+| Gateway Live and redirect VOD runtime | Accepted | Live playback remains in Media Router's reservation-aware byte path; movies and episodes redirect after brokering. Media Router does not transcode. |
 | Three-state reservation leases | Accepted | Runtime requests acquire short provisional capacity, sustained or explicit evidence promotes the same ID to active, and released/expired/superseded rows retain audit history. |
 | Active-lifetime identity reuse | Accepted | Matching probes, GET, HEAD, Range, seek, and reconnect requests reuse one reservation. |
 | Atomic reservation acquisition | Accepted | SQLite locking and active-playback uniqueness prevent concurrent duplicate reservations. |
@@ -126,15 +126,12 @@ during episode validation. The approved procedure is documented in the
 
 ## Open decisions
 
-- Migration framework and versioning policy.
-- Backup/restore implementation depth for v1.0.
 - Whether local-network UI authentication is enabled by default or optional.
 - Provider health-scoring policy.
-- Default reservation TTLs and startup-coalescing windows by media type.
 - XMLTV ingestion versus generation responsibilities.
 - Whether output plugins can be installed dynamically or remain bundled.
 - How catalog duplicate detection should score uncertain matches.
-- Whether heartbeat/explicit stop integration belongs in v1.x core or client adapters.
+- Whether stronger explicit stop integration belongs in core polling or client adapters.
 
 ## ADR template
 

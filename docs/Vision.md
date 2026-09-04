@@ -24,7 +24,7 @@ The application should assume that users may have existing tools and folders alr
 - Generate outputs such as STRM, M3U, XMLTV, and HDHomeRun-compatible endpoints from the same catalog.
 - Integrate with Emby, Jellyfin, NextPVR, Channels DVR, IPTV Boss, and future services through adapters.
 
-## Non-Goals For The Foundation Phase
+## Historical Non-Goals For The Foundation Phase
 
 - Do not implement a full IPTV broker yet.
 - Do not implement account credential storage yet.
@@ -32,7 +32,10 @@ The application should assume that users may have existing tools and folders alr
 - Do not expose HDHomeRun endpoints yet.
 - Do not add service-specific integration logic yet.
 
-This phase exists to define the architecture and project foundation before feature work begins.
+These constraints described the original foundation phase and are retained as project
+history. The operational v0.10.0 system now includes the Broker, credential-bearing
+provider accounts, STRM and M3U outputs, a live gateway, and the built-in Emby adapter.
+HDHomeRun remains unimplemented.
 
 ## User Experience Principles
 

@@ -52,7 +52,7 @@ flowchart LR
 | Catalog | Permanent internal IDs and source mappings for movies, episodes, and live channels. |
 | Broker | Stream routing, account selection, balancing, failover, and reservation creation. |
 | Streams | Active stream reservations, expiry, and usage reporting. |
-| Outputs | Plugin boundary for STRM, M3U, XMLTV, HDHomeRun, REST, and future outputs. |
+| Outputs | Built-in STRM and Live M3U generation plus the future distribution/plugin boundary for XMLTV, HDHomeRun, REST, and other outputs. |
 | Integrations | Adapters for Emby, Jellyfin, NextPVR, Channels DVR, IPTV Boss, and future services. |
 
 ## Backend Layout
@@ -145,6 +145,15 @@ The Emby adapter is application-managed integration code, not a plugin installed
 
 Catalog identity belongs to Media Router. Each movie, episode, and live channel has exactly one internal ID. Multiple provider URLs and account-specific sources may map to that one ID.
 
-## Foundation Status
+## Implementation Status at v0.10.0
 
-The current codebase intentionally includes only a runnable FastAPI scaffold, domain contracts, module folders, and foundation endpoints. Feature APIs should be introduced one module at a time.
+The codebase is an operational application rather than a foundation scaffold. Catalog,
+provider/account, source availability, Broker, runtime, STRM, Live M3U, Emby polling,
+backup/restore, startup migration, diagnostics, and operator UI/API capabilities are
+implemented. Live playback uses a reservation-aware streaming gateway; movie and
+episode playback remains redirect-based.
+
+The plugin layout is still foundational. Built-in outputs and the Emby adapter are
+service modules and are not dynamically discovered plugins. XMLTV, native HTTP output
+distribution, HDHomeRun emulation, and third-party plugin loading are not implemented.
+New feature APIs should continue to preserve module and service-layer boundaries.

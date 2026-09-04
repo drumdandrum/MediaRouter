@@ -4,7 +4,9 @@
 
 Media Router should support outputs and future service integrations through explicit plugin contracts. Plugins should extend the platform without reaching into unrelated internals.
 
-The foundation phase defines the plugin direction only. It does not load third-party plugins yet.
+The repository defines the plugin direction and a minimal abstract output type only. It
+does not load third-party plugins. The implemented STRM and Live M3U outputs and Emby
+adapter are built-in service modules; they must not be described as SDK plugins.
 
 ## Plugin Categories
 
@@ -105,11 +107,10 @@ Planned lifecycle:
 5. Enable plugin instance through UI.
 6. Run status/build operations through job system.
 
-## First Plugins To Implement
+## Implementation sequence
 
-1. STRM output
-2. M3U output
-3. HDHomeRun output
-4. XMLTV output
-
-STRM should come first because it validates the core catalog and broker URL model without requiring guide data.
+STRM and Live M3U were implemented first as built-in outputs and validated the catalog,
+stable URL, job, and disposable-artifact contracts. XMLTV/native output distribution is
+the next concrete contract-discovery opportunity. A formal registry should follow real
+service-boundary extraction rather than retroactively labeling current modules as
+plugins. HDHomeRun remains post-1.0 ecosystem work.

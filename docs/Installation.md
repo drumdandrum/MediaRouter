@@ -111,9 +111,9 @@ MEDIA_ROUTER_DATABASE_URL=sqlite:////data/media-router.db
 
 For Sprint 5 runtime URL previews, the preferred user-facing setting is Settings > Runtime > Runtime Public Base URL. Set it to a browser/client-visible address such as `http://localhost:8088` for local testing. If that field is blank, Media Router uses `MEDIA_ROUTER_PUBLIC_BASE_URL` when it is not the Docker-internal `media-router` hostname, then falls back to the current request host/scheme.
 
-For Sprint 6 STRM output, configure output directories as container paths such as `/outputs/movies` and `/outputs/series`. Mount host folders into those paths with Docker as read-write volumes. Do not enter Mac host paths in the Media Router UI. IPTVBoss imports can be mounted read-only, for example `/Users/Shared/IPTVBoss/output:/iptvboss/output:ro`.
+For STRM output, configure output directories as container paths such as `/outputs/movies` and `/outputs/series`. Mount host folders into those paths with Docker as read-write volumes. Do not enter Mac host paths in the Media Router UI. IPTVBoss imports can be mounted read-only, for example `/Users/Shared/IPTVBoss/output:/iptvboss/output:ro`.
 
-For Sprint 7 Live TV M3U output, configure the output file as a container path such as `/outputs/live/live.m3u`. Mount the parent host folder as read-write:
+For Live TV M3U output, configure the output file as a container path such as `/outputs/live/live.m3u`. Mount the parent host folder as read-write:
 
 ```yaml
 volumes:

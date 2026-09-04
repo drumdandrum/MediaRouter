@@ -297,7 +297,14 @@ The Emby adapter additively adds `last_confirmation_source` and `last_confirmed_
 
 When a resolved Emby session first appears without a binding, Broker may atomically adopt exactly one recent, unbound provisional reservation for the same catalog item and media type. A recent active live reservation is also eligible only when a still-valid `runtime_correlation_observations` row proves it came through the MediaRouter live gateway. Adoption replaces the runtime request identity and aliases with the hashed Emby explicit-session identity; reservation ID, source, account, location, and capacity consumption remain unchanged. Zero-candidate cases retain normal Broker fallback allocation for raw-tuner playback. Ambiguous candidates are never guessed and never trigger additional capacity allocation; stale, terminal, already-bound, or active reservations without gateway evidence are not adoptable. Correlated gateway and Emby owners retain one reservation until the final owner departs.
 
-Runtime playback reservations currently release by TTL expiration. Manual Broker tests default to a short 60-second TTL; runtime live/movie/episode routes default to four hours unless a `ttl` query parameter is supplied. Client heartbeat and client-driven playback-end release are deferred.
+Unobserved VOD playback reservations release by TTL expiration. Runtime defaults are
+four hours for Live TV, three hours for movies, and two hours for episodes unless a
+`ttl` query parameter overrides the active TTL. Live gateway activity heartbeats the
+reservation and disconnect/EOF releases its gateway ownership. Correlated Emby active
+or paused sessions heartbeat the same reservation; confirmed disappearance releases
+the Emby ownership after its configured grace period. A reservation with another
+authoritative owner remains active until the final owner departs. Other clients do not
+yet provide authoritative playback-end evidence.
 
 Runtime requests store hashed reuse identity when available. `client_session` stores the hash of an explicit playback session; `client_fingerprint` stores a hash derived from stable fallback request attributes. These values correlate repeated playback requests without persisting raw session values or client headers.
 

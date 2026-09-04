@@ -1,6 +1,6 @@
 # API
 
-## Current Sprint 7 API
+## Current v0.10.0 API
 
 Live runtime URLs proxy selected provider bytes through a reservation-aware gateway; movie and episode runtime URLs redirect to their selected sources. Generated STRM and M3U outputs contain only Media Router runtime URLs. The optional Emby adapter observes sessions and supplies lifecycle evidence but does not transcode, control playback, or synchronize libraries.
 
@@ -352,7 +352,13 @@ Runtime routes accept optional query parameters:
 - `client_session=opaque-playback-id` to make repeated startup/probe requests explicitly reusable.
 - `debug=true` to return JSON diagnostics rather than redirecting.
 
-When `ttl` is omitted, runtime playback URLs default to a four-hour reservation TTL for live, movie, and episode requests. Manual Broker decision tests that call `/api/broker/resolve` directly keep the short 60-second default. Reservations currently release by TTL expiration unless they are manually released through Broker APIs; client heartbeat and client-driven playback-end release are future work.
+When `ttl` is omitted, runtime active TTL defaults are four hours for Live TV,
+three hours for movies, and two hours for episodes. Manual Broker decision tests that
+call `/api/broker/resolve` directly keep the short 60-second diagnostic default. Live
+gateway activity renews a reservation and disconnect/EOF releases gateway ownership.
+Correlated Emby playback renews the same reservation and releases its ownership after
+confirmed disappearance plus the configured grace period. Unobserved VOD playback and
+clients without lifecycle evidence fall back to TTL expiration.
 
 Repeated runtime GET, HEAD, probe, seek, and reconnect requests are idempotent for the active reservation lifetime. Reuse identity is chosen in this order:
 
@@ -509,4 +515,6 @@ Generated placements prefer original source-playlist order. Legacy records witho
 
 When placement records are available, Live M3U emits one entry per active placement and prefers original source-playlist order. Multiple entries may intentionally share the same `/r/live/{catalog_item_id}` URL. Canonical fields remain available for search/summary; placement group, number, display title, and TVG metadata control output. Legacy channels without imported placements fall back to their canonical metadata and numeric/group/title ordering.
 
-Sprint 7 does not generate XMLTV, emulate HDHomeRun, sync with media servers, proxy streams, transcode, or play streams.
+The Live M3U output does not generate XMLTV, emulate HDHomeRun, synchronize media
+libraries, transcode, or play streams. Its entries use the v0.10.0 live gateway, which
+does proxy selected live bytes to enforce capacity and observe connection lifecycle.
