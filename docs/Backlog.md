@@ -43,22 +43,23 @@ also remains in release notes and Git. Proposed work is not described as impleme
 
 ### Output publication boundary
 
-- [ ] Extract format-neutral published-artifact access from the existing combined
-  output service without changing STRM or M3U generation behavior.
+- [x] Extract canonical Live M3U representation from the existing combined output
+  service without changing disk generation semantics.
 - [ ] Publish M3U/XMLTV atomically and retain the last known-good pair after a failed or
   cancelled rebuild.
 - [ ] Record bounded build history, content digest, source freshness, counts, warnings,
   and active artifact metadata.
-- [ ] Ensure concurrent reads and regeneration never expose a partial artifact.
+- [x] Ensure native reads generate from catalog state and disk regeneration remains
+  atomic, so neither path exposes a partial artifact.
 
 ### Native HTTP delivery
 
-- [ ] Serve the current Live M3U artifact at one stable Media Router URL.
+- [x] Serve current authoritative Live M3U state at `/live/playlist.m3u`.
 - [ ] Serve the current XMLTV artifact at one stable Media Router URL.
-- [ ] Implement correct content types, GET/HEAD, conditional responses, bounded error
-  contracts, and provider/path/secret redaction.
-- [ ] Do not accept arbitrary filesystem paths through delivery routes.
-- [ ] Preserve filesystem output as the v0.10.0 compatibility and rollback path.
+- [x] Implement UTF-8 M3U content type, GET, stable ETag, bounded error contracts, and
+  provider/path/secret redaction. HEAD/conditional 304 support remains follow-up.
+- [x] Do not accept arbitrary filesystem paths through delivery routes.
+- [x] Preserve filesystem output as the v0.10.0 compatibility and rollback path.
 
 ### Operator workflow
 

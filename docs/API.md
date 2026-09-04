@@ -4,6 +4,43 @@
 
 Live runtime URLs proxy selected provider bytes through a reservation-aware gateway; movie and episode runtime URLs redirect to their selected sources. Generated STRM and M3U outputs contain only Media Router runtime URLs. The optional Emby adapter observes sessions and supplies lifecycle evidence but does not transcode, control playback, or synchronize libraries.
 
+## Native Live M3U distribution
+
+`GET /live/playlist.m3u` is the stable media-client distribution endpoint. It returns
+UTF-8 Extended M3U as `application/x-mpegURL`, generated directly from authoritative
+catalog, placement, source-eligibility, and Live M3U settings. It does not read the
+disk-generated playlist, create reservations, or contact providers. An empty eligible
+catalog returns HTTP 200 with `#EXTM3U` and no entries.
+
+The response uses the same canonical representation as disk generation, so entry
+selection, limits, ordering, metadata, escaping, and gateway identities are equivalent
+when configuration is equivalent. The endpoint also returns a content digest as an
+`ETag` and `Cache-Control: no-cache`. Disk generation, tracking, and the existing
+`mediarouter-files` topology remain supported alongside native distribution.
+
+Each entry points to an absolute `/r/live/{catalog_item_id}` gateway URL and includes
+the `mr_catalog_id` marker. Runtime URL base selection is deliberately independent of
+request headers:
+
+1. Live M3U `runtime_client_access_url`, when configured.
+2. The application Runtime Public Base URL.
+3. A non-Docker-internal configured public base URL.
+4. The safe `http://localhost:8088` fallback.
+
+The endpoint never trusts `Host` or `X-Forwarded-*` to generate stream URLs. LAN users
+must configure an address reachable by media clients. Base URLs must use HTTP(S), have
+a hostname, and contain no credentials, query, or fragment. Invalid configuration or
+a database read failure returns a bounded HTTP 503 message without SQL, paths,
+provider URLs, credentials, or traceback content.
+
+Metadata uses existing `media-router-id`, `tvg-chno`, `tvg-id`, `tvg-name`, `tvg-logo`,
+and `group-title` semantics. Missing optional values are omitted. Attribute values are
+escaped and control/newline characters are normalized so metadata cannot inject M3U
+records. Unicode is preserved. Disabled/unavailable placements are excluded unless the
+existing `include_disabled_channels` output setting explicitly includes them.
+
+Native XMLTV distribution remains a future v0.11.0 phase.
+
 Runtime acquisition uses an immediate SQLite transaction and an active-playback unique key. Matching retries reuse the committed reservation before redirect construction and update `last_seen_at` and `reuse_count`. A uniqueness conflict is resolved by loading the winning reservation rather than returning an error.
 
 Persistent Runtime settings include `trust_proxy_headers` (default `false`) and `trusted_proxy_client_header` (default `x-forwarded-for`). Supported client headers are `x-forwarded-for`, `cf-connecting-ip`, and `x-real-ip`. Enable this only when Media Router is reached through a trusted proxy that overwrites the selected header.
@@ -16,6 +53,7 @@ Reservation responses include `alias_count`, `coalesced_reuse_count`, and `start
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| `GET` | `/live/playlist.m3u` | Returns the current native Extended M3U playlist for media clients without reserving capacity. |
 | `GET` | `/api/health` | Confirms the app process is ready. |
 | `GET` | `/api/foundation` | Returns project phase and module metadata. |
 | `GET` | `/api/dashboard` | Returns dashboard summary, including provider/account and broker reservation counts. |

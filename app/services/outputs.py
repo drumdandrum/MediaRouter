@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import sqlite3
 import time
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from app.core.config import get_settings
@@ -77,6 +78,20 @@ class _StrmFileResult:
     check_seconds: float
     write_seconds: float
     error: Exception | None = None
+
+
+@dataclass(frozen=True)
+class LiveM3uDocument:
+    """Canonical, read-only representation shared by disk and HTTP outputs."""
+
+    content: str
+    entries: tuple[LiveM3uPreviewEntry, ...]
+    runtime_base_url: str
+    total_live_channels: int
+    eligible_live_channels: int
+    configured_limit: int | None
+    excluded_by_limit: int
+    digest: str
 
 
 class OutputPathError(Exception):
@@ -482,12 +497,26 @@ def _content_hash(content: str) -> str:
 
 
 def _xml_attr(value: str | None) -> str:
-    return (value or "").replace("&", "&amp;").replace('"', "&quot;")
+    normalized = re.sub(r"[\r\n\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+", " ", value or "")
+    return normalized.replace("&", "&amp;").replace('"', "&quot;")
+
+
+def _m3u_title(value: str | None) -> str:
+    return re.sub(r"[\r\n\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+", " ", value or "").strip()
 
 
 def _live_runtime_base(settings: LiveM3uSettings, request_base_url: str | None) -> str:
     configured = settings.runtime_client_access_url.strip().rstrip("/")
-    return configured or public_runtime_base_url(request_base_url)
+    value = configured or public_runtime_base_url(request_base_url)
+    try:
+        parsed = urlsplit(value)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.query or parsed.fragment):
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Live M3U runtime base URL must be an HTTP(S) URL without credentials, query, or fragment.") from exc
+    return value.rstrip("/")
 
 
 def _enabled_source_counts(catalog_item_ids: list[str]) -> dict[str, int]:
@@ -542,7 +571,7 @@ def _live_m3u_entry(item: CatalogItem, settings: LiveM3uSettings, runtime_base_u
     if settings.include_group_title and item.group_title:
         attrs.append(f'group-title="{_xml_attr(item.group_title)}"')
     attr_text = f" {' '.join(attrs)}" if attrs else ""
-    display_title = item.tvg_name or item.title
+    display_title = _m3u_title(item.tvg_name or item.title)
     extinf = f'#EXTINF:-1{attr_text},{display_title}'
     runtime_url = f"{runtime_base_url}/r/live/{item.internal_id}?mr_catalog_id={item.internal_id}"
     return LiveM3uPreviewEntry(
@@ -568,7 +597,7 @@ def _live_m3u_placement_entry(row: sqlite3.Row, settings: LiveM3uSettings, runti
     if settings.include_group_title and row["group_title"]:
         attrs.append(f'group-title="{_xml_attr(row["group_title"])}"')
     attr_text = f" {' '.join(attrs)}" if attrs else ""
-    title = row["display_title"]
+    title = _m3u_title(row["display_title"])
     return LiveM3uPreviewEntry(
         catalog_item_id=row["catalog_item_id"], title=title,
         channel_number=row["channel_number"], group_title=row["group_title"],
@@ -601,6 +630,69 @@ def _live_m3u_content(entries: list[LiveM3uPreviewEntry]) -> str:
         lines.append(entry.extinf)
         lines.append(entry.runtime_url)
     return "\n".join(lines) + "\n"
+
+
+def build_live_m3u_document(request_base_url: str | None = None, job_id: str | None = None) -> LiveM3uDocument:
+    """Build one deterministic playlist without reserving capacity or contacting providers."""
+    settings = get_live_m3u_settings()
+    _validate_live_m3u_settings(settings)
+    runtime_base_url = _live_runtime_base(settings, request_base_url)
+    placement_filter = """p.active=1 AND (
+        p.source_identity != 'legacy-canonical' OR NOT EXISTS (
+            SELECT 1 FROM channel_placements real
+            WHERE real.catalog_item_id=p.catalog_item_id AND real.active=1
+              AND real.source_identity != 'legacy-canonical'))"""
+    availability_filter = "" if settings.include_disabled_channels else """ AND EXISTS (
+        SELECT 1 FROM source_availability s
+        WHERE s.catalog_internal_id=p.catalog_item_id
+          AND s.media_type='channel' AND s.enabled=1)"""
+    limit = None if settings.generation_mode == "Unlimited" else settings.maximum_live_channels
+
+    with connection_scope(_connect()) as conn:
+        total = int(conn.execute(
+            f"SELECT COUNT(*) AS count FROM channel_placements p WHERE {placement_filter}"
+        ).fetchone()["count"])
+        eligible = int(conn.execute(
+            f"SELECT COUNT(*) AS count FROM channel_placements p WHERE {placement_filter}{availability_filter}"
+        ).fetchone()["count"])
+        included = eligible if limit is None else min(eligible, limit)
+        rows = conn.execute(f"""SELECT p.* FROM channel_placements p
+            WHERE {placement_filter}{availability_filter}
+            ORDER BY CASE WHEN p.source_identity='legacy-canonical' THEN 1 ELSE 0 END,
+                LOWER(p.source_name), p.source_identity, p.placement_index, p.placement_id
+            LIMIT ?""", (included,)).fetchall()
+
+    records: list[tuple[tuple, LiveM3uPreviewEntry]] = []
+    for row in rows:
+        entry = _live_m3u_placement_entry(row, settings, runtime_base_url)
+        if row["source_identity"] == "legacy-canonical":
+            sort_key = (1, "", 0, *_channel_number_sort_key(entry.channel_number),
+                        (entry.group_title or "").lower(), entry.title.lower(), row["placement_id"])
+        else:
+            sort_key = (0, str(row["source_name"]).lower(), int(row["placement_index"]),
+                        0, 0.0, "", "", "", row["placement_id"])
+        records.append((sort_key, entry))
+    entries = tuple(entry for _, entry in sorted(records, key=lambda record: record[0]))
+    content = _live_m3u_content(list(entries))
+    if job_id:
+        update_job(job_id, progress=90, message=f"Live channels: {len(entries)}/{included}", result={
+            "total_live_channels": total, "eligible_live_channels": eligible,
+            "configured_limit": limit, "included_channels": len(entries),
+            "excluded_by_limit": eligible-len(entries), "skipped_count": total-eligible,
+            "written_count": len(entries), "generation_mode": settings.generation_mode,
+            "capped": settings.generation_mode != "Unlimited", "percentage_complete": 90,
+            "created_count": 0, "updated_count": 0, "removed_count": 0, "failed_count": 0,
+        })
+    return LiveM3uDocument(
+        content=content,
+        entries=entries,
+        runtime_base_url=runtime_base_url,
+        total_live_channels=total,
+        eligible_live_channels=eligible,
+        configured_limit=limit,
+        excluded_by_limit=eligible-len(entries),
+        digest=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    )
 
 
 def _tracked_files(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -1085,14 +1177,14 @@ def build_live_m3u_output(request_base_url: str | None = None, dry_run: bool = T
     _validate_live_m3u_settings(settings)
     effective_dry_run = dry_run or settings.dry_run_mode
     mode = "dry_run" if effective_dry_run else "generate"
-    runtime_base_url = _live_runtime_base(settings, request_base_url)
     output_path = Path(settings.output_file_path)
-    estimate = get_live_m3u_estimate()
-    configured_limit = estimate.configured_limit
-    catalog_total = estimate.total_live_channels
-    eligible_total = estimate.eligible_live_channels
-    included_target = estimate.included_channels
-    excluded_by_limit = estimate.excluded_by_limit
+    document = build_live_m3u_document(request_base_url, job_id=job_id)
+    runtime_base_url = document.runtime_base_url
+    configured_limit = document.configured_limit
+    catalog_total = document.total_live_channels
+    eligible_total = document.eligible_live_channels
+    included_target = len(document.entries)
+    excluded_by_limit = document.excluded_by_limit
     unavailable_count = catalog_total - eligible_total
     add_log("info", "outputs", f"Live M3U {mode} started: generation_mode={settings.generation_mode}, configured_channel_limit={configured_limit}, eligible_channels={eligible_total}")
     if not effective_dry_run:
@@ -1103,113 +1195,33 @@ def build_live_m3u_output(request_base_url: str | None = None, dry_run: bool = T
             raise OutputPathError(f"Live M3U output path validation failed: {detail}")
 
     created_count = updated_count = failed_count = 0
-    preview_entries: list[LiveM3uPreviewEntry] = []
+    preview_entries = list(document.entries[:10])
     skipped_channels: list[str] = []
-    first_catalog_item_id: str | None = None
-    digest = ""
+    first_catalog_item_id = document.entries[0].catalog_item_id if document.entries else None
+    digest = document.digest
     output_existed = output_path.exists()
-    with _connect() as work_conn:
-        work_conn.execute("""CREATE TEMP TABLE live_m3u_entries (
-            placement_id INTEGER PRIMARY KEY, catalog_item_id TEXT, title TEXT, channel_number TEXT, group_title TEXT,
-            extinf TEXT NOT NULL, runtime_url TEXT NOT NULL, sort_missing INTEGER NOT NULL,
-            sort_number REAL NOT NULL, sort_channel TEXT NOT NULL, editorial_rank INTEGER NOT NULL,
-            source_name TEXT NOT NULL, placement_index INTEGER NOT NULL)""")
-        offset = included = 0
-        batch_size = 250
-        while included < included_target:
-            availability_filter = "" if settings.include_disabled_channels else """ AND EXISTS (
-                SELECT 1 FROM source_availability s WHERE s.catalog_internal_id=p.catalog_item_id
-                AND s.media_type='channel' AND s.enabled=1)"""
-            placements = work_conn.execute(f"""SELECT p.* FROM channel_placements p
-                WHERE p.active=1 AND (p.source_identity != 'legacy-canonical' OR NOT EXISTS (
-                    SELECT 1 FROM channel_placements real WHERE real.catalog_item_id=p.catalog_item_id
-                    AND real.active=1 AND real.source_identity != 'legacy-canonical'))
-                {availability_filter}
-                ORDER BY CASE WHEN p.source_identity='legacy-canonical' THEN 1 ELSE 0 END,
-                    LOWER(p.source_name), p.source_identity, p.placement_index
-                LIMIT ? OFFSET ?""", (min(batch_size, included_target-included), offset)).fetchall()
-            if not placements:
-                break
-            offset += len(placements)
-            for placement in placements:
-                entry = _live_m3u_placement_entry(placement, settings, runtime_base_url)
-                sort_missing, sort_number, sort_channel = _channel_number_sort_key(entry.channel_number)
-                work_conn.execute("INSERT INTO live_m3u_entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (
-                    placement["placement_id"], entry.catalog_item_id, entry.title, entry.channel_number, entry.group_title,
-                    entry.extinf, entry.runtime_url, sort_missing, sort_number, sort_channel,
-                    1 if placement["source_identity"] == "legacy-canonical" else 0,
-                    placement["source_name"], placement["placement_index"],
-                ))
-                included += 1
-                if included >= included_target:
-                    break
-            if job_id:
-                progress = 90 if included_target == 0 else min(90, int(included * 90 / included_target))
-                update_job(job_id, progress=progress, message=f"Live channels: {included}/{included_target}", result={
-                    "total_live_channels": catalog_total, "eligible_live_channels": eligible_total,
-                    "configured_limit": configured_limit, "included_channels": included,
-                    "excluded_by_limit": excluded_by_limit, "skipped_count": unavailable_count,
-                    "written_count": included, "generation_mode": settings.generation_mode,
-                    "capped": settings.generation_mode != "Unlimited", "percentage_complete": progress,
-                    "duration_seconds": round(time.monotonic() - started, 3), "created_count": 0,
-                    "updated_count": 0, "removed_count": 0, "failed_count": 0,
-                })
-            del placements
-
-        ordered = work_conn.execute("""SELECT * FROM live_m3u_entries ORDER BY
-            editorial_rank, CASE WHEN editorial_rank=0 THEN LOWER(source_name) ELSE '' END,
-            CASE WHEN editorial_rank=0 THEN placement_index ELSE 0 END,
-            sort_missing, sort_number, sort_channel, LOWER(COALESCE(group_title,'')),
-            LOWER(title), placement_id""")
-        hasher = hashlib.sha256()
-        header = "#EXTM3U\n"
-        hasher.update(header.encode("utf-8"))
-        temp_path = output_path.with_name(f".{output_path.name}.{uuid4().hex}.tmp")
-        handle = None
-        try:
-            if not effective_dry_run:
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                handle = temp_path.open("w")
-                handle.write(header)
-            for row in ordered:
-                text = f"{row['extinf']}\n{row['runtime_url']}\n"
-                hasher.update(text.encode("utf-8"))
-                if handle:
-                    handle.write(text)
-                if first_catalog_item_id is None:
-                    first_catalog_item_id = row["catalog_item_id"]
-                if len(preview_entries) < 10:
-                    preview_entries.append(LiveM3uPreviewEntry(
-                        catalog_item_id=row["catalog_item_id"], title=row["title"],
-                        channel_number=row["channel_number"], group_title=row["group_title"],
-                        extinf=row["extinf"], runtime_url=row["runtime_url"],
-                    ))
-            if handle:
-                handle.close()
-                handle = None
-            digest = hasher.hexdigest()
-            existing_digest = None
-            if output_path.exists():
-                existing_hasher = hashlib.sha256()
-                with output_path.open("rb") as existing:
-                    for chunk in iter(lambda: existing.read(1024 * 1024), b""):
-                        existing_hasher.update(chunk)
-                existing_digest = existing_hasher.hexdigest()
-            if not effective_dry_run and existing_digest != digest:
-                temp_path.replace(output_path)
-                created_count = 1 if not output_existed else 0
-                updated_count = 0 if not output_existed else 1
-            elif temp_path.exists():
-                temp_path.unlink()
-        except OSError as exc:
-            failed_count = 1
-            if handle:
-                handle.close()
-            if temp_path.exists():
-                temp_path.unlink()
-            UVICORN_LOGGER.error("Live M3U %s failed error=%s", mode, type(exc).__name__)
-            if not effective_dry_run:
-                raise OutputPathError(redact_text(f"Could not write Live M3U file at {output_path}: {exc}")) from exc
+    existing_digest = None
+    temp_path = output_path.with_name(f".{output_path.name}.{uuid4().hex}.tmp")
+    try:
+        if output_path.exists():
+            existing_hasher = hashlib.sha256()
+            with output_path.open("rb") as existing:
+                for chunk in iter(lambda: existing.read(1024 * 1024), b""):
+                    existing_hasher.update(chunk)
+            existing_digest = existing_hasher.hexdigest()
+        if not effective_dry_run and existing_digest != digest:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path.write_text(document.content, encoding="utf-8")
+            temp_path.replace(output_path)
+            created_count = 1 if not output_existed else 0
+            updated_count = 0 if not output_existed else 1
+    except OSError as exc:
+        failed_count = 1
+        if temp_path.exists():
+            temp_path.unlink()
+        UVICORN_LOGGER.error("Live M3U %s failed error=%s", mode, type(exc).__name__)
+        if not effective_dry_run:
+            raise OutputPathError(redact_text(f"Could not write Live M3U file at {output_path}: {exc}")) from exc
 
     summary = LiveM3uOutputSummary(
         mode=mode,

@@ -124,6 +124,23 @@ Generated Live TV M3U playlists are disposable. They contain Media Router runtim
 
 Capacity enforcement applies when consumers use these generated Media Router live URLs. Arbitrary external or legacy playlists containing raw provider URLs remain outside enforced mode and must not be presented as MediaRouter-served live output.
 
+### Native Live M3U distribution (v0.11.0)
+
+Clients may use `http://<media-router-host>:8088/live/playlist.m3u` directly instead of
+the separately served disk file. This is an additional topology: disk generation,
+tracking, `mediarouter-files`, and existing production configuration remain supported.
+The endpoint generates current catalog state and does not read `live.m3u` from disk.
+
+Before giving the URL to a LAN client, set Live M3U Runtime Client Access URL or
+Settings > Runtime > Runtime Public Base URL to the client-reachable Media Router base,
+for example `http://192.168.1.20:8088`. Playlist requests never trust their `Host` or
+forwarding headers when constructing stream URLs. If no usable explicit/environment
+base exists, stream entries deliberately fall back to `http://localhost:8088`, which
+is safe but normally unsuitable for a different LAN machine.
+
+Native XMLTV is not part of this phase. Continue using the existing external XMLTV
+source until the next distribution phase.
+
 ## STRM Generation Sizing
 
 For an 8 GB Mac mini development system, use Test mode (500 movies/500 episodes), batch size 250, and 4 file workers. Small mode is reasonable for controlled validation when other memory-heavy services are quiet.

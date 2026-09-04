@@ -17,5 +17,9 @@ assert.match(source, /renderBrokerRuntimePreview\(\);\s*renderBrokerDecision\(\)
   "resolve success must immediately re-render ticket-aware controls");
 assert.doesNotMatch(source, /data-broker-runtime-open="\$\{runtimeUrlFor/,
   "resolved open actions must not reconstruct URLs from catalog data");
+assert.match(source, /\/live\/playlist\.m3u/,
+  "the Outputs UI must expose the native Live M3U distribution URL");
+assert.doesNotMatch(source, /Future hosted playlist URL/,
+  "the shipped native playlist must not remain labeled as future work");
 
 console.log("Source Decision Tester frontend tests passed");
