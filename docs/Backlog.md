@@ -55,6 +55,8 @@ also remains in release notes and Git. Proposed work is not described as impleme
 ### Native HTTP delivery
 
 - [x] Serve current authoritative Live M3U state at `/live/playlist.m3u`.
+- [x] Serve exact group-scoped Live M3U views with deterministic canonical-channel
+  deduplication and defined unknown/renamed/empty-group behavior.
 - [ ] Serve the current XMLTV artifact at one stable Media Router URL.
 - [x] Implement UTF-8 M3U content type, GET, stable ETag, bounded error contracts, and
   provider/path/secret redaction. HEAD/conditional 304 support remains follow-up.

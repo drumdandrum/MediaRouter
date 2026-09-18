@@ -165,3 +165,7 @@ def job_counts() -> tuple[int, int]:
     total = len(JOBS)
     running = sum(1 for job in JOBS.values() if job.status in {"queued", "running"})
     return total, running
+
+
+def has_active_job(kind: str) -> bool:
+    return any(job.kind == kind and job.status in {"queued", "running"} for job in JOBS.values())

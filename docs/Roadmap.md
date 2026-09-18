@@ -170,6 +170,16 @@ making Media Router an editorial guide editor.
   publication, tracking, and run history.
 - Serve the current published Live M3U and XMLTV artifacts from stable HTTP URLs with
   correct content types, conditional responses, and no arbitrary-path parameter.
+- Add group-scoped Live M3U/XMLTV distribution so a consumer can request one channel
+  group as a matched playlist/guide pair. Define a stable group selector and URL
+  contract, including escaping, renamed groups, unknown groups, and existing groups
+  with no eligible channels; illustrative shapes are
+  `/live/playlist.m3u?group=LA%20Locals` and
+  `/live/guide.xml?group=LA%20Locals`, subject to contract approval.
+- Deduplicate repeated source copies within a group by canonical Media Router channel
+  identity while preserving intentional membership of one channel in different
+  groups. Group-filtered XMLTV must retain only matching `<channel>` and `<programme>`
+  records and must join them through the selected entries' preserved `tvg-id` values.
 - Preserve Media Router runtime URLs in M3U entries so Channels playback continues
   through gateway capacity enforcement and bounded failover.
 - Validate `tvg-id`, channel number/name/group/logo fields, duplicate placements,
@@ -198,6 +208,8 @@ making Media Router an editorial guide editor.
 - Existing Live M3U builder, output tracking/history, job system, and path validation.
 - Existing stable `/r/live/{id}` gateway URLs, capacity enforcement, Range handling,
   failover, redaction, and migration boundary.
+- A defined stable channel-group identity/selection policy that does not confuse a
+  mutable display name with canonical channel identity.
 - Representative, sanitized M3U/XMLTV fixtures and a non-production Channels test
   instance for final validation.
 
@@ -215,6 +227,9 @@ making Media Router an editorial guide editor.
 
 - Unit tests for XMLTV parsing limits, namespaces/encoding, time formats, identity
   joins, duplicate/missing IDs, and deterministic output.
+- Group-output tests for spaces, ampersands, Unicode, renamed/unknown/empty groups,
+  repeated source copies, cross-group membership, conflicting `tvg-id` values, and
+  deterministic first-choice metadata.
 - API tests for content types, stable URLs, conditional GET/HEAD, missing artifacts,
   redaction, path containment, and read-only delivery behavior.
 - Atomic-publication tests proving failed/cancelled builds retain the prior artifact.
@@ -238,6 +253,9 @@ by the normal backup/restore and migration tests.
   or host paths.
 - Channels imports both outputs, joins guide data predictably, and plays only through
   Media Router gateway URLs.
+- Group-scoped M3U/XMLTV URLs produce a matched, deterministic pair with one entry per
+  canonical channel in the selected group, no unrelated guide programmes, and
+  documented rename/empty/not-found behavior.
 - Capacity enforcement, Range playback, bounded failover, and prompt terminal release
   remain correct through Channels.
 - Regeneration is deterministic and atomic; failure serves the last known-good output.

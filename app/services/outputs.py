@@ -98,6 +98,12 @@ class OutputPathError(Exception):
     pass
 
 
+class UnknownLiveM3uGroupError(ValueError):
+    """The requested current placement-group name does not exist."""
+
+    pass
+
+
 def _db_path() -> Path:
     return get_settings().data_dir / "media_router.db"
 
@@ -466,6 +472,14 @@ def _sanitize_segment(value: str, fallback: str) -> str:
     return cleaned[:160] or fallback
 
 
+_MOVIE_STRM_PREFIX_RE = re.compile(r"^4K-AMZ\s*-\s*", re.IGNORECASE)
+
+
+def _movie_strm_title(value: str) -> str:
+    """Remove known source presentation prefixes without mutating catalog metadata."""
+    return _MOVIE_STRM_PREFIX_RE.sub("", value or "", count=1).strip()
+
+
 def _runtime_url(item: CatalogItem, runtime_base_url: str) -> str:
     route = route_for_media_type(item.media_type)
     if route not in {"movie", "episode"}:
@@ -474,7 +488,7 @@ def _runtime_url(item: CatalogItem, runtime_base_url: str) -> str:
 
 
 def _movie_output_path(item: CatalogItem, settings: StrmSettings) -> Path:
-    title = _sanitize_segment(item.title, item.internal_id)
+    title = _sanitize_segment(_movie_strm_title(item.title), item.internal_id)
     return Path(settings.movies_output_directory) / f"{title}.strm"
 
 
@@ -632,7 +646,8 @@ def _live_m3u_content(entries: list[LiveM3uPreviewEntry]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_live_m3u_document(request_base_url: str | None = None, job_id: str | None = None) -> LiveM3uDocument:
+def build_live_m3u_document(request_base_url: str | None = None, job_id: str | None = None,
+                            group_title: str | None = None) -> LiveM3uDocument:
     """Build one deterministic playlist without reserving capacity or contacting providers."""
     settings = get_live_m3u_settings()
     _validate_live_m3u_settings(settings)
@@ -647,20 +662,43 @@ def build_live_m3u_document(request_base_url: str | None = None, job_id: str | N
         WHERE s.catalog_internal_id=p.catalog_item_id
           AND s.media_type='channel' AND s.enabled=1)"""
     limit = None if settings.generation_mode == "Unlimited" else settings.maximum_live_channels
+    group_filter = "" if group_title is None else " AND p.group_title=?"
+    group_parameters: tuple[str, ...] = () if group_title is None else (group_title,)
 
     with connection_scope(_connect()) as conn:
+        if group_title is not None and conn.execute(
+            f"SELECT 1 FROM channel_placements p WHERE {placement_filter}{group_filter} LIMIT 1",
+            group_parameters,
+        ).fetchone() is None:
+            raise UnknownLiveM3uGroupError("The requested live channel group was not found.")
+        count_expression = "COUNT(*)" if group_title is None else "COUNT(DISTINCT p.catalog_item_id)"
         total = int(conn.execute(
-            f"SELECT COUNT(*) AS count FROM channel_placements p WHERE {placement_filter}"
+            f"SELECT {count_expression} AS count FROM channel_placements p WHERE {placement_filter}{group_filter}",
+            group_parameters,
         ).fetchone()["count"])
         eligible = int(conn.execute(
-            f"SELECT COUNT(*) AS count FROM channel_placements p WHERE {placement_filter}{availability_filter}"
+            f"SELECT {count_expression} AS count FROM channel_placements p WHERE {placement_filter}{group_filter}{availability_filter}",
+            group_parameters,
         ).fetchone()["count"])
         included = eligible if limit is None else min(eligible, limit)
-        rows = conn.execute(f"""SELECT p.* FROM channel_placements p
-            WHERE {placement_filter}{availability_filter}
-            ORDER BY CASE WHEN p.source_identity='legacy-canonical' THEN 1 ELSE 0 END,
-                LOWER(p.source_name), p.source_identity, p.placement_index, p.placement_id
-            LIMIT ?""", (included,)).fetchall()
+        order_clause = """CASE WHEN p.source_identity='legacy-canonical' THEN 1 ELSE 0 END,
+                LOWER(p.source_name), p.source_identity, p.placement_index, p.placement_id"""
+        if group_title is None:
+            rows = conn.execute(f"""SELECT p.* FROM channel_placements p
+                WHERE {placement_filter}{availability_filter}
+                ORDER BY {order_clause} LIMIT ?""", (*group_parameters, included)).fetchall()
+        else:
+            rows = conn.execute(f"""WITH ranked AS (
+                SELECT p.*, ROW_NUMBER() OVER (
+                    PARTITION BY p.catalog_item_id ORDER BY {order_clause}
+                ) AS canonical_rank
+                FROM channel_placements p
+                WHERE {placement_filter}{group_filter}{availability_filter}
+            )
+            SELECT * FROM ranked WHERE canonical_rank=1
+            ORDER BY CASE WHEN source_identity='legacy-canonical' THEN 1 ELSE 0 END,
+                LOWER(source_name), source_identity, placement_index, placement_id
+            LIMIT ?""", (*group_parameters, included)).fetchall()
 
     records: list[tuple[tuple, LiveM3uPreviewEntry]] = []
     for row in rows:

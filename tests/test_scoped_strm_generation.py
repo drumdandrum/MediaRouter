@@ -192,6 +192,25 @@ class ScopedStrmGenerationTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM output_generated_files WHERE catalog_item_id='movie_playable'"
             ).fetchone()[0], 1)
 
+    def test_movie_strm_filename_removes_4k_amz_prefix_without_mutating_catalog(self):
+        with sqlite3.connect(_db_path()) as conn:
+            conn.execute(
+                """UPDATE catalog_items SET title=?, normalized_title=?
+                WHERE internal_id='movie_playable'""",
+                ("4K-AMZ - Cheekatilo", "4k-amz - cheekatilo"),
+            )
+
+        result = generate_strm_outputs("http://localhost:8088", ["movie_playable"])
+
+        self.assertEqual(result.summary.created_count, 1)
+        self.assertTrue((self.movies / "Cheekatilo.strm").is_file())
+        self.assertFalse((self.movies / "4K-AMZ - Cheekatilo.strm").exists())
+        with sqlite3.connect(_db_path()) as conn:
+            title = conn.execute(
+                "SELECT title FROM catalog_items WHERE internal_id='movie_playable'"
+            ).fetchone()[0]
+        self.assertEqual(title, "4K-AMZ - Cheekatilo")
+
     def test_selected_existing_file_updates_under_existing_overwrite_policy(self):
         generate_strm_outputs("http://localhost:8088", ["movie_playable"])
         target = self.movies / "MediaRouter Playback Test.strm"

@@ -24,6 +24,7 @@ from app.core.redaction import install_uvicorn_access_redaction
 from app.db.migrations import migrate_database
 from app.main_meta import APP_VERSION
 from app.services.emby_poller import EmbyPoller
+from app.services.playlist_refresh import PlaylistRefreshScheduler
 
 settings = get_settings()
 install_uvicorn_access_redaction()
@@ -32,10 +33,13 @@ install_uvicorn_access_redaction()
 async def lifespan(_: FastAPI):
     migrate_database()
     poller = EmbyPoller()
+    playlist_scheduler = PlaylistRefreshScheduler()
     await poller.start()
+    await playlist_scheduler.start()
     try:
         yield
     finally:
+        await playlist_scheduler.stop()
         await poller.stop()
 
 

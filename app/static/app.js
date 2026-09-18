@@ -1442,6 +1442,15 @@ function bind() {
     }
   });
   document.getElementById("reset-catalog-import").addEventListener("click", resetCatalogImportForm);
+  document.getElementById("refresh-library").addEventListener("click", async () => {
+    try {
+      const result = await api("/api/catalog/refresh-library", { method: "POST" });
+      toast(`Library refresh queued: ${result.job_id}`);
+      setView("jobs");
+    } catch (error) {
+      toast(error.message);
+    }
+  });
   document.getElementById("broker-catalog-item").addEventListener("change", renderBrokerRuntimePreview);
   document.getElementById("broker-auto-refresh").addEventListener("change", (event) => {
     setBrokerAutoRefresh(event.target.value === "true");

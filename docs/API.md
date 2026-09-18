@@ -12,6 +12,13 @@ catalog, placement, source-eligibility, and Live M3U settings. It does not read 
 disk-generated playlist, create reservations, or contact providers. An empty eligible
 catalog returns HTTP 200 with `#EXTM3U` and no entries.
 
+An optional `group` query parameter selects one current placement-group name using an
+exact, case-sensitive match. URL-encode spaces, ampersands, Unicode, and other reserved
+characters. A group-scoped playlist contains at most one entry per canonical Media
+Router channel; when repeated placements conflict, the first entry in normal source
+and placement order supplies the metadata. A known group with no eligible channels
+returns an empty valid playlist, while an unknown or renamed group returns HTTP 404.
+
 The response uses the same canonical representation as disk generation, so entry
 selection, limits, ordering, metadata, escaping, and gateway identities are equivalent
 when configuration is equivalent. The endpoint also returns a content digest as an
@@ -313,6 +320,16 @@ FastAPI validation errors may keep their standard shape unless a custom API enve
 ## Sprint 3 Import Notes
 
 Catalog import accepts local/container paths such as `/iptvboss/outputs/THREAD1.m3u`, sample paths such as `sample_data/live.m3u`, and HTTP/HTTPS playlist URLs. Accounts describe access/authentication; playlist path/URL association happens during Catalog Import.
+
+Catalog imports with an explicit media type are also registered for recurring source
+refresh. Live/channel sources run every 24 hours; movie, series, episode, and VOD
+sources run every 7 days. Scheduled executions appear as ordinary `catalog_import`
+jobs and never overlap another catalog import.
+
+`POST /api/catalog/refresh-library` immediately re-imports every registered playlist
+source, regardless of its next scheduled time. The sequential background operation is
+reported as a `library_refresh` job and returns `409` if a catalog or library refresh
+is already active.
 
 If the playlist field is blank, the API returns `400`. If a local/container path is not visible to the app process, the API returns `404` before creating an import job.
 

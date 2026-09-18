@@ -17,10 +17,26 @@ from app.services.catalog import (
     validate_media_type_hint,
     validate_playlist_sources,
 )
-from app.services.jobs import create_job
+from app.services.jobs import create_job, get_job
+from app.services.playlist_refresh import register_refresh_source, run_library_refresh_job
 from app.services.providers import get_account, get_provider
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
+
+
+def _run_import_and_register_refresh(
+    job_id: str, paths: list[str], source_name: str,
+    provider_id: str | None, account_id: str | None,
+    media_type: str | None, source_feed_id: str | None,
+) -> None:
+    run_catalog_import_job(
+        job_id, paths, source_name, provider_id, account_id, media_type, source_feed_id,
+    )
+    job = get_job(job_id)
+    if job and job.status == "complete":
+        register_refresh_source(
+            paths, source_name, provider_id, account_id, media_type, source_feed_id,
+        )
 
 
 @router.get("/summary", response_model=CatalogSummary)
@@ -94,11 +110,22 @@ def import_catalog(payload: CatalogImportRequest, background_tasks: BackgroundTa
         raise HTTPException(status_code=400, detail=redact_text(exc)) from exc
     job = create_job("catalog_import")
     background_tasks.add_task(
-        run_catalog_import_job, job.id, paths, payload.source_name,
+        _run_import_and_register_refresh, job.id, paths, payload.source_name,
         payload.provider_id, payload.account_id, payload.media_type,
         payload.source_feed_id,
     )
     return CatalogImportAccepted(job_id=job.id, status=job.status, message="Catalog import queued")
+
+
+@router.post("/refresh-library", response_model=CatalogImportAccepted, status_code=202)
+def refresh_library(background_tasks: BackgroundTasks) -> CatalogImportAccepted:
+    from app.services.jobs import has_active_job
+
+    if has_active_job("catalog_import") or has_active_job("library_refresh"):
+        raise HTTPException(status_code=409, detail="A catalog import or library refresh is already running.")
+    job = create_job("library_refresh")
+    background_tasks.add_task(run_library_refresh_job, job.id)
+    return CatalogImportAccepted(job_id=job.id, status=job.status, message="Library refresh queued")
 
 
 @router.post("/clear-test-data", response_model=CatalogSummary)

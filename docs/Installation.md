@@ -131,6 +131,17 @@ the separately served disk file. This is an additional topology: disk generation
 tracking, `mediarouter-files`, and existing production configuration remain supported.
 The endpoint generates current catalog state and does not read `live.m3u` from disk.
 
+### Scheduled IPTV Boss source refresh
+
+Media Router remembers explicitly typed catalog imports and re-imports their source
+M3U files automatically. Live/channel imports refresh every 24 hours. Movie, series,
+episode, and VOD imports refresh every 7 days. The schedule is measured from the last
+successful import, survives restarts, and defers while another catalog import is
+running. Existing, unambiguously live-only or VOD-only import history is adopted on
+startup. Mixed or untyped imports must be imported once with an explicit media type
+before they can be scheduled. A failed scheduled import retains its prior successful
+timestamp and is retried after a one-hour backoff.
+
 Before giving the URL to a LAN client, set Live M3U Runtime Client Access URL or
 Settings > Runtime > Runtime Public Base URL to the client-reachable Media Router base,
 for example `http://192.168.1.20:8088`. Playlist requests never trust their `Host` or

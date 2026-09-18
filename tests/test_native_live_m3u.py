@@ -134,6 +134,46 @@ class NativeLiveM3uTests(unittest.TestCase):
         self.assertEqual(200, empty.status_code)
         self.assertEqual("#EXTM3U\n", empty.text)
 
+    def test_group_scope_is_exact_unicode_safe_and_deduplicates_canonical_channels(self):
+        now = "2026-09-04T00:00:00"
+        with sqlite3.connect(_db_path()) as conn:
+            conn.executemany("""INSERT INTO channel_placements
+                (catalog_item_id,source_identity,source_name,source_playlist,group_title,channel_number,
+                 display_title,placement_index,tvg_id,tvg_name,tvg_logo,active,created_at,updated_at)
+                VALUES ('channel_unicode', ?, ?, 'fixture.m3u', ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)""", (
+                ("duplicate", "fixture-b", "News & Talk", "22", "Duplicate", 4,
+                 "conflicting-id", "Duplicate", now, now),
+                ("unicode-group", "fixture-c", "日本 & Café", "23", "Unicode", 5,
+                 "unicode-id", "Unicode", now, now),
+            ))
+
+        scoped = self.client.get("/live/playlist.m3u", params={"group": "News & Talk"})
+        self.assertEqual(200, scoped.status_code)
+        self.assertEqual(1, scoped.text.count("#EXTINF:"))
+        self.assertIn('tvg-id="guide&amp;one"', scoped.text)
+        self.assertNotIn("conflicting-id", scoped.text)
+        self.assertNotIn("channel_first", scoped.text)
+
+        unicode_group = self.client.get("/live/playlist.m3u", params={"group": "日本 & Café"})
+        self.assertEqual(200, unicode_group.status_code)
+        self.assertEqual(1, unicode_group.text.count("#EXTINF:"))
+        self.assertIn("channel_unicode", unicode_group.text)
+
+        wrong_case = self.client.get("/live/playlist.m3u", params={"group": "news & talk"})
+        self.assertEqual(404, wrong_case.status_code)
+
+    def test_known_group_without_eligible_channels_is_empty_but_unknown_group_is_404(self):
+        with sqlite3.connect(_db_path()) as conn:
+            conn.execute("""UPDATE channel_placements SET group_title='Disabled Only'
+                WHERE catalog_item_id='channel_disabled'""")
+
+        empty = self.client.get("/live/playlist.m3u", params={"group": "Disabled Only"})
+        self.assertEqual(200, empty.status_code)
+        self.assertEqual("#EXTM3U\n", empty.text)
+
+        missing = self.client.get("/live/playlist.m3u", params={"group": "Renamed Away"})
+        self.assertEqual(404, missing.status_code)
+
     def test_disk_and_native_outputs_share_exact_canonical_content(self):
         native = self.client.get("/live/playlist.m3u")
         generated = generate_live_m3u_output()

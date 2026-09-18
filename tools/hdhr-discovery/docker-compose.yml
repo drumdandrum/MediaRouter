@@ -1,0 +1,19 @@
+services:
+  hdhr-discovery:
+    image: python:3.12-alpine
+    container_name: hdhr-discovery
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      HDHR_PUBLIC_HOST: 192.168.2.189
+      HDHR_HTTP_PORT: "80"
+      HDHR_UPSTREAM: http://127.0.0.1:5004
+      HDHR_M3U_FILE: /media-router/live/live.m3u
+      HDHR_M3U_URL: http://192.168.2.189:8090/live.m3u
+      HDHR_DEVICE_ID: A1B2C3D2
+      HDHR_TUNER_COUNT: "4"
+      HDHR_FRIENDLY_NAME: NextPVR HDHomeRun Shim
+    volumes:
+      - ./hdhr_frontend.py:/app/hdhr_frontend.py:ro
+      - /mnt/media/mediarouter/live:/media-router/live:ro
+    command: ["python3", "/app/hdhr_frontend.py"]
